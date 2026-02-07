@@ -17,7 +17,6 @@ import (
 
 const (
 	snapshotLen int32         = 128
-	promiscuous bool          = true
 	capTimeout  time.Duration = 100 * time.Millisecond
 	bucketSize                = 1 * time.Minute
 	maxAge                    = 24 * time.Hour
@@ -52,23 +51,25 @@ type hostAccum struct {
 }
 
 type Tracker struct {
-	device     string
-	mu         sync.RWMutex
-	buckets    []*bucket
-	current    *bucket
-	stopCh     chan struct{}
-	dnsCache   map[string]string
-	dnsCacheMu sync.RWMutex
-	geoDB      *geoip.DB
+	device      string
+	promiscuous bool
+	mu          sync.RWMutex
+	buckets     []*bucket
+	current     *bucket
+	stopCh      chan struct{}
+	dnsCache    map[string]string
+	dnsCacheMu  sync.RWMutex
+	geoDB       *geoip.DB
 }
 
-func New(device string, geoDB *geoip.DB) *Tracker {
+func New(device string, promiscuous bool, geoDB *geoip.DB) *Tracker {
 	return &Tracker{
-		device:   device,
-		buckets:  make([]*bucket, 0, 1440),
-		stopCh:   make(chan struct{}),
-		dnsCache: make(map[string]string),
-		geoDB:    geoDB,
+		device:      device,
+		promiscuous: promiscuous,
+		buckets:     make([]*bucket, 0, 1440),
+		stopCh:      make(chan struct{}),
+		dnsCache:    make(map[string]string),
+		geoDB:       geoDB,
 	}
 }
 
@@ -196,7 +197,7 @@ func (t *Tracker) getDevices() ([]string, error) {
 }
 
 func (t *Tracker) captureDevice(device string) {
-	handle, err := pcap.OpenLive(device, snapshotLen, promiscuous, capTimeout)
+	handle, err := pcap.OpenLive(device, snapshotLen, t.promiscuous, capTimeout)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "talkers: cannot open %s: %v\n", device, err)
 		return

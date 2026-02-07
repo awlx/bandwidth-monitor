@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -35,6 +36,8 @@ func env(key, fallback string) string {
 func main() {
 	listenAddr := env("LISTEN", ":8080")
 	captureDevice := env("DEVICE", "")
+	promiscuous := env("PROMISCUOUS", "true")
+	promiscuousBool, _ := strconv.ParseBool(promiscuous)
 	geoCountry := env("GEO_COUNTRY", "GeoLite2-Country.mmdb")
 	geoASN := env("GEO_ASN", "GeoLite2-ASN.mmdb")
 	adguardURL := env("ADGUARD_URL", "")
@@ -71,7 +74,7 @@ func main() {
 	statsCollector := collector.New(vpnStatusFiles)
 	go statsCollector.Run()
 
-	talkerTracker := talkers.New(captureDevice, geoDB)
+	talkerTracker := talkers.New(captureDevice, promiscuousBool, geoDB)
 	go talkerTracker.Run()
 
 	var adguardClient *adguard.Client
