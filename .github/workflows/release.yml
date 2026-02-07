@@ -179,10 +179,14 @@ jobs:
       - name: Set up package feed
         run: |
           cd "$SDK_DIR"
-          echo "src-link bwmon ${{ github.workspace }}/packaging" >> feeds.conf.default
-          mkdir -p ${{ github.workspace }}/packaging/bandwidth-monitor/files
-          cp ${{ github.workspace }}/packaging/openwrt-Makefile ${{ github.workspace }}/packaging/bandwidth-monitor/Makefile
-          cp ${{ github.workspace }}/packaging/openwrt-files/* ${{ github.workspace }}/packaging/bandwidth-monitor/files/
+          # Create feed structure with local source reference
+          FEED_DIR="${{ github.workspace }}/openwrt-feed/bandwidth-monitor"
+          mkdir -p "$FEED_DIR/files"
+          cp ${{ github.workspace }}/packaging/openwrt-Makefile "$FEED_DIR/Makefile"
+          cp ${{ github.workspace }}/packaging/openwrt-files/* "$FEED_DIR/files/"
+          # Point PKG_SOURCE_URL to the checkout
+          sed -i "s|PKG_SOURCE_URL:=\$(CURDIR)/../..|PKG_SOURCE_URL:=${{ github.workspace }}|" "$FEED_DIR/Makefile"
+          echo "src-link bwmon ${{ github.workspace }}/openwrt-feed" >> feeds.conf.default
           ./scripts/feeds update -a
           ./scripts/feeds install bandwidth-monitor
 
