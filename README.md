@@ -86,6 +86,7 @@ chmod 0600 /opt/bandwidth-monitor/.env
 |----------|---------|-------------|
 | `LISTEN` | `:8080` | HTTP listen address (e.g. `198.51.100.1:8080`) |
 | `DEVICE` | *(all)* | Network device for packet capture (e.g. `eth0`) |
+| `PROMISCUOUS` | `true` | Enable promiscuous mode for packet capture (`true`/`false`) |
 | `GEO_COUNTRY` | `GeoLite2-Country.mmdb` | Path to GeoLite2 Country MMDB |
 | `GEO_ASN` | `GeoLite2-ASN.mmdb` | Path to GeoLite2 ASN MMDB |
 | `ADGUARD_URL` | *(disabled)* | AdGuard Home base URL (e.g. `http://adguard.example.net`) |

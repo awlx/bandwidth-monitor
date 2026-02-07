@@ -4,10 +4,8 @@ PKG_NAME:=bandwidth-monitor
 PKG_VERSION:=$(shell git describe --tags --always 2>/dev/null || echo 0.0.1)
 PKG_RELEASE:=1
 
-PKG_SOURCE_PROTO:=git
-PKG_SOURCE_URL:=https://github.com/awlx/bandwidth-monitor.git
-PKG_SOURCE_VERSION:=HEAD
-PKG_MIRROR_HASH:=skip
+PKG_SOURCE_PROTO:=local
+PKG_SOURCE_URL:=$(CURDIR)/../..
 
 PKG_BUILD_DEPENDS:=golang/host
 PKG_BUILD_PARALLEL:=1
