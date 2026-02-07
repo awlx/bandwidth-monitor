@@ -1,11 +1,8 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=bandwidth-monitor
-PKG_VERSION:=$(shell git describe --tags --always 2>/dev/null || echo 0.0.1)
+PKG_VERSION:=$(shell cd $(CURDIR)/../../ 2>/dev/null && git describe --tags --always 2>/dev/null || echo 0.0.1)
 PKG_RELEASE:=1
-
-PKG_SOURCE_PROTO:=local
-PKG_SOURCE_URL:=$(CURDIR)/../..
 
 PKG_BUILD_DEPENDS:=golang/host
 PKG_BUILD_PARALLEL:=1
@@ -15,6 +12,17 @@ GO_PKG:=bandwidth-monitor
 
 include $(INCLUDE_DIR)/package.mk
 include $(TOPDIR)/feeds/packages/lang/golang/golang-package.mk
+
+# Use local source — skip the download system entirely
+define Build/Prepare
+	mkdir -p $(PKG_BUILD_DIR)
+	cp -a $(CURDIR)/../../*.go $(CURDIR)/../../go.mod $(CURDIR)/../../go.sum $(PKG_BUILD_DIR)/
+	cp -a $(CURDIR)/../../static $(PKG_BUILD_DIR)/
+	for d in adguard collector geoip handler talkers unifi; do \
+		[ -d $(CURDIR)/../../$$d ] && cp -a $(CURDIR)/../../$$d $(PKG_BUILD_DIR)/; \
+	done
+	cp -a $(CURDIR)/../../env.example $(PKG_BUILD_DIR)/
+endef
 
 define Package/bandwidth-monitor
   SECTION:=net

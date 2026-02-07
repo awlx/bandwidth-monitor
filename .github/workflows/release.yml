@@ -179,13 +179,12 @@ jobs:
       - name: Set up package feed
         run: |
           cd "$SDK_DIR"
-          # Create feed structure with local source reference
           FEED_DIR="${{ github.workspace }}/openwrt-feed/bandwidth-monitor"
           mkdir -p "$FEED_DIR/files"
           cp ${{ github.workspace }}/packaging/openwrt-Makefile "$FEED_DIR/Makefile"
           cp ${{ github.workspace }}/packaging/openwrt-files/* "$FEED_DIR/files/"
-          # Point PKG_SOURCE_URL to the checkout
-          sed -i "s|PKG_SOURCE_URL:=\$(CURDIR)/../..|PKG_SOURCE_URL:=${{ github.workspace }}|" "$FEED_DIR/Makefile"
+          # Fix Build/Prepare paths to point to the actual checkout
+          sed -i "s|\$(CURDIR)/../..|${{ github.workspace }}|g" "$FEED_DIR/Makefile"
           echo "src-link bwmon ${{ github.workspace }}/openwrt-feed" >> feeds.conf.default
           ./scripts/feeds update -a
           ./scripts/feeds install bandwidth-monitor
@@ -194,22 +193,33 @@ jobs:
         run: |
           GO_VER="1.25.7"
           wget -q "https://go.dev/dl/go${GO_VER}.linux-amd64.tar.gz"
-          rm -rf "$SDK_DIR/dl/go"
-          mkdir -p "$SDK_DIR/dl"
-          tar -C "$SDK_DIR/dl" -xzf "go${GO_VER}.linux-amd64.tar.gz"
-          # Symlink so the SDK's golang-build.sh uses our Go
-          GOROOT_FINAL="$SDK_DIR/staging_dir/host/go"
-          rm -rf "$GOROOT_FINAL"
-          ln -sf "$SDK_DIR/dl/go" "$GOROOT_FINAL"
-          # Also put it on PATH for any direct invocations
-          echo "$SDK_DIR/dl/go/bin" >> $GITHUB_PATH
+          mkdir -p "$HOME/go-override"
+          tar -C "$HOME/go-override" --strip-components=1 -xzf "go${GO_VER}.linux-amd64.tar.gz"
 
       - name: Build OpenWrt package
         run: |
           cd "$SDK_DIR"
-          # Generate .config non-interactively (avoids menuconfig terminal requirement)
+          # Generate .config non-interactively
           echo "CONFIG_PACKAGE_bandwidth-monitor=y" > .config
           make defconfig
+          # First build the golang host dependency (will build Go 1.21)
+          make package/feeds/packages/golang/host/compile V=s -j$(nproc) || true
+          # Now replace the SDK's Go with our version
+          GO_HOST_DIR=$(find "$SDK_DIR/staging_dir" -path "*/go/bin/go" -exec dirname {} \; 2>/dev/null | head -1)
+          if [ -n "$GO_HOST_DIR" ]; then
+            GOROOT_DIR="$(dirname "$GO_HOST_DIR")"
+            echo "Replacing SDK Go at $GOROOT_DIR"
+            rm -rf "$GOROOT_DIR"/*
+            cp -a "$HOME/go-override"/* "$GOROOT_DIR"/
+          fi
+          # Also override any staging_dir/hostpkg path
+          for d in "$SDK_DIR"/staging_dir/hostpkg/go "$SDK_DIR"/staging_dir/host/go; do
+            if [ -d "$d" ]; then
+              rm -rf "$d"/*
+              cp -a "$HOME/go-override"/* "$d"/
+            fi
+          done
+          # Build our package
           make package/bandwidth-monitor/compile V=s -j$(nproc)
 
       - name: Collect ipk
