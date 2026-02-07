@@ -190,8 +190,10 @@ jobs:
       - name: Build OpenWrt package
         run: |
           cd "$SDK_DIR"
-          make package/bandwidth-monitor/compile V=s -j$(nproc) \
-            CONFIG_PACKAGE_bandwidth-monitor=y
+          # Generate .config non-interactively (avoids menuconfig terminal requirement)
+          echo "CONFIG_PACKAGE_bandwidth-monitor=y" > .config
+          make defconfig
+          make package/bandwidth-monitor/compile V=s -j$(nproc)
 
       - name: Collect ipk
         run: |
