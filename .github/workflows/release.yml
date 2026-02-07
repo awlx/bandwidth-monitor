@@ -180,12 +180,25 @@ jobs:
         run: |
           cd "$SDK_DIR"
           echo "src-link bwmon ${{ github.workspace }}/packaging" >> feeds.conf.default
-          # Rename openwrt-Makefile to Makefile in a feed-compatible structure
           mkdir -p ${{ github.workspace }}/packaging/bandwidth-monitor/files
           cp ${{ github.workspace }}/packaging/openwrt-Makefile ${{ github.workspace }}/packaging/bandwidth-monitor/Makefile
           cp ${{ github.workspace }}/packaging/openwrt-files/* ${{ github.workspace }}/packaging/bandwidth-monitor/files/
           ./scripts/feeds update -a
           ./scripts/feeds install bandwidth-monitor
+
+      - name: Override SDK Go version
+        run: |
+          GO_VER="1.23.6"
+          wget -q "https://go.dev/dl/go${GO_VER}.linux-amd64.tar.gz"
+          rm -rf "$SDK_DIR/dl/go"
+          mkdir -p "$SDK_DIR/dl"
+          tar -C "$SDK_DIR/dl" -xzf "go${GO_VER}.linux-amd64.tar.gz"
+          # Symlink so the SDK's golang-build.sh uses our Go
+          GOROOT_FINAL="$SDK_DIR/staging_dir/host/go"
+          rm -rf "$GOROOT_FINAL"
+          ln -sf "$SDK_DIR/dl/go" "$GOROOT_FINAL"
+          # Also put it on PATH for any direct invocations
+          echo "$SDK_DIR/dl/go/bin" >> $GITHUB_PATH
 
       - name: Build OpenWrt package
         run: |
