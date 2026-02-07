@@ -46,13 +46,11 @@ jobs:
           for f in /etc/apt/sources.list.d/*.list; do
             [ -f "$f" ] && sudo sed -i '/^deb /{/\[/!s|^deb |deb [arch=amd64] |}' "$f" 2>/dev/null || true
           done
-          # Also fix the main sources list if it exists
           [ -f /etc/apt/sources.list ] && sudo sed -i '/^deb /{/\[/!s|^deb |deb [arch=amd64] |}' /etc/apt/sources.list 2>/dev/null || true
           # Add arm64 ports
-          cat <<EOF | sudo tee /etc/apt/sources.list.d/arm64-ports.list
-deb [arch=arm64] http://ports.ubuntu.com/ $(lsb_release -cs) main restricted universe
-deb [arch=arm64] http://ports.ubuntu.com/ $(lsb_release -cs)-updates main restricted universe
-EOF
+          CODENAME=$(lsb_release -cs)
+          echo "deb [arch=arm64] http://ports.ubuntu.com/ ${CODENAME} main restricted universe" | sudo tee /etc/apt/sources.list.d/arm64-ports.list
+          echo "deb [arch=arm64] http://ports.ubuntu.com/ ${CODENAME}-updates main restricted universe" | sudo tee -a /etc/apt/sources.list.d/arm64-ports.list
           sudo apt-get update
           sudo apt-get install -y gcc-aarch64-linux-gnu libpcap-dev:arm64
 
@@ -71,7 +69,8 @@ EOF
           CGO_ENABLED: "1"
           CC: ${{ matrix.cc }}
         run: |
-          go build -ldflags="-s -w -X main.version=${{ github.ref_name }}" -o bandwidth-monitor .
+          VERSION="${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || github.sha }}"
+          go build -ldflags="-s -w -X main.version=${VERSION}" -o bandwidth-monitor .
 
       - name: Prepare packaging service file
         run: |
@@ -83,18 +82,18 @@ EOF
 
       - name: Build deb
         env:
-          VERSION: ${{ github.ref_name }}
+          VERSION: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || format('0.0.0-{0}', github.sha) }}
           GOARCH: ${{ matrix.pkg_arch }}
         run: |
-          VERSION="${VERSION#v}"
+          export VERSION="${VERSION#v}"
           nfpm package -p deb -f nfpm.yaml
 
       - name: Build rpm
         env:
-          VERSION: ${{ github.ref_name }}
+          VERSION: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || format('0.0.0-{0}', github.sha) }}
           GOARCH: ${{ matrix.pkg_arch }}
         run: |
-          VERSION="${VERSION#v}"
+          export VERSION="${VERSION#v}"
           nfpm package -p rpm -f nfpm.yaml
 
       - name: Upload artifacts
