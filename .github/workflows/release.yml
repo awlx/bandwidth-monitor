@@ -119,25 +119,42 @@ jobs:
     strategy:
       matrix:
         include:
+          # ── OpenWrt 23.05 (stable) ──
           - sdk_url_suffix: x86/64
-            sdk_pattern: "openwrt-sdk-*-x86-64_*"
             arch: x86_64
+            release: "23.05.5"
+            base_url: "https://downloads.openwrt.org/releases/23.05.5/targets"
           - sdk_url_suffix: rockchip/armv8
-            sdk_pattern: "openwrt-sdk-*-rockchip-armv8_*"
             arch: aarch64_generic
+            release: "23.05.5"
+            base_url: "https://downloads.openwrt.org/releases/23.05.5/targets"
           - sdk_url_suffix: ath79/generic
-            sdk_pattern: "openwrt-sdk-*-ath79-generic_*"
             arch: mips_24kc
+            release: "23.05.5"
+            base_url: "https://downloads.openwrt.org/releases/23.05.5/targets"
           - sdk_url_suffix: ramips/mt7621
-            sdk_pattern: "openwrt-sdk-*-ramips-mt7621_*"
             arch: mipsel_24kc
+            release: "23.05.5"
+            base_url: "https://downloads.openwrt.org/releases/23.05.5/targets"
           - sdk_url_suffix: mediatek/filogic
-            sdk_pattern: "openwrt-sdk-*-mediatek-filogic_*"
             arch: aarch64_cortex-a53
+            release: "23.05.5"
+            base_url: "https://downloads.openwrt.org/releases/23.05.5/targets"
+          # ── OpenWrt SNAPSHOT (nightly) ──
+          - sdk_url_suffix: x86/64
+            arch: x86_64-snapshot
+            release: "snapshot"
+            base_url: "https://downloads.openwrt.org/snapshots/targets"
+          - sdk_url_suffix: rockchip/armv8
+            arch: aarch64_generic-snapshot
+            release: "snapshot"
+            base_url: "https://downloads.openwrt.org/snapshots/targets"
+          - sdk_url_suffix: mediatek/filogic
+            arch: aarch64_cortex-a53-snapshot
+            release: "snapshot"
+            base_url: "https://downloads.openwrt.org/snapshots/targets"
 
     runs-on: ubuntu-latest
-    env:
-      OPENWRT_RELEASE: "23.05.5"
 
     steps:
       - uses: actions/checkout@v4
@@ -152,7 +169,7 @@ jobs:
 
       - name: Download and extract OpenWrt SDK
         run: |
-          SDK_URL="https://downloads.openwrt.org/releases/${{ env.OPENWRT_RELEASE }}/targets/${{ matrix.sdk_url_suffix }}"
+          SDK_URL="${{ matrix.base_url }}/${{ matrix.sdk_url_suffix }}"
           SDK_FILE=$(curl -sf "$SDK_URL/sha256sums" | grep 'openwrt-sdk-' | grep -oP 'openwrt-sdk-[^\s*]+\.tar\.\w+' | head -1)
           echo "Downloading $SDK_URL/$SDK_FILE"
           wget -q "$SDK_URL/$SDK_FILE"
