@@ -42,15 +42,25 @@ jobs:
         if: matrix.goarch == 'arm64'
         run: |
           sudo dpkg --add-architecture arm64
-          # Pin existing sources to amd64 only (skip non-deb lines and third-party lists)
+          # Pin ALL existing apt sources to amd64 only
+          # Handle .list files
           for f in /etc/apt/sources.list.d/*.list; do
             [ -f "$f" ] && sudo sed -i '/^deb /{/\[/!s|^deb |deb [arch=amd64] |}' "$f" 2>/dev/null || true
           done
           [ -f /etc/apt/sources.list ] && sudo sed -i '/^deb /{/\[/!s|^deb |deb [arch=amd64] |}' /etc/apt/sources.list 2>/dev/null || true
-          # Add arm64 ports
+          # Handle DEB822 .sources files (Ubuntu 24.04+)
+          for f in /etc/apt/sources.list.d/*.sources; do
+            [ -f "$f" ] && sudo sed -i '/^Architectures:/!{/^Types:/a Architectures: amd64}' "$f" 2>/dev/null || true
+            [ -f "$f" ] && grep -q '^Architectures:' "$f" || sudo sed -i '/^Types:/a Architectures: amd64' "$f" 2>/dev/null || true
+          done
+          # Add arm64 ports (covers main, updates, security, backports)
           CODENAME=$(lsb_release -cs)
-          echo "deb [arch=arm64] http://ports.ubuntu.com/ ${CODENAME} main restricted universe" | sudo tee /etc/apt/sources.list.d/arm64-ports.list
-          echo "deb [arch=arm64] http://ports.ubuntu.com/ ${CODENAME}-updates main restricted universe" | sudo tee -a /etc/apt/sources.list.d/arm64-ports.list
+          printf '%s\n' \
+            "deb [arch=arm64] http://ports.ubuntu.com/ ${CODENAME} main restricted universe" \
+            "deb [arch=arm64] http://ports.ubuntu.com/ ${CODENAME}-updates main restricted universe" \
+            "deb [arch=arm64] http://ports.ubuntu.com/ ${CODENAME}-security main restricted universe" \
+            "deb [arch=arm64] http://ports.ubuntu.com/ ${CODENAME}-backports main restricted universe" \
+            | sudo tee /etc/apt/sources.list.d/arm64-ports.list
           sudo apt-get update
           sudo apt-get install -y gcc-aarch64-linux-gnu libpcap-dev:arm64
 
