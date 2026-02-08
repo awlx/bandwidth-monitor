@@ -220,10 +220,10 @@ jobs:
           find "$SDK_DIR/staging_dir" -name 'pcap.h' -type f 2>/dev/null | head -3
           echo "TOOLCHAIN_DIR=$TOOLCHAIN_DIR" >> $GITHUB_ENV
           echo "TARGET_DIR=$TARGET_DIR" >> $GITHUB_ENV
+          echo "$TOOLCHAIN_DIR/bin" >> $GITHUB_PATH
 
       - name: Build binary with SDK toolchain
         run: |
-          export PATH="$TOOLCHAIN_DIR/bin:$PATH"
           export STAGING_DIR="$SDK_DIR/staging_dir"
           export CGO_ENABLED=1
           export GOOS=linux
