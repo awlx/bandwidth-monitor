@@ -122,35 +122,53 @@ jobs:
           # ── OpenWrt 23.05 (stable) ──
           - sdk_url_suffix: x86/64
             arch: x86_64
+            goarch: amd64
+            cc_prefix: x86_64-openwrt-linux-musl
             release: "23.05.5"
             base_url: "https://downloads.openwrt.org/releases/23.05.5/targets"
           - sdk_url_suffix: rockchip/armv8
             arch: aarch64_generic
+            goarch: arm64
+            cc_prefix: aarch64-openwrt-linux-musl
             release: "23.05.5"
             base_url: "https://downloads.openwrt.org/releases/23.05.5/targets"
           - sdk_url_suffix: ath79/generic
             arch: mips_24kc
+            goarch: mips
+            gomips: softfloat
+            cc_prefix: mips-openwrt-linux-musl
             release: "23.05.5"
             base_url: "https://downloads.openwrt.org/releases/23.05.5/targets"
           - sdk_url_suffix: ramips/mt7621
             arch: mipsel_24kc
+            goarch: mipsle
+            gomips: softfloat
+            cc_prefix: mipsel-openwrt-linux-musl
             release: "23.05.5"
             base_url: "https://downloads.openwrt.org/releases/23.05.5/targets"
           - sdk_url_suffix: mediatek/filogic
             arch: aarch64_cortex-a53
+            goarch: arm64
+            cc_prefix: aarch64-openwrt-linux-musl
             release: "23.05.5"
             base_url: "https://downloads.openwrt.org/releases/23.05.5/targets"
           # ── OpenWrt SNAPSHOT (nightly) ──
           - sdk_url_suffix: x86/64
             arch: x86_64-snapshot
+            goarch: amd64
+            cc_prefix: x86_64-openwrt-linux-musl
             release: "snapshot"
             base_url: "https://downloads.openwrt.org/snapshots/targets"
           - sdk_url_suffix: rockchip/armv8
             arch: aarch64_generic-snapshot
+            goarch: arm64
+            cc_prefix: aarch64-openwrt-linux-musl
             release: "snapshot"
             base_url: "https://downloads.openwrt.org/snapshots/targets"
           - sdk_url_suffix: mediatek/filogic
             arch: aarch64_cortex-a53-snapshot
+            goarch: arm64
+            cc_prefix: aarch64-openwrt-linux-musl
             release: "snapshot"
             base_url: "https://downloads.openwrt.org/snapshots/targets"
 
@@ -159,13 +177,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential clang flex bison g++ gawk \
-            gcc-multilib g++-multilib gettext git libncurses-dev libssl-dev \
-            python3-setuptools rsync swig unzip zlib1g-dev \
-            file wget
+          sudo apt-get install -y build-essential file wget fakeroot
 
       - name: Download and extract OpenWrt SDK
         run: |
@@ -176,56 +195,86 @@ jobs:
           tar xf "$SDK_FILE"
           echo "SDK_DIR=$(ls -d openwrt-sdk-* | head -1)" >> $GITHUB_ENV
 
-      - name: Set up package feed
+      - name: Build binary with SDK toolchain
         run: |
-          cd "$SDK_DIR"
-          FEED_DIR="${{ github.workspace }}/openwrt-feed/bandwidth-monitor"
-          mkdir -p "$FEED_DIR/files"
-          cp ${{ github.workspace }}/packaging/openwrt-Makefile "$FEED_DIR/Makefile"
-          cp ${{ github.workspace }}/packaging/openwrt-files/* "$FEED_DIR/files/"
-          # Fix Build/Prepare paths to point to the actual checkout
-          sed -i "s|\$(CURDIR)/../..|${{ github.workspace }}|g" "$FEED_DIR/Makefile"
-          echo "src-link bwmon ${{ github.workspace }}/openwrt-feed" >> feeds.conf.default
-          ./scripts/feeds update -a
-          ./scripts/feeds install bandwidth-monitor
+          # Find the SDK's toolchain and staging dirs
+          TOOLCHAIN_DIR=$(find "$SDK_DIR/staging_dir" -maxdepth 1 -name 'toolchain-*' | head -1)
+          TARGET_DIR=$(find "$SDK_DIR/staging_dir" -maxdepth 1 -name 'target-*' | head -1)
+          echo "Toolchain: $TOOLCHAIN_DIR"
+          echo "Target: $TARGET_DIR"
 
-      - name: Override SDK Go version
-        run: |
-          GO_VER="1.25.7"
-          wget -q "https://go.dev/dl/go${GO_VER}.linux-amd64.tar.gz"
-          mkdir -p "$HOME/go-override"
-          tar -C "$HOME/go-override" --strip-components=1 -xzf "go${GO_VER}.linux-amd64.tar.gz"
+          # Set up environment for CGO cross-compilation
+          export PATH="$TOOLCHAIN_DIR/bin:$PATH"
+          export STAGING_DIR="$SDK_DIR/staging_dir"
+          export CGO_ENABLED=1
+          export GOOS=linux
+          export GOARCH=${{ matrix.goarch }}
+          export GOMIPS=${{ matrix.gomips }}
+          export CC=${{ matrix.cc_prefix }}-gcc
+          export CXX=${{ matrix.cc_prefix }}-g++
+          export CGO_CFLAGS="-I$TARGET_DIR/usr/include -I$TOOLCHAIN_DIR/usr/include"
+          export CGO_LDFLAGS="-L$TARGET_DIR/usr/lib -L$TOOLCHAIN_DIR/usr/lib -L$TOOLCHAIN_DIR/lib"
 
-      - name: Build OpenWrt package
-        run: |
-          cd "$SDK_DIR"
-          # Generate .config non-interactively
-          echo "CONFIG_PACKAGE_bandwidth-monitor=y" > .config
-          make defconfig
-          # First build the golang host dependency (will build Go 1.21)
-          make package/feeds/packages/golang/host/compile V=s -j$(nproc) || true
-          # Now replace the SDK's Go with our version
-          GO_HOST_DIR=$(find "$SDK_DIR/staging_dir" -path "*/go/bin/go" -exec dirname {} \; 2>/dev/null | head -1)
-          if [ -n "$GO_HOST_DIR" ]; then
-            GOROOT_DIR="$(dirname "$GO_HOST_DIR")"
-            echo "Replacing SDK Go at $GOROOT_DIR"
-            rm -rf "$GOROOT_DIR"/*
-            cp -a "$HOME/go-override"/* "$GOROOT_DIR"/
+          # Install libpcap into the staging dir if not present
+          if [ ! -f "$TARGET_DIR/usr/include/pcap.h" ]; then
+            cd "$SDK_DIR"
+            echo "CONFIG_PACKAGE_libpcap=y" > .config
+            make defconfig
+            make package/libs/libpcap/compile V=s -j$(nproc)
+            make package/libs/libpcap/install V=s
           fi
-          # Also override any staging_dir/hostpkg path
-          for d in "$SDK_DIR"/staging_dir/hostpkg/go "$SDK_DIR"/staging_dir/host/go; do
-            if [ -d "$d" ]; then
-              rm -rf "$d"/*
-              cp -a "$HOME/go-override"/* "$d"/
-            fi
-          done
-          # Build our package
-          make package/bandwidth-monitor/compile V=s -j$(nproc)
 
-      - name: Collect ipk
+          cd "${{ github.workspace }}"
+          VERSION="${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || github.sha }}"
+          go build -ldflags="-s -w -X main.version=${VERSION} -linkmode external -extldflags '-static'" \
+            -o bandwidth-monitor .
+          file bandwidth-monitor
+          echo "BINARY=${{ github.workspace }}/bandwidth-monitor" >> $GITHUB_ENV
+
+      - name: Package ipk
         run: |
+          VERSION="${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || format('0.0.0-{0}', github.sha) }}"
+          VERSION="${VERSION#v}"
+          ARCH="${{ matrix.arch }}"
+          ARCH="${ARCH%-snapshot}"
+
+          PKG_DIR=$(mktemp -d)
+          mkdir -p "$PKG_DIR/usr/bin"
+          mkdir -p "$PKG_DIR/etc/bandwidth-monitor"
+          mkdir -p "$PKG_DIR/etc/init.d"
+          mkdir -p "$PKG_DIR/CONTROL"
+
+          cp "$BINARY" "$PKG_DIR/usr/bin/bandwidth-monitor"
+          cp env.example "$PKG_DIR/etc/bandwidth-monitor/env"
+          cp packaging/openwrt-files/bandwidth-monitor.init "$PKG_DIR/etc/init.d/bandwidth-monitor"
+          chmod 755 "$PKG_DIR/usr/bin/bandwidth-monitor" "$PKG_DIR/etc/init.d/bandwidth-monitor"
+          chmod 600 "$PKG_DIR/etc/bandwidth-monitor/env"
+
+          cat > "$PKG_DIR/CONTROL/control" <<CTRL
+          Package: bandwidth-monitor
+          Version: ${VERSION}
+          Architecture: ${ARCH}
+          Depends: libpcap
+          Maintainer: Annika Wickert <awlx@users.noreply.github.com>
+          Section: net
+          Description: Real-time network monitoring dashboard with embedded web UI
+          CTRL
+          # Remove leading whitespace from heredoc
+          sed -i 's/^          //' "$PKG_DIR/CONTROL/control"
+
+          cat > "$PKG_DIR/CONTROL/conffiles" <<CONF
+          /etc/bandwidth-monitor/env
+          CONF
+          sed -i 's/^          //' "$PKG_DIR/CONTROL/conffiles"
+
+          # Build ipk (tar-based format)
           mkdir -p ipk-out
-          find "$SDK_DIR/bin" -name 'bandwidth-monitor*.ipk' -exec cp {} ipk-out/ \;
+          cd "$PKG_DIR"
+          tar czf ../control.tar.gz -C CONTROL .
+          tar czf ../data.tar.gz --owner=0 --group=0 -C "$PKG_DIR" usr etc
+          echo "2.0" > ../debian-binary
+          cd ..
+          ar r "ipk-out/bandwidth-monitor_${VERSION}_${ARCH}.ipk" debian-binary control.tar.gz data.tar.gz
           ls -lh ipk-out/
 
       - name: Upload OpenWrt package
