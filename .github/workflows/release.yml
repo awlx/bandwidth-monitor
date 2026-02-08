@@ -125,12 +125,14 @@ jobs:
             goarch: amd64
             cc_prefix: x86_64-openwrt-linux-musl
             release: "23.05.5"
+            pkg_format: ipk
             base_url: "https://downloads.openwrt.org/releases/23.05.5/targets"
           - sdk_url_suffix: rockchip/armv8
             arch: aarch64_generic
             goarch: arm64
             cc_prefix: aarch64-openwrt-linux-musl
             release: "23.05.5"
+            pkg_format: ipk
             base_url: "https://downloads.openwrt.org/releases/23.05.5/targets"
           - sdk_url_suffix: ath79/generic
             arch: mips_24kc
@@ -138,6 +140,7 @@ jobs:
             gomips: softfloat
             cc_prefix: mips-openwrt-linux-musl
             release: "23.05.5"
+            pkg_format: ipk
             base_url: "https://downloads.openwrt.org/releases/23.05.5/targets"
           - sdk_url_suffix: ramips/mt7621
             arch: mipsel_24kc
@@ -145,31 +148,36 @@ jobs:
             gomips: softfloat
             cc_prefix: mipsel-openwrt-linux-musl
             release: "23.05.5"
+            pkg_format: ipk
             base_url: "https://downloads.openwrt.org/releases/23.05.5/targets"
           - sdk_url_suffix: mediatek/filogic
             arch: aarch64_cortex-a53
             goarch: arm64
             cc_prefix: aarch64-openwrt-linux-musl
             release: "23.05.5"
+            pkg_format: ipk
             base_url: "https://downloads.openwrt.org/releases/23.05.5/targets"
-          # ── OpenWrt SNAPSHOT (nightly) ──
+          # ── OpenWrt SNAPSHOT (nightly, uses apk) ──
           - sdk_url_suffix: x86/64
             arch: x86_64-snapshot
             goarch: amd64
             cc_prefix: x86_64-openwrt-linux-musl
             release: "snapshot"
+            pkg_format: apk
             base_url: "https://downloads.openwrt.org/snapshots/targets"
           - sdk_url_suffix: rockchip/armv8
             arch: aarch64_generic-snapshot
             goarch: arm64
             cc_prefix: aarch64-openwrt-linux-musl
             release: "snapshot"
+            pkg_format: apk
             base_url: "https://downloads.openwrt.org/snapshots/targets"
           - sdk_url_suffix: mediatek/filogic
             arch: aarch64_cortex-a53-snapshot
             goarch: arm64
             cc_prefix: aarch64-openwrt-linux-musl
             release: "snapshot"
+            pkg_format: apk
             base_url: "https://downloads.openwrt.org/snapshots/targets"
 
     runs-on: ubuntu-latest
@@ -252,21 +260,21 @@ jobs:
           file bandwidth-monitor
           echo "BINARY=${{ github.workspace }}/bandwidth-monitor" >> $GITHUB_ENV
 
-      - name: Package ipk
+      - name: Package for OpenWrt
         run: |
           VERSION="${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || format('0.0.0-{0}', github.sha) }}"
           VERSION="${VERSION#v}"
           ARCH="${{ matrix.arch }}"
           ARCH="${ARCH%-snapshot}"
           WORKSPACE="${{ github.workspace }}"
+          PKG_FORMAT="${{ matrix.pkg_format }}"
 
           PKG_DIR=$(mktemp -d)
-          IPK_BUILD=$(mktemp -d)
+          BUILD_DIR=$(mktemp -d)
           mkdir -p "$PKG_DIR/usr/bin"
           mkdir -p "$PKG_DIR/etc/bandwidth-monitor"
           mkdir -p "$PKG_DIR/etc/init.d"
-          mkdir -p "$PKG_DIR/CONTROL"
-          mkdir -p "$WORKSPACE/ipk-out"
+          mkdir -p "$WORKSPACE/pkg-out"
 
           cp "$BINARY" "$PKG_DIR/usr/bin/bandwidth-monitor"
           cp "$WORKSPACE/env.example" "$PKG_DIR/etc/bandwidth-monitor/env"
@@ -274,34 +282,66 @@ jobs:
           chmod 755 "$PKG_DIR/usr/bin/bandwidth-monitor" "$PKG_DIR/etc/init.d/bandwidth-monitor"
           chmod 600 "$PKG_DIR/etc/bandwidth-monitor/env"
 
-          cat > "$PKG_DIR/CONTROL/control" <<-CTRL
-          Package: bandwidth-monitor
-          Version: ${VERSION}
-          Architecture: ${ARCH}
-          Depends: libpcap
-          Maintainer: Annika Wickert <awlx@users.noreply.github.com>
-          Section: net
-          Description: Real-time network monitoring dashboard with embedded web UI
-          CTRL
-          sed -i 's/^[[:space:]]*//' "$PKG_DIR/CONTROL/control"
+          if [ "$PKG_FORMAT" = "apk" ]; then
+            # Build .apk (Alpine-style, used by OpenWrt snapshot)
+            sudo apt-get install -y apk-tools 2>/dev/null || true
 
-          echo "/etc/bandwidth-monitor/env" > "$PKG_DIR/CONTROL/conffiles"
+            mkdir -p "$BUILD_DIR/APKBUILD"
+            cat > "$BUILD_DIR/APKBUILD/.PKGINFO" <<-INFO
+            pkgname = bandwidth-monitor
+            pkgver = ${VERSION}-r1
+            pkgdesc = Real-time network monitoring dashboard with embedded web UI
+            url = https://github.com/awlx/bandwidth-monitor
+            size = $(stat -c%s "$BINARY")
+            arch = ${ARCH}
+            license = ISC
+            depend = libpcap
+            maintainer = Annika Wickert <awlx@users.noreply.github.com>
+            INFO
+            sed -i 's/^[[:space:]]*//' "$BUILD_DIR/APKBUILD/.PKGINFO"
 
-          # Build ipk (tar-based opkg format)
-          tar czf "$IPK_BUILD/control.tar.gz" -C "$PKG_DIR/CONTROL" .
-          tar czf "$IPK_BUILD/data.tar.gz" --owner=0 --group=0 -C "$PKG_DIR" usr etc
-          echo "2.0" > "$IPK_BUILD/debian-binary"
+            # Create data tarball
+            tar czf "$BUILD_DIR/data.tar.gz" --owner=0 --group=0 -C "$PKG_DIR" usr etc
 
-          IPK_FILE="$WORKSPACE/ipk-out/bandwidth-monitor_${VERSION}_${ARCH}.ipk"
-          cd "$IPK_BUILD"
-          ar r "$IPK_FILE" debian-binary control.tar.gz data.tar.gz
-          ls -lh "$IPK_FILE"
+            # Create control tarball with .PKGINFO
+            tar czf "$BUILD_DIR/control.tar.gz" -C "$BUILD_DIR/APKBUILD" .PKGINFO
+
+            # Combine into .apk (just a concatenation of gzipped tarballs)
+            APK_FILE="$WORKSPACE/pkg-out/bandwidth-monitor-${VERSION}-r1_${ARCH}.apk"
+            cat "$BUILD_DIR/control.tar.gz" "$BUILD_DIR/data.tar.gz" > "$APK_FILE"
+            ls -lh "$APK_FILE"
+          else
+            # Build .ipk (opkg format, used by OpenWrt stable)
+            mkdir -p "$PKG_DIR/CONTROL"
+
+            cat > "$PKG_DIR/CONTROL/control" <<-CTRL
+            Package: bandwidth-monitor
+            Version: ${VERSION}
+            Architecture: ${ARCH}
+            Depends: libpcap
+            Maintainer: Annika Wickert <awlx@users.noreply.github.com>
+            Section: net
+            Description: Real-time network monitoring dashboard with embedded web UI
+            CTRL
+            sed -i 's/^[[:space:]]*//' "$PKG_DIR/CONTROL/control"
+
+            echo "/etc/bandwidth-monitor/env" > "$PKG_DIR/CONTROL/conffiles"
+
+            tar czf "$BUILD_DIR/control.tar.gz" -C "$PKG_DIR/CONTROL" .
+            tar czf "$BUILD_DIR/data.tar.gz" --owner=0 --group=0 -C "$PKG_DIR" usr etc
+            echo "2.0" > "$BUILD_DIR/debian-binary"
+
+            IPK_FILE="$WORKSPACE/pkg-out/bandwidth-monitor_${VERSION}_${ARCH}.ipk"
+            cd "$BUILD_DIR"
+            ar r "$IPK_FILE" debian-binary control.tar.gz data.tar.gz
+            ls -lh "$IPK_FILE"
+          fi
 
       - name: Upload OpenWrt package
         uses: actions/upload-artifact@v4
         with:
           name: openwrt-${{ matrix.arch }}
-          path: ipk-out/*.ipk
+          path: pkg-out/*
 
   # ─── GitHub Release (tags only) ────────────────────────────────────
   release:
@@ -325,3 +365,4 @@ jobs:
             artifacts/**/*.deb
             artifacts/**/*.rpm
             artifacts/**/*.ipk
+            artifacts/**/*.apk

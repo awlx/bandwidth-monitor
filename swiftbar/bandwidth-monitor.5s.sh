@@ -9,21 +9,33 @@
 # <swiftbar.hideDisablePlugin>true</swiftbar.hideDisablePlugin>
 
 # ── Configuration ──
-SERVER="${BW_SERVER:-http://localhost:8080}"
+# Comma-separated list of servers to try in order (first reachable wins)
+SERVERS="${BW_SERVERS:-${BW_SERVER:-http://localhost:8080}}"
 PREFER_IFACE="${BW_PREFER_IFACE:-}"
 # ────────────────────
 
 export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
 
-DATA=$(curl -sf --max-time 1 -w '' "${SERVER}/api/summary" 2>/dev/null)
+# Try each server until one responds
+SERVER=""
+DATA=""
+IFS=',' read -ra SERVER_LIST <<< "$SERVERS"
+for s in "${SERVER_LIST[@]}"; do
+    s=$(echo "$s" | xargs)  # trim whitespace
+    DATA=$(curl -sf --max-time 1 -w '' "${s}/api/summary" 2>/dev/null)
+    if [ -n "$DATA" ]; then
+        SERVER="$s"
+        break
+    fi
+done
 
 if [ -z "$DATA" ]; then
     echo "⚡ --"
     echo "---"
     echo "Server unreachable | color=red"
-    echo "${SERVER} | color=#888888 size=11"
+    for s in "${SERVER_LIST[@]}"; do echo "  $(echo "$s" | xargs) | color=#888888 size=11"; done
     echo "---"
-    echo "Open Dashboard | href=${SERVER}"
+    echo "Open Dashboard | href=${SERVER_LIST[0]}"
     exit 0
 fi
 
