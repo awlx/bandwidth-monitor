@@ -335,7 +335,8 @@ jobs:
 
             IPK_FILE="$WORKSPACE/pkg-out/bandwidth-monitor_${VERSION}_${ARCH}.ipk"
             cd "$BUILD_DIR"
-            python3 "$WORKSPACE/packaging/mkipk.py" "$IPK_FILE" debian-binary control.tar.gz data.tar.gz
+            # OpenWrt ipk is a tar.gz containing debian-binary, control.tar.gz, data.tar.gz
+            tar czf "$IPK_FILE" --owner=0 --group=0 ./debian-binary ./control.tar.gz ./data.tar.gz
             file "$IPK_FILE"
           fi
 
