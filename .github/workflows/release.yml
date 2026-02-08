@@ -335,7 +335,8 @@ jobs:
 
             IPK_FILE="$WORKSPACE/pkg-out/bandwidth-monitor_${VERSION}_${ARCH}.ipk"
             cd "$BUILD_DIR"
-            ar r "$IPK_FILE" debian-binary control.tar.gz data.tar.gz
+            # Build ipk as tar.gz (opkg accepts both ar and tar.gz formats)
+            tar czf "$IPK_FILE" --owner=0 --group=0 debian-binary control.tar.gz data.tar.gz
             ls -lh "$IPK_FILE"
           fi
 
