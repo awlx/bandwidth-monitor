@@ -196,30 +196,41 @@ jobs:
           rm -f "$SDK_FILE"
           echo "SDK_DIR=$(cd $(find . -maxdepth 1 -type d -name 'openwrt-sdk-*' | head -1) && pwd)" >> $GITHUB_ENV
 
-      - name: Build libpcap from SDK
+      - name: Prepare libpcap for cross-compilation
         run: |
           TOOLCHAIN_DIR=$(find "$SDK_DIR/staging_dir" -maxdepth 1 -name 'toolchain-*' -type d | head -1)
           TOOLCHAIN_DIR=$(cd "$TOOLCHAIN_DIR" && pwd)
           TARGET_DIR=$(find "$SDK_DIR/staging_dir" -maxdepth 1 -name 'target-*' -type d | head -1)
           TARGET_DIR=$(cd "$TARGET_DIR" && pwd)
-          # If libpcap headers aren't already staged, download and extract the ipk
+
+          export PATH="$TOOLCHAIN_DIR/bin:$PATH"
+          export STAGING_DIR="$SDK_DIR/staging_dir"
+
+          # Build libpcap from source for the target
           if [ ! -f "$TARGET_DIR/usr/include/pcap.h" ]; then
-            echo "libpcap headers not found in SDK staging dir, fetching ipk..."
-            LIBPCAP_URL="${{ matrix.base_url }}/${{ matrix.sdk_url_suffix }}/packages"
-            LIBPCAP_IPK=$(curl -sf "$LIBPCAP_URL/" | grep -oP 'libpcap[^"]*\.ipk' | grep -v dev | head -1) || true
-            LIBPCAP_DEV_IPK=$(curl -sf "$LIBPCAP_URL/" | grep -oP 'libpcap-dev[^"]*\.ipk' | head -1) || true
-            if [ -n "$LIBPCAP_DEV_IPK" ]; then
-              wget -q "$LIBPCAP_URL/$LIBPCAP_DEV_IPK" -O /tmp/libpcap-dev.ipk
-              cd /tmp && ar x libpcap-dev.ipk && tar xzf data.tar.gz -C "$TARGET_DIR" 2>/dev/null || tar xf data.tar.gz -C "$TARGET_DIR" 2>/dev/null || true
-            fi
-            if [ -n "$LIBPCAP_IPK" ]; then
-              wget -q "$LIBPCAP_URL/$LIBPCAP_IPK" -O /tmp/libpcap.ipk
-              cd /tmp && ar x libpcap.ipk && tar xzf data.tar.gz -C "$TARGET_DIR" 2>/dev/null || tar xf data.tar.gz -C "$TARGET_DIR" 2>/dev/null || true
-            fi
+            echo "Building libpcap from source..."
+            PCAP_VER="1.10.5"
+            wget -q "https://www.tcpdump.org/release/libpcap-${PCAP_VER}.tar.xz"
+            tar xf "libpcap-${PCAP_VER}.tar.xz"
+            cd "libpcap-${PCAP_VER}"
+            CC=${{ matrix.cc_prefix }}-gcc \
+            AR=${{ matrix.cc_prefix }}-ar \
+            RANLIB=${{ matrix.cc_prefix }}-ranlib \
+            ./configure \
+              --host=${{ matrix.cc_prefix }} \
+              --prefix="$TARGET_DIR/usr" \
+              --with-pcap=linux \
+              --without-libnl \
+              --disable-shared \
+              --enable-static
+            make -j$(nproc)
+            make install
             cd "${{ github.workspace }}"
+            rm -rf "libpcap-${PCAP_VER}" "libpcap-${PCAP_VER}.tar.xz"
           fi
-          # Verify pcap.h is available somewhere
-          find "$SDK_DIR/staging_dir" -name 'pcap.h' -type f 2>/dev/null | head -3
+
+          echo "pcap.h location:"
+          find "$TARGET_DIR" -name 'pcap.h' -type f 2>/dev/null | head -3
           echo "TOOLCHAIN_DIR=$TOOLCHAIN_DIR" >> $GITHUB_ENV
           echo "TARGET_DIR=$TARGET_DIR" >> $GITHUB_ENV
           echo "$TOOLCHAIN_DIR/bin" >> $GITHUB_PATH
