@@ -258,20 +258,23 @@ jobs:
           VERSION="${VERSION#v}"
           ARCH="${{ matrix.arch }}"
           ARCH="${ARCH%-snapshot}"
+          WORKSPACE="${{ github.workspace }}"
 
           PKG_DIR=$(mktemp -d)
+          IPK_BUILD=$(mktemp -d)
           mkdir -p "$PKG_DIR/usr/bin"
           mkdir -p "$PKG_DIR/etc/bandwidth-monitor"
           mkdir -p "$PKG_DIR/etc/init.d"
           mkdir -p "$PKG_DIR/CONTROL"
+          mkdir -p "$WORKSPACE/ipk-out"
 
           cp "$BINARY" "$PKG_DIR/usr/bin/bandwidth-monitor"
-          cp env.example "$PKG_DIR/etc/bandwidth-monitor/env"
-          cp packaging/openwrt-files/bandwidth-monitor.init "$PKG_DIR/etc/init.d/bandwidth-monitor"
+          cp "$WORKSPACE/env.example" "$PKG_DIR/etc/bandwidth-monitor/env"
+          cp "$WORKSPACE/packaging/openwrt-files/bandwidth-monitor.init" "$PKG_DIR/etc/init.d/bandwidth-monitor"
           chmod 755 "$PKG_DIR/usr/bin/bandwidth-monitor" "$PKG_DIR/etc/init.d/bandwidth-monitor"
           chmod 600 "$PKG_DIR/etc/bandwidth-monitor/env"
 
-          cat > "$PKG_DIR/CONTROL/control" <<CTRL
+          cat > "$PKG_DIR/CONTROL/control" <<-CTRL
           Package: bandwidth-monitor
           Version: ${VERSION}
           Architecture: ${ARCH}
@@ -280,23 +283,19 @@ jobs:
           Section: net
           Description: Real-time network monitoring dashboard with embedded web UI
           CTRL
-          # Remove leading whitespace from heredoc
-          sed -i 's/^          //' "$PKG_DIR/CONTROL/control"
+          sed -i 's/^[[:space:]]*//' "$PKG_DIR/CONTROL/control"
 
-          cat > "$PKG_DIR/CONTROL/conffiles" <<CONF
-          /etc/bandwidth-monitor/env
-          CONF
-          sed -i 's/^          //' "$PKG_DIR/CONTROL/conffiles"
+          echo "/etc/bandwidth-monitor/env" > "$PKG_DIR/CONTROL/conffiles"
 
-          # Build ipk (tar-based format)
-          mkdir -p ipk-out
-          cd "$PKG_DIR"
-          tar czf ../control.tar.gz -C CONTROL .
-          tar czf ../data.tar.gz --owner=0 --group=0 -C "$PKG_DIR" usr etc
-          echo "2.0" > ../debian-binary
-          cd ..
-          ar r "ipk-out/bandwidth-monitor_${VERSION}_${ARCH}.ipk" debian-binary control.tar.gz data.tar.gz
-          ls -lh ipk-out/
+          # Build ipk (tar-based opkg format)
+          tar czf "$IPK_BUILD/control.tar.gz" -C "$PKG_DIR/CONTROL" .
+          tar czf "$IPK_BUILD/data.tar.gz" --owner=0 --group=0 -C "$PKG_DIR" usr etc
+          echo "2.0" > "$IPK_BUILD/debian-binary"
+
+          IPK_FILE="$WORKSPACE/ipk-out/bandwidth-monitor_${VERSION}_${ARCH}.ipk"
+          cd "$IPK_BUILD"
+          ar r "$IPK_FILE" debian-binary control.tar.gz data.tar.gz
+          ls -lh "$IPK_FILE"
 
       - name: Upload OpenWrt package
         uses: actions/upload-artifact@v4
