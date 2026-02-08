@@ -194,12 +194,14 @@ jobs:
           wget -q "$SDK_URL/$SDK_FILE"
           tar xf "$SDK_FILE"
           rm -f "$SDK_FILE"
-          echo "SDK_DIR=$(find . -maxdepth 1 -type d -name 'openwrt-sdk-*' | head -1)" >> $GITHUB_ENV
+          echo "SDK_DIR=$(cd $(find . -maxdepth 1 -type d -name 'openwrt-sdk-*' | head -1) && pwd)" >> $GITHUB_ENV
 
       - name: Build libpcap from SDK
         run: |
           TOOLCHAIN_DIR=$(find "$SDK_DIR/staging_dir" -maxdepth 1 -name 'toolchain-*' -type d | head -1)
+          TOOLCHAIN_DIR=$(cd "$TOOLCHAIN_DIR" && pwd)
           TARGET_DIR=$(find "$SDK_DIR/staging_dir" -maxdepth 1 -name 'target-*' -type d | head -1)
+          TARGET_DIR=$(cd "$TARGET_DIR" && pwd)
           # If libpcap headers aren't already staged, download and extract the ipk
           if [ ! -f "$TARGET_DIR/usr/include/pcap.h" ]; then
             echo "libpcap headers not found in SDK staging dir, fetching ipk..."
