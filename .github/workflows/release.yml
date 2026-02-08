@@ -193,17 +193,36 @@ jobs:
           echo "Downloading $SDK_URL/$SDK_FILE"
           wget -q "$SDK_URL/$SDK_FILE"
           tar xf "$SDK_FILE"
-          echo "SDK_DIR=$(ls -d openwrt-sdk-* | head -1)" >> $GITHUB_ENV
+          rm -f "$SDK_FILE"
+          echo "SDK_DIR=$(find . -maxdepth 1 -type d -name 'openwrt-sdk-*' | head -1)" >> $GITHUB_ENV
+
+      - name: Build libpcap from SDK
+        run: |
+          TOOLCHAIN_DIR=$(find "$SDK_DIR/staging_dir" -maxdepth 1 -name 'toolchain-*' -type d | head -1)
+          TARGET_DIR=$(find "$SDK_DIR/staging_dir" -maxdepth 1 -name 'target-*' -type d | head -1)
+          # If libpcap headers aren't already staged, download and extract the ipk
+          if [ ! -f "$TARGET_DIR/usr/include/pcap.h" ]; then
+            echo "libpcap headers not found in SDK staging dir, fetching ipk..."
+            LIBPCAP_URL="${{ matrix.base_url }}/${{ matrix.sdk_url_suffix }}/packages"
+            LIBPCAP_IPK=$(curl -sf "$LIBPCAP_URL/" | grep -oP 'libpcap[^"]*\.ipk' | grep -v dev | head -1) || true
+            LIBPCAP_DEV_IPK=$(curl -sf "$LIBPCAP_URL/" | grep -oP 'libpcap-dev[^"]*\.ipk' | head -1) || true
+            if [ -n "$LIBPCAP_DEV_IPK" ]; then
+              wget -q "$LIBPCAP_URL/$LIBPCAP_DEV_IPK" -O /tmp/libpcap-dev.ipk
+              cd /tmp && ar x libpcap-dev.ipk && tar xzf data.tar.gz -C "$TARGET_DIR" 2>/dev/null || tar xf data.tar.gz -C "$TARGET_DIR" 2>/dev/null || true
+            fi
+            if [ -n "$LIBPCAP_IPK" ]; then
+              wget -q "$LIBPCAP_URL/$LIBPCAP_IPK" -O /tmp/libpcap.ipk
+              cd /tmp && ar x libpcap.ipk && tar xzf data.tar.gz -C "$TARGET_DIR" 2>/dev/null || tar xf data.tar.gz -C "$TARGET_DIR" 2>/dev/null || true
+            fi
+            cd "${{ github.workspace }}"
+          fi
+          # Verify pcap.h is available somewhere
+          find "$SDK_DIR/staging_dir" -name 'pcap.h' -type f 2>/dev/null | head -3
+          echo "TOOLCHAIN_DIR=$TOOLCHAIN_DIR" >> $GITHUB_ENV
+          echo "TARGET_DIR=$TARGET_DIR" >> $GITHUB_ENV
 
       - name: Build binary with SDK toolchain
         run: |
-          # Find the SDK's toolchain and staging dirs
-          TOOLCHAIN_DIR=$(find "$SDK_DIR/staging_dir" -maxdepth 1 -name 'toolchain-*' | head -1)
-          TARGET_DIR=$(find "$SDK_DIR/staging_dir" -maxdepth 1 -name 'target-*' | head -1)
-          echo "Toolchain: $TOOLCHAIN_DIR"
-          echo "Target: $TARGET_DIR"
-
-          # Set up environment for CGO cross-compilation
           export PATH="$TOOLCHAIN_DIR/bin:$PATH"
           export STAGING_DIR="$SDK_DIR/staging_dir"
           export CGO_ENABLED=1
@@ -212,22 +231,11 @@ jobs:
           export GOMIPS=${{ matrix.gomips }}
           export CC=${{ matrix.cc_prefix }}-gcc
           export CXX=${{ matrix.cc_prefix }}-g++
-          export CGO_CFLAGS="-I$TARGET_DIR/usr/include -I$TOOLCHAIN_DIR/usr/include"
+          export CGO_CFLAGS="-I$TARGET_DIR/usr/include -I$TOOLCHAIN_DIR/usr/include -I$TOOLCHAIN_DIR/include"
           export CGO_LDFLAGS="-L$TARGET_DIR/usr/lib -L$TOOLCHAIN_DIR/usr/lib -L$TOOLCHAIN_DIR/lib"
 
-          # Install libpcap into the staging dir if not present
-          if [ ! -f "$TARGET_DIR/usr/include/pcap.h" ]; then
-            cd "$SDK_DIR"
-            echo "CONFIG_PACKAGE_libpcap=y" > .config
-            make defconfig
-            make package/libs/libpcap/compile V=s -j$(nproc)
-            make package/libs/libpcap/install V=s
-          fi
-
-          cd "${{ github.workspace }}"
           VERSION="${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || github.sha }}"
-          go build -ldflags="-s -w -X main.version=${VERSION} -linkmode external -extldflags '-static'" \
-            -o bandwidth-monitor .
+          go build -ldflags="-s -w -X main.version=${VERSION}" -o bandwidth-monitor .
           file bandwidth-monitor
           echo "BINARY=${{ github.workspace }}/bandwidth-monitor" >> $GITHUB_ENV
 
