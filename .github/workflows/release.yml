@@ -283,47 +283,37 @@ jobs:
           chmod 600 "$PKG_DIR/etc/bandwidth-monitor/env"
 
           if [ "$PKG_FORMAT" = "apk" ]; then
-            # Build .apk (Alpine-style, used by OpenWrt snapshot)
-            sudo apt-get install -y apk-tools 2>/dev/null || true
-
             mkdir -p "$BUILD_DIR/APKBUILD"
-            cat > "$BUILD_DIR/APKBUILD/.PKGINFO" <<-INFO
-            pkgname = bandwidth-monitor
-            pkgver = ${VERSION}-r1
-            pkgdesc = Real-time network monitoring dashboard with embedded web UI
-            url = https://github.com/awlx/bandwidth-monitor
-            size = $(stat -c%s "$BINARY")
-            arch = ${ARCH}
-            license = ISC
-            depend = libpcap
-            maintainer = Annika Wickert <awlx@users.noreply.github.com>
-            INFO
-            sed -i 's/^[[:space:]]*//' "$BUILD_DIR/APKBUILD/.PKGINFO"
+            BINSIZE=$(stat -c%s "$BINARY")
+            printf '%s\n' \
+              "pkgname = bandwidth-monitor" \
+              "pkgver = ${VERSION}-r1" \
+              "pkgdesc = Real-time network monitoring dashboard with embedded web UI" \
+              "url = https://github.com/awlx/bandwidth-monitor" \
+              "size = ${BINSIZE}" \
+              "arch = ${ARCH}" \
+              "license = ISC" \
+              "depend = libpcap" \
+              "maintainer = Annika Wickert <awlx@users.noreply.github.com>" \
+              > "$BUILD_DIR/APKBUILD/.PKGINFO"
 
-            # Create data tarball
             tar czf "$BUILD_DIR/data.tar.gz" --owner=0 --group=0 -C "$PKG_DIR" usr etc
-
-            # Create control tarball with .PKGINFO
             tar czf "$BUILD_DIR/control.tar.gz" -C "$BUILD_DIR/APKBUILD" .PKGINFO
 
-            # Combine into .apk (just a concatenation of gzipped tarballs)
             APK_FILE="$WORKSPACE/pkg-out/bandwidth-monitor-${VERSION}-r1_${ARCH}.apk"
             cat "$BUILD_DIR/control.tar.gz" "$BUILD_DIR/data.tar.gz" > "$APK_FILE"
             ls -lh "$APK_FILE"
           else
-            # Build .ipk (opkg format, used by OpenWrt stable)
             mkdir -p "$PKG_DIR/CONTROL"
-
-            cat > "$PKG_DIR/CONTROL/control" <<-CTRL
-            Package: bandwidth-monitor
-            Version: ${VERSION}
-            Architecture: ${ARCH}
-            Depends: libpcap
-            Maintainer: Annika Wickert <awlx@users.noreply.github.com>
-            Section: net
-            Description: Real-time network monitoring dashboard with embedded web UI
-            CTRL
-            sed -i 's/^[[:space:]]*//' "$PKG_DIR/CONTROL/control"
+            printf '%s\n' \
+              "Package: bandwidth-monitor" \
+              "Version: ${VERSION}" \
+              "Architecture: ${ARCH}" \
+              "Depends: libpcap" \
+              "Maintainer: Annika Wickert <awlx@users.noreply.github.com>" \
+              "Section: net" \
+              "Description: Real-time network monitoring dashboard with embedded web UI" \
+              > "$PKG_DIR/CONTROL/control"
 
             echo "/etc/bandwidth-monitor/env" > "$PKG_DIR/CONTROL/conffiles"
 
