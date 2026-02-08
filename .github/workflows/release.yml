@@ -335,21 +335,7 @@ jobs:
 
             IPK_FILE="$WORKSPACE/pkg-out/bandwidth-monitor_${VERSION}_${ARCH}.ipk"
             cd "$BUILD_DIR"
-            # Build ar archive with proper member names (no trailing /)
-            # opkg requires exact format: !<arch>\n then members without trailing /
-            python3 -c "
-import struct, os, time
-def ar_header(name, size):
-    return f'{name:<16s}0           0     0     100644  {size:<10d}\x60\n'.encode()
-with open('$IPK_FILE', 'wb') as f:
-    f.write(b'!<arch>\n')
-    for name in ['debian-binary', 'control.tar.gz', 'data.tar.gz']:
-        data = open(name, 'rb').read()
-        f.write(ar_header(name, len(data)))
-        f.write(data)
-        if len(data) % 2: f.write(b'\n')
-"
-            ls -lh "$IPK_FILE"
+            python3 "$WORKSPACE/packaging/mkipk.py" "$IPK_FILE" debian-binary control.tar.gz data.tar.gz
             file "$IPK_FILE"
           fi
 
