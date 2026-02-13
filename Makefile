@@ -12,6 +12,10 @@ GEOLITE2_ASN_URL=https://github.com/P3TERX/GeoLite.mmdb/raw/download/GeoLite2-AS
 build:
 	go build -o $(BINARY) .
 
+build_stripped:
+	# Build and strip the binary. 
+	go build -ldflags="-s -w" -o $(BINARY) .
+
 geoip:
 	@[ -f $(GEOLITE2_COUNTRY) ] || { echo "Downloading GeoLite2-Country.mmdb..."; curl -fSL -o $(GEOLITE2_COUNTRY) $(GEOLITE2_COUNTRY_URL); }
 	@[ -f $(GEOLITE2_ASN) ] || { echo "Downloading GeoLite2-ASN.mmdb..."; curl -fSL -o $(GEOLITE2_ASN) $(GEOLITE2_ASN_URL); }

@@ -72,7 +72,7 @@ Single-binary deployment with an embedded web UI, optional DNS stats (AdGuard Ho
 - **VPN routing detection** — configurable sentinel files to show whether a VPN interface is actively routing traffic
 - **Real-time line chart** — Chart.js with per-interface filtering and 1-hour sliding window
 - **Per-interface sparklines** — mini inline charts on each interface card
-- **Top talkers by bandwidth** — live transfer rates via packet capture (gopacket/libpcap)
+- **Top talkers by bandwidth** — live transfer rates via packet capture
 - **Top talkers by volume** — rolling 24-hour totals with 1-minute bucket aggregation
 - **Protocol breakdown** — TCP / UDP / ICMP / Other pie chart
 - **IP version breakdown** — IPv4 vs IPv6 traffic split
@@ -139,20 +139,9 @@ Single-binary deployment with an embedded web UI, optional DNS stats (AdGuard Ho
 ### Requirements
 
 - **Linux** — uses netlink (`RTM_GETLINK`, `RTM_GETADDR`) for interface stats and addresses
-- **libpcap-dev** — for packet capture (top talkers)
 - **nf_conntrack kernel module** — for the NAT tab (loaded automatically on most routers)
 - **Go 1.24+** — to build
 
-```bash
-# Debian/Ubuntu
-sudo apt install libpcap-dev
-
-# RHEL/Fedora
-sudo dnf install libpcap-devel
-
-# Arch
-sudo pacman -S libpcap
-```
 
 ### Build & Run
 
@@ -162,6 +151,9 @@ make build
 
 # Download GeoIP databases (optional, free)
 make geoip
+
+# Build a stripped binary - smaller binary size (optional).
+make build_stripped
 
 # Run (needs root or CAP_NET_RAW + CAP_NET_ADMIN for packet capture and netlink)
 sudo ./bandwidth-monitor
@@ -203,7 +195,7 @@ sudo systemctl enable --now bandwidth-monitor
 #### OpenWrt (stable, opkg)
 
 ```bash
-opkg update && opkg install libpcap kmod-nf-conntrack-netlink
+opkg update && opkg install kmod-nf-conntrack-netlink
 opkg install /tmp/bandwidth-monitor_*.ipk
 vi /etc/bandwidth-monitor/env
 /etc/init.d/bandwidth-monitor enable
@@ -219,7 +211,7 @@ scp GeoLite2-Country.mmdb GeoLite2-ASN.mmdb root@router:/etc/bandwidth-monitor/
 #### OpenWrt (snapshot, apk)
 
 ```bash
-apk update && apk add libpcap kmod-nf-conntrack-netlink
+apk update && apk add kmod-nf-conntrack-netlink
 apk add --allow-untrusted /tmp/bandwidth-monitor-*.apk
 vi /etc/bandwidth-monitor/env
 /etc/init.d/bandwidth-monitor enable

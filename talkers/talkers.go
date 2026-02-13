@@ -2,6 +2,7 @@ package talkers
 
 import (
 	"fmt"
+	"log"
 	"net"
 	"os"
 	"sort"
@@ -9,11 +10,10 @@ import (
 	"time"
 
 	"bandwidth-monitor/geoip"
+	"bandwidth-monitor/packets"
 	"bandwidth-monitor/resolver"
 
-	"github.com/gopacket/gopacket"
-	"github.com/gopacket/gopacket/layers"
-	"github.com/gopacket/gopacket/pcap"
+	"golang.org/x/sys/unix"
 )
 
 const (
@@ -224,13 +224,15 @@ func (t *Tracker) getDevices() ([]string, error) {
 	if t.device != "" {
 		return []string{t.device}, nil
 	}
-	devs, err := pcap.FindAllDevs()
+
+	devs, err := net.Interfaces()
 	if err != nil {
 		return nil, err
 	}
 	var names []string
 	for _, d := range devs {
-		if d.Name == "lo" || len(d.Addresses) == 0 {
+		addrs, _ := d.Addrs()
+		if d.Name == "lo" || len(addrs) == 0 {
 			continue
 		}
 		names = append(names, d.Name)
@@ -239,14 +241,14 @@ func (t *Tracker) getDevices() ([]string, error) {
 }
 
 func (t *Tracker) captureDevice(device string) {
-	handle, err := pcap.OpenLive(device, snapshotLen, t.promiscuous, capTimeout)
+	handle, err := packets.FetchPcapSock(device)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "talkers: cannot open %s: %v\n", device, err)
 		return
 	}
-	defer handle.Close()
-
-	if err := handle.SetBPFFilter("ip or ip6"); err != nil {
+	defer unix.Close(handle)
+	log.Printf("Applying BPF filter %s \n", device)
+	if err := packets.ApplyBPFFilter(handle, packets.AnyIpFilter); err != nil {
 		fmt.Fprintf(os.Stderr, "talkers: BPF filter error on %s: %v\n", device, err)
 	}
 
@@ -256,62 +258,41 @@ func (t *Tracker) captureDevice(device string) {
 			return
 		default:
 		}
-		data, _, err := handle.ReadPacketData()
+		data := make([]byte, snapshotLen)
+		numRead, _, err := unix.Recvfrom(handle, data, 0)
 		if err != nil {
-			// Timeout is expected — just loop
-			if err == pcap.NextErrorTimeoutExpired {
-				continue
-			}
 			// Real error
 			fmt.Fprintf(os.Stderr, "talkers: read error on %s: %v\n", device, err)
 			return
 		}
-		pkt := gopacket.NewPacket(data, handle.LinkType(), gopacket.DecodeOptions{
-			Lazy:   true,
-			NoCopy: true,
-		})
-		t.processPacket(pkt)
+		t.processPacket(data[:numRead])
 	}
 }
 
-func (t *Tracker) processPacket(pkt gopacket.Packet) {
-	var srcIP, dstIP net.IP
-	var pktLen uint64
-	var ipVersion string
-
-	if ipLayer := pkt.Layer(layers.LayerTypeIPv4); ipLayer != nil {
-		ip := ipLayer.(*layers.IPv4)
-		srcIP = ip.SrcIP
-		dstIP = ip.DstIP
-		pktLen = uint64(ip.Length)
-		ipVersion = "IPv4"
-	} else if ipLayer := pkt.Layer(layers.LayerTypeIPv6); ipLayer != nil {
-		ip := ipLayer.(*layers.IPv6)
-		srcIP = ip.SrcIP
-		dstIP = ip.DstIP
-		pktLen = uint64(ip.Length) + 40
+func (t *Tracker) processPacket(pkt []byte) {
+	ipVersion := "IPv4"
+	ipPacket := packets.ParseIPPacket(pkt)
+	if len(ipPacket.SrcIP) != 4 {
 		ipVersion = "IPv6"
-	} else {
-		return
 	}
-
 	var proto string
-	if pkt.Layer(layers.LayerTypeTCP) != nil {
+	switch ipPacket.Proto {
+	case unix.IPPROTO_TCP:
 		proto = "TCP"
-	} else if pkt.Layer(layers.LayerTypeUDP) != nil {
+	case unix.IPPROTO_UDP:
 		proto = "UDP"
-	} else if pkt.Layer(layers.LayerTypeICMPv4) != nil || pkt.Layer(layers.LayerTypeICMPv6) != nil {
+	case unix.IPPROTO_ICMP, unix.IPPROTO_ICMPV6:
 		proto = "ICMP"
-	} else {
+	default:
 		proto = "Other"
 	}
 
 	// Classify IPs outside the lock — avoids holding the write lock
 	// while doing net.IP method calls.
-	srcLocal := isLocalIP(srcIP) || t.isLocalNet(srcIP)
-	dstLocal := isLocalIP(dstIP) || t.isLocalNet(dstIP)
-	srcStr := srcIP.String()
-	dstStr := dstIP.String()
+	srcLocal := isLocalIP(ipPacket.SrcIP) || t.isLocalNet(ipPacket.SrcIP)
+	dstLocal := isLocalIP(ipPacket.DstIP) || t.isLocalNet(ipPacket.DstIP)
+	srcStr := ipPacket.SrcIP.String()
+	dstStr := ipPacket.DstIP.String()
 
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -330,7 +311,7 @@ func (t *Tracker) processPacket(pkt gopacket.Packet) {
 		if _, ok := t.current.hosts[entry.ip]; !ok {
 			t.current.hosts[entry.ip] = &hostAccum{}
 		}
-		t.current.hosts[entry.ip].bytes += pktLen
+		t.current.hosts[entry.ip].bytes += ipPacket.Len
 		t.current.hosts[entry.ip].packets++
 	}
 
@@ -339,18 +320,18 @@ func (t *Tracker) processPacket(pkt gopacket.Packet) {
 		if srcLocal && !dstLocal {
 			// Local → Remote = upload (TX from local perspective)
 			if h, ok := t.current.hosts[dstStr]; ok {
-				h.txBytes += pktLen
+				h.txBytes += ipPacket.Len
 			}
 		} else if !srcLocal && dstLocal {
 			// Remote → Local = download (RX from local perspective)
 			if h, ok := t.current.hosts[srcStr]; ok {
-				h.rxBytes += pktLen
+				h.rxBytes += ipPacket.Len
 			}
 		}
 	}
 
-	t.current.protoBytes[proto] += pktLen
-	t.current.ipVerBytes[ipVersion] += pktLen
+	t.current.protoBytes[proto] += ipPacket.Len
+	t.current.ipVerBytes[ipVersion] += ipPacket.Len
 }
 
 func (t *Tracker) rotateBuckets() {
