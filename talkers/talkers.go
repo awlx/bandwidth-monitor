@@ -21,6 +21,7 @@ const (
 	capTimeout  time.Duration = 100 * time.Millisecond
 	bucketSize                = 1 * time.Minute
 	maxAge                    = 24 * time.Hour
+	epollBuffer               = 128
 )
 
 type TalkerKey struct {
@@ -231,7 +232,11 @@ func (t *Tracker) getDevices() ([]string, error) {
 	}
 	var names []string
 	for _, d := range devs {
-		addrs, _ := d.Addrs()
+		addrs, err := d.Addrs()
+		if err != nil {
+			// No addrs - skip the interface.
+			continue
+		}
 		if d.Name == "lo" || len(addrs) == 0 {
 			continue
 		}
@@ -251,6 +256,13 @@ func (t *Tracker) captureDevice(device string) {
 	if err := packets.ApplyBPFFilter(handle, packets.AnyIpFilter); err != nil {
 		fmt.Fprintf(os.Stderr, "talkers: BPF filter error on %s: %v\n", device, err)
 	}
+	// Use epoll to read from the socket.
+	epfd, err := packets.CreateEpoller(handle)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "talkers: failed to setup epoller on FD %s: %v\n", device, err)
+	}
+	defer unix.Close(epfd)
+	events := make([]unix.EpollEvent, epollBuffer)
 
 	for {
 		select {
@@ -258,21 +270,30 @@ func (t *Tracker) captureDevice(device string) {
 			return
 		default:
 		}
-		data := make([]byte, snapshotLen)
-		numRead, _, err := unix.Recvfrom(handle, data, 0)
+		// Epoll for events.
+		n, err := unix.EpollWait(epfd, events, int(capTimeout.Milliseconds()))
 		if err != nil {
-			// Real error
-			fmt.Fprintf(os.Stderr, "talkers: read error on %s: %v\n", device, err)
-			return
+			continue
 		}
-		t.processPacket(data[:numRead])
+		for i := 0; i < n; i++ {
+			if int(events[i].Fd) == handle {
+				data := make([]byte, snapshotLen)
+				numRead, _, err := unix.Recvfrom(handle, data, 0)
+				if err != nil {
+					log.Printf("talkers: read error on %s: %v\n", device, err)
+					return
+				}
+				t.processPacket(data[:numRead], device)
+			}
+		}
 	}
 }
 
-func (t *Tracker) processPacket(pkt []byte) {
+func (t *Tracker) processPacket(pkt []byte, capDev string) {
 	ipVersion := "IPv4"
 	ipPacket := packets.ParseIPPacket(pkt)
-	if len(ipPacket.SrcIP) != 4 {
+	ipPacket.SrcInterface = capDev
+	if ipPacket.Version != 4 {
 		ipVersion = "IPv6"
 	}
 	var proto string
