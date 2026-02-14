@@ -2,7 +2,7 @@
 
 A real-time network monitoring dashboard for Linux, written in Go.
 
-Single-binary deployment with an embedded web UI, optional DNS stats (AdGuard Home, NextDNS, or Pi-hole), WiFi monitoring (UniFi or Omada), GeoIP enrichment, continuous latency monitoring, a macOS menu bar plugin, and a Windows system-tray widget.
+Single-binary deployment with an embedded web UI, optional DNS stats (AdGuard Home, NextDNS, or Pi-hole), WiFi monitoring (UniFi or Omada), GeoIP enrichment, continuous latency monitoring, a macOS menu bar plugin, a Windows system-tray widget, and a GNOME/Linux top-bar indicator.
 
 ## Table of Contents
 
@@ -13,6 +13,7 @@ Single-binary deployment with an embedded web UI, optional DNS stats (AdGuard Ho
 - [Configuration](#configuration)
 - [macOS Menu Bar Plugin](#macos-menu-bar-plugin)
 - [Windows System Tray Widget](#windows-system-tray-widget)
+- [GNOME/Linux Indicator](#gnomelinux-indicator)
 - [Architecture](#architecture)
 - [API Endpoints](#api-endpoints)
 - [External Services Transparency](#external-services-transparency)
@@ -132,8 +133,7 @@ Single-binary deployment with an embedded web UI, optional DNS stats (AdGuard Ho
 - **Dark/light/auto theme** — saved to localStorage
 - **Fully embedded UI** — all HTML/CSS/JS baked into the binary via `go:embed`
 - **macOS menu bar plugin** — SwiftBar/xbar script showing live stats
-- **Windows system tray widget** — PowerShell script showing live stats in the notification area
-
+- **Windows system tray widget** — PowerShell script showing live stats in the notification area- **GNOME/Linux indicator** -- Python AppIndicator showing live stats in the top bar
 ---
 
 ## Quick Start
@@ -538,6 +538,62 @@ Or manually: press `Win+R`, type `shell:startup`, and copy `bandwidth-monitor-tr
 
 ---
 
+## GNOME/Linux Indicator
+
+A Python AppIndicator is included at `gnome/bandwidth-monitor-indicator.py`. It shows live RX/TX rates in the GNOME top bar (or any panel supporting AppIndicator) and full details in the dropdown menu.
+
+Works on GNOME (with the [AppIndicator extension](https://extensions.gnome.org/extension/615/appindicator-support/)), KDE Plasma, XFCE, Budgie, Cinnamon, and MATE.
+
+**Dependencies:**
+```bash
+# Debian/Ubuntu
+sudo apt install python3-gi gir1.2-gtk-3.0 gir1.2-ayatanaappindicator3-0.1
+
+# Fedora
+sudo dnf install python3-gobject gtk3 libayatana-appindicator-gtk3
+
+# Arch
+sudo pacman -S python-gobject gtk3 libayatana-appindicator
+```
+
+On GNOME Shell 42+, install the [AppIndicator and KStatusNotifierItem Support](https://extensions.gnome.org/extension/615/appindicator-support/) extension.
+
+**Setup:**
+1. Run directly: `./gnome/bandwidth-monitor-indicator.py`
+2. Or with options: `./gnome/bandwidth-monitor-indicator.py --server http://198.51.100.1:8080`
+3. The indicator auto-detects the server from the Linux default gateway
+
+**Configuration via CLI flags or environment variables:**
+
+| Flag | Env Variable | Default | Description |
+|------|-------------|---------|-------------|
+| `--server` | `BW_SERVER` | *(auto-detect from default gateway)* | Base URL of the bandwidth-monitor server |
+| `--port` | `BW_PORT` | `8080` | Port used when auto-detecting from the gateway |
+| `--prefer-iface` | `BW_PREFER_IFACE` | *(auto)* | Preferred interface name for the panel label |
+| `--refresh` | -- | `5` | Polling interval in seconds |
+| `--show-external-ip` | `BW_SHOW_EXTERNAL_IP` | `true` | Show public IPs via [`anycast-v4.ffmuc.net`](https://anycast-v4.ffmuc.net) / [`anycast-v6.ffmuc.net`](https://anycast-v6.ffmuc.net) |
+
+**Auto-start on login:**
+```bash
+# Copy the indicator to a system-wide location
+sudo mkdir -p /usr/local/share/bandwidth-monitor
+sudo cp gnome/bandwidth-monitor-indicator.py /usr/local/share/bandwidth-monitor/
+sudo chmod +x /usr/local/share/bandwidth-monitor/bandwidth-monitor-indicator.py
+
+# Install the .desktop file for autostart
+cp gnome/bandwidth-monitor-indicator.desktop ~/.config/autostart/
+```
+Or for the current user only, symlink the script and edit the `Exec=` path in the `.desktop` file.
+
+**Features:**
+- **Panel label** shows live compact down/up rates with arrows (e.g. `\u21935M \u219112M`)
+- **Dropdown menu** shows all interfaces, external IPs, DNS stats, WiFi clients, NAT info
+- **Click "Open Dashboard"** to launch the web UI in the default browser
+- Shows `[VPN]` in the panel label when VPN routing is active
+- Uses standard `network-transmit-receive` icon from the system theme
+
+---
+
 ## Architecture
 
 ```
@@ -564,6 +620,7 @@ static/
   style.css               → full stylesheet (dark/light themes)
 swiftbar/                 → macOS menu bar plugin
 windows/                  → Windows system tray widget
+gnome/                    → GNOME/Linux top-bar indicator
 packaging/
   openwrt-Makefile        → OpenWrt package definition
   openwrt-files/
@@ -611,6 +668,7 @@ Every hardcoded external service that bandwidth-monitor or its components contac
 | **FFMUC Speed Test** | [`speed.ffmuc.net`](https://speed.ffmuc.net) | Speed Test tab | User clicks "Start Test" | HTTP GET `/downloading`, POST `/upload` (random payload) | Download payload, upload ack |
 | **FFMUC IP Check** | [`ip.ffmuc.net`](https://ip.ffmuc.net) | SwiftBar plugin | Every ~5 min (cached), **on by default** (`BW_SHOW_EXTERNAL_IP=false` to disable) | HTTPS GET (IPv4 + IPv6) | Router's public IPv4 and IPv6 address |
 | **FFMUC IP Check** | [`anycast-v4.ffmuc.net`](https://anycast-v4.ffmuc.net), [`anycast-v6.ffmuc.net`](https://anycast-v6.ffmuc.net) | Windows tray widget | Every ~5 min (cached), **on by default** (`BW_SHOW_EXTERNAL_IP=false` to disable) | HTTPS GET (one per address family) | Router's public IPv4 and IPv6 address |
+| **FFMUC IP Check** | [`anycast-v4.ffmuc.net`](https://anycast-v4.ffmuc.net), [`anycast-v6.ffmuc.net`](https://anycast-v6.ffmuc.net) | GNOME indicator | Every ~5 min (cached), **on by default** (`--show-external-ip false` to disable) | HTTPS GET (one per address family) | Router's public IPv4 and IPv6 address |
 | **FFMUC Anycast01** | `5.1.66.255`, `2001:678:e68:f000::` | DNS Check | User clicks "Query" | DNS query for user-entered domain | DNS records |
 | **FFMUC Anycast02** | `185.150.99.255`, `2001:678:ed0:f000::` | DNS Check | User clicks "Query" | DNS query for user-entered domain | DNS records |
 | **Cloudflare DNS** | `1.1.1.1`, `2606:4700:4700::1111` | DNS Check | User clicks "Query" | DNS query for user-entered domain | DNS records |

@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Bandwidth Monitor Indicator
+Comment=Live network stats in the GNOME top bar
+Exec=python3 /usr/local/share/bandwidth-monitor/bandwidth-monitor-indicator.py
+Icon=network-transmit-receive
+Terminal=false
+Categories=Network;Monitor;
+StartupNotify=false
+X-GNOME-Autostart-enabled=true
