@@ -169,6 +169,36 @@
         _historyRefreshInterval = setInterval(_fetchInterfaceHistory, 60000);
     };
 
+    // Seed the Live Traffic chart's rolling buffer from server-stored history so
+    // a tab reload, disconnect, or hibernate doesn't blank it out — the backend
+    // keeps a 24h 1-sample/sec ring per interface. We take only the chart's
+    // window (last MAX_PTS seconds) and rebuild BM.chartData; live SSE ticks then
+    // continue appending from where history left off. Called on every (re)connect.
+    BM._backfillLiveTraffic = function() {
+        return fetch('/api/interfaces/history').then(function(r) { return r.json(); }).then(function(data) {
+            if (!data) return;
+            var cutoff = Date.now() - BM.MAX_PTS * 1000;
+            var names = Object.keys(data);
+            for (var ni = 0; ni < names.length; ni++) {
+                var name = names[ni];
+                var pts = data[name];
+                if (!pts || !pts.length) continue;
+                BM.knownIfaces.add(name);
+                var rx = [], tx = [];
+                for (var pi = 0; pi < pts.length; pi++) {
+                    if (pts[pi].t < cutoff) continue;
+                    var t = new Date(pts[pi].t);
+                    rx.push({ x: t, y: pts[pi].rx || 0 });
+                    tx.push({ x: t, y: -(pts[pi].tx || 0) });
+                }
+                if (rx.length > BM.MAX_PTS) { rx = rx.slice(-BM.MAX_PTS); tx = tx.slice(-BM.MAX_PTS); }
+                BM.chartData[name] = { rx: rx, tx: tx };
+            }
+            if (BM.renderIfaceTabs) BM.renderIfaceTabs();
+            if (BM.updateChart) BM.updateChart();
+        }).catch(function(e) { console.error('live backfill:', e); });
+    };
+
     // ── Doughnut chart instances ──
     function makeDoughnut(id) {
         return new Chart(document.getElementById(id).getContext('2d'), {
