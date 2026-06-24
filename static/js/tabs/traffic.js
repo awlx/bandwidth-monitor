@@ -127,30 +127,63 @@
 
     BM._historyLoaded = false;
     var _historyRefreshInterval = null;
+    var _historyData = {};            // latest /api/interfaces/history payload
+    var selectedHistoryIface = null;  // null = All (mirrors the Live chart's selectedIface)
+
+    // Build the 24h chart datasets from _historyData, honouring the interface
+    // toggle. Mirrors BM.updateChart for the Live chart: a single selected
+    // interface is drawn alone (and recolours to the first palette slot), while
+    // the per-series RX/TX legend toggles keep working on top.
+    function _renderHistoryChart() {
+        var names = Object.keys(_historyData).sort();
+        if (selectedHistoryIface && names.indexOf(selectedHistoryIface) === -1) selectedHistoryIface = null;
+        var list = selectedHistoryIface ? [selectedHistoryIface] : names;
+        var ds = [], ci = 0;
+        for (var ni = 0; ni < list.length; ni++) {
+            var name = list[ni];
+            var pts = _historyData[name];
+            if (!pts || !pts.length) continue;
+            var c = chartColors[ci % chartColors.length];
+            var rxData = [], txData = [];
+            for (var pi = 0; pi < pts.length; pi++) {
+                var t = new Date(pts[pi].t);
+                rxData.push({ x: t, y: pts[pi].rx || 0 });
+                txData.push({ x: t, y: -(pts[pi].tx || 0) });
+            }
+            ds.push({ label: name + ' RX', data: rxData, borderColor: c.rx, backgroundColor: 'transparent', fill: false, tension: 0.3, cubicInterpolationMode: 'monotone', pointRadius: 0, borderWidth: 1.5 });
+            ds.push({ label: name + ' TX', data: txData, borderColor: c.tx, backgroundColor: 'transparent', fill: false, tension: 0.3, cubicInterpolationMode: 'monotone', pointRadius: 0, borderWidth: 1.5 });
+            ci++;
+        }
+        historyChart.data.datasets = ds;
+        historyChart.update('none');
+    }
+
+    // Interface toggle row for the 24h chart, mirroring BM.renderIfaceTabs.
+    function _renderHistoryIfaceTabs() {
+        var el = document.getElementById('historyIfaceTabs');
+        if (!el) return;
+        var names = Object.keys(_historyData).sort();
+        var h = '<div class="iface-tab' + (selectedHistoryIface === null ? ' active' : '') + '" onclick="window._shi(null)">All</div>';
+        for (var i = 0; i < names.length; i++) {
+            var n = names[i];
+            h += '<div class="iface-tab' + (selectedHistoryIface === n ? ' active' : '') + '" onclick="window._shi(\'' + n + '\')">' + n + '</div>';
+        }
+        el.innerHTML = h;
+    }
+
+    window._shi = function(n) { selectedHistoryIface = n; _renderHistoryIfaceTabs(); _renderHistoryChart(); };
 
     function _fetchInterfaceHistory() {
         fetch('/api/interfaces/history').then(function(r) { return r.json(); }).then(function(data) {
-            var ds = [], ci = 0;
-            var names = Object.keys(data).sort();
-            var earliestTs = Infinity;
-            for (var ni = 0; ni < names.length; ni++) {
-                var name = names[ni];
-                var pts = data[name];
-                if (!pts || !pts.length) continue;
-                if (pts[0].t < earliestTs) earliestTs = pts[0].t;
-                var c = chartColors[ci % chartColors.length];
-                var rxData = [], txData = [];
-                for (var pi = 0; pi < pts.length; pi++) {
-                    var t = new Date(pts[pi].t);
-                    rxData.push({ x: t, y: pts[pi].rx || 0 });
-                    txData.push({ x: t, y: -(pts[pi].tx || 0) });
-                }
-                ds.push({ label: name + ' RX', data: rxData, borderColor: c.rx, backgroundColor: 'transparent', fill: false, tension: 0.3, cubicInterpolationMode: 'monotone', pointRadius: 0, borderWidth: 1.5 });
-                ds.push({ label: name + ' TX', data: txData, borderColor: c.tx, backgroundColor: 'transparent', fill: false, tension: 0.3, cubicInterpolationMode: 'monotone', pointRadius: 0, borderWidth: 1.5 });
-                ci++;
+            _historyData = data || {};
+            _renderHistoryIfaceTabs();
+            _renderHistoryChart();
+            // Subtitle reflects overall collection age, independent of the toggle.
+            var earliestTs = Infinity, names = Object.keys(_historyData);
+            for (var i = 0; i < names.length; i++) {
+                var pts = _historyData[names[i]];
+                if (pts && pts.length && pts[0].t < earliestTs) earliestTs = pts[0].t;
             }
-            historyChart.data.datasets = ds;
-            historyChart.update('none');
             var subEl = document.querySelector('#historyChart').closest('.card').querySelector('.card-subtitle');
             if (subEl && earliestTs < Infinity) {
                 var ageMs = Date.now() - earliestTs;
@@ -231,7 +264,7 @@
 
     var selectedIface = null;
     var _yAxisMax = 0;
-    var _yAxisDecay = 0.995;
+    var _yAxisSig = '';  // signature of the visible series; changes on interface toggle
 
     BM.updateChart = function() {
         var ds = [], ci = 0;
@@ -244,18 +277,39 @@
             ci++;
         }
         trafficChart.data.datasets = ds;
-        var currentMax = 0;
+        // Scale the y-axis to a robust (99th-percentile) max of the *currently
+        // visible* series across the whole window. A percentile rather than the
+        // absolute max keeps a single transient spike from blowing the scale up
+        // (the rare spike clips at the top instead). Hard min/max — not
+        // suggestedMax — makes that clamp hold, and recomputing from the visible
+        // series each tick drops the axis immediately when an interface is
+        // toggled off.
+        var vals = [];
         for (var di = 0; di < ds.length; di++) {
             var pts = ds[di].data;
-            for (var pi = Math.max(0, pts.length - 120); pi < pts.length; pi++) {
+            for (var pi = 0; pi < pts.length; pi++) {
                 var av = Math.abs(pts[pi].y);
-                if (av > currentMax) currentMax = av;
+                if (av > 0) vals.push(av);
             }
         }
-        _yAxisMax = Math.max(currentMax * 1.15, _yAxisMax * _yAxisDecay);
+        var target = 0;
+        if (vals.length) {
+            vals.sort(function(a, b) { return a - b; });
+            target = vals[Math.floor((vals.length - 1) * 0.99)] * 1.15;
+        }
+        var sig = selectedIface === null ? '__all__' : selectedIface;
+        if (sig !== _yAxisSig || target >= _yAxisMax) {
+            _yAxisMax = target;                              // toggle or genuine rise → snap
+        } else {
+            _yAxisMax = Math.max(target, _yAxisMax * 0.9);   // ease down smoothly, no flicker
+        }
+        _yAxisSig = sig;
         if (_yAxisMax > 0) {
-            trafficChart.options.scales.y.suggestedMax = _yAxisMax;
-            trafficChart.options.scales.y.suggestedMin = -_yAxisMax;
+            trafficChart.options.scales.y.max = _yAxisMax;
+            trafficChart.options.scales.y.min = -_yAxisMax;
+        } else {
+            trafficChart.options.scales.y.max = undefined;
+            trafficChart.options.scales.y.min = undefined;
         }
         trafficChart.update('none');
     };
