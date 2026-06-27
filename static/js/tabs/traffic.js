@@ -265,6 +265,7 @@
     var selectedIface = null;
     var _yAxisMax = 0;
     var _yAxisSig = '';  // signature of the visible series; changes on interface toggle
+    var _yAxisTick = 0;  // throttles the percentile recompute (see updateChart)
 
     BM.updateChart = function() {
         var ds = [], ci = 0;
@@ -278,32 +279,36 @@
         }
         trafficChart.data.datasets = ds;
         // Scale the y-axis to a robust (99th-percentile) max of the *currently
-        // visible* series across the whole window. A percentile rather than the
-        // absolute max keeps a single transient spike from blowing the scale up
-        // (the rare spike clips at the top instead). Hard min/max — not
-        // suggestedMax — makes that clamp hold, and recomputing from the visible
-        // series each tick drops the axis immediately when an interface is
-        // toggled off.
-        var vals = [];
-        for (var di = 0; di < ds.length; di++) {
-            var pts = ds[di].data;
-            for (var pi = 0; pi < pts.length; pi++) {
-                var av = Math.abs(pts[pi].y);
-                if (av > 0) vals.push(av);
-            }
-        }
-        var target = 0;
-        if (vals.length) {
-            vals.sort(function(a, b) { return a - b; });
-            target = vals[Math.floor((vals.length - 1) * 0.99)] * 1.15;
-        }
+        // visible* series across the whole window, so a single transient spike
+        // clips at the top instead of blowing the scale up. Hard min/max — not
+        // suggestedMax — makes that clamp hold. Sorting the whole window is too
+        // costly to run every frame, so recompute at most every 10th tick — but
+        // always immediately on an interface toggle, so the axis still drops
+        // right away when a series is hidden.
         var sig = selectedIface === null ? '__all__' : selectedIface;
-        if (sig !== _yAxisSig || target >= _yAxisMax) {
-            _yAxisMax = target;                              // toggle or genuine rise → snap
-        } else {
-            _yAxisMax = Math.max(target, _yAxisMax * 0.9);   // ease down smoothly, no flicker
+        var recompute = (sig !== _yAxisSig) || (_yAxisTick % 10 === 0);
+        _yAxisTick++;
+        if (recompute) {
+            var vals = [];
+            for (var di = 0; di < ds.length; di++) {
+                var pts = ds[di].data;
+                for (var pi = 0; pi < pts.length; pi++) {
+                    var av = Math.abs(pts[pi].y);
+                    if (av > 0) vals.push(av);
+                }
+            }
+            var target = 0;
+            if (vals.length) {
+                vals.sort(function(a, b) { return a - b; });
+                target = vals[Math.floor((vals.length - 1) * 0.99)] * 1.15;
+            }
+            if (sig !== _yAxisSig || target >= _yAxisMax) {
+                _yAxisMax = target;                              // toggle or genuine rise → snap
+            } else {
+                _yAxisMax = Math.max(target, _yAxisMax * 0.9);   // ease down smoothly, no flicker
+            }
+            _yAxisSig = sig;
         }
-        _yAxisSig = sig;
         if (_yAxisMax > 0) {
             trafficChart.options.scales.y.max = _yAxisMax;
             trafficChart.options.scales.y.min = -_yAxisMax;
