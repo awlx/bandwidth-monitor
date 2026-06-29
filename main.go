@@ -50,8 +50,20 @@ func env(key, fallback string) string {
 
 func main() {
 	listenAddr := env("LISTEN", ":8080")
+	listenProto := strings.ToLower(strings.TrimSpace(env("LISTEN_PROTOCOL", "http")))
+	tlsCertFile := env("TLS_CERT_FILE", "")
+	tlsKeyFile := env("TLS_KEY_FILE", "")
 	promiscuous := env("PROMISCUOUS", "true")
 	promiscuousBool, _ := strconv.ParseBool(promiscuous)
+
+	if listenProto != "http" && listenProto != "https" {
+		log.Fatalf("LISTEN_PROTOCOL: invalid value %q (expected http or https)", listenProto)
+	}
+	if listenProto == "https" {
+		if tlsCertFile == "" || tlsKeyFile == "" {
+			log.Fatal("LISTEN_PROTOCOL=https requires TLS_CERT_FILE and TLS_KEY_FILE")
+		}
+	}
 
 	// Parse LOCAL_NETS: comma-separated CIDRs for SPAN port direction detection
 	// e.g. LOCAL_NETS=192.0.2.0/24,2001:db8::/48
@@ -323,11 +335,14 @@ func main() {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
-	log.Printf("server: bandwidth-monitor %s starting on %s", version.String(), listenAddr)
+	log.Printf("server: bandwidth-monitor %s starting on %s (%s)", version.String(), listenAddr, strings.ToUpper(listenProto))
 	if strings.HasPrefix(listenAddr, ":") {
-		log.Printf("server: open http://localhost%s in your browser", listenAddr)
+		log.Printf("server: open %s://localhost%s in your browser", listenProto, listenAddr)
 	} else {
-		log.Printf("server: open http://%s in your browser", listenAddr)
+		log.Printf("server: open %s://%s in your browser", listenProto, listenAddr)
+	}
+	if listenProto == "https" {
+		log.Printf("server: TLS enabled cert=%s key=%s", tlsCertFile, tlsKeyFile)
 	}
 	srv := &http.Server{
 		Addr:              listenAddr,
@@ -346,8 +361,14 @@ func main() {
 		srv.Shutdown(ctx)
 	}()
 
-	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		log.Fatalf("Server failed: %v", err)
+	serveErr := error(nil)
+	if listenProto == "https" {
+		serveErr = srv.ListenAndServeTLS(tlsCertFile, tlsKeyFile)
+	} else {
+		serveErr = srv.ListenAndServe()
+	}
+	if serveErr != nil && serveErr != http.ErrServerClosed {
+		log.Fatalf("Server failed: %v", serveErr)
 	}
 
 	// Clean up all subsystems — defers (e.g. geoDB.Close) will also run.

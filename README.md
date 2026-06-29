@@ -10,6 +10,7 @@ Single-binary deployment with an embedded web UI, optional DNS stats (AdGuard Ho
 - [Features](#features)
 - [Quick Start](#quick-start)
 - [Installation](#installation)
+  - [Service Management](#service-management)
 - [Configuration](#configuration)
 - [macOS Menu Bar Plugin](#macos-menu-bar-plugin)
 - [Windows System Tray Widget](#windows-system-tray-widget)
@@ -322,24 +323,39 @@ The included `bandwidth-monitor.service` runs the binary with:
 
 ## Configuration
 
-All configuration is via environment variables. Copy the example file and edit:
-
-```bash
 cp env.example /opt/bandwidth-monitor/.env
-chmod 0600 /opt/bandwidth-monitor/.env
-```
+
 
 ### Environment Variables
 
-#### Core
-
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `LISTEN` | `:8080` | HTTP listen address (e.g. `198.51.100.1:8080`) |
+| `LISTEN` | `:8080` | Web listen address (e.g. `198.51.100.1:8080`) |
+| `LISTEN_PROTOCOL` | `http` | Web server protocol: `http` or `https` |
+| `TLS_CERT_FILE` | *(empty)* | TLS certificate path (required when `LISTEN_PROTOCOL=https`) |
+| `TLS_KEY_FILE` | *(empty)* | TLS private key path (required when `LISTEN_PROTOCOL=https`) |
 | `PROMISCUOUS` | `true` | Enable promiscuous mode for packet capture (`true`/`false`) |
 | `INTERFACES` | *(all)* | Comma-separated list of interfaces to monitor and display (e.g. `eth0,ppp0,wg0`). Controls both the web UI and packet capture. If not set, all interfaces are used. |
 | `GEO_CITY` | `GeoLite2-City.mmdb` | Path to GeoLite2 City MMDB (includes country, city, coordinates for map). ~57 MB. For devices with limited flash (e.g. OpenWrt routers), use `GeoLite2-Country.mmdb` (~6 MB) instead — set `GEO_CITY=GeoLite2-Country.mmdb`. Country data still works, just without city-level map precision. |
 | `GEO_ASN` | `GeoLite2-ASN.mmdb` | Path to GeoLite2 ASN MMDB (~11 MB) |
+
+#### HTTPS/TLS Configuration
+
+By default, the server runs on HTTP. To enable HTTPS:
+Both certificate and key must be in PEM format (`.crt`, `.pem`, etc. all work as long as the content is valid PEM-encoded data).
+
+**Example HTTPS setup:**
+```bash
+export LISTEN=:8443
+export LISTEN_PROTOCOL=https
+export TLS_CERT_FILE=/etc/bandwidth-monitor/server.crt
+export TLS_KEY_FILE=/etc/bandwidth-monitor/server.key
+./bandwidth-monitor
+```
+
+The server will start with TLS and log: `server: TLS enabled cert=... key=...`
+
+If `LISTEN_PROTOCOL=https` but cert/key paths are missing or invalid, the server will fail at startup with a clear error message.
 
 #### DNS (mutually exclusive — first configured wins)
 
@@ -601,7 +617,6 @@ Or for the current user only, symlink the script and edit the `Exec=` path in th
 
 ## Architecture
 
-```
 main.go                   → entry point, env config, wires all components
 collector/                → netlink-based interface stats (RTM_GETLINK/RTM_GETADDR), rates, 24h history, VPN routing
 conntrack/                → netlink-based conntrack (NAT) table reader via ti-mo/conntrack
@@ -639,7 +654,7 @@ env.example               → example environment configuration
 bandwidth-monitor.service → systemd unit file
 flake.nix                 → Nix flake with package + NixOS module
 Makefile                  → build, install, GeoIP download targets
-```
+
 
 ---
 

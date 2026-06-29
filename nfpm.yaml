@@ -25,6 +25,11 @@ contents:
     file_info:
       mode: 0644
 
+  - src: ./bandwidth-monitor.openrc
+    dst: /etc/init.d/bandwidth-monitor
+    file_info:
+      mode: 0755
+
 scripts:
   postinstall: ./packaging/postinstall.sh
   preremove: ./packaging/preremove.sh

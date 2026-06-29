@@ -4,6 +4,7 @@ package-lock.json
 scripts/
 package.json
 .DS_Store
+myenv.example
 
 # Build artifacts
 bandwidth-monitor
@@ -18,4 +19,5 @@ bandwidth-monitor
 
 # GeoIP databases
 *.mmdb
+*.pem
 

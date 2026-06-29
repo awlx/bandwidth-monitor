@@ -1,0 +1,96 @@
+#!/sbin/openrc-run
+# OpenRC service script for Bandwidth Monitor
+# Copy to /etc/init.d/bandwidth-monitor and chmod +x
+# Then: rc-service bandwidth-monitor start
+# Enable at boot: rc-update add bandwidth-monitor
+
+description="Bandwidth Monitor - network traffic monitoring"
+command="/opt/bandwidth-monitor/bandwidth-monitor"
+command_background=true
+pidfile="/run/bandwidth-monitor.pid"
+respawn_delay=5
+respawn_max=0
+
+# Environment file
+: ${BANDWIDTH_MONITOR_CONFIG:=/opt/bandwidth-monitor/.env}
+
+# Capabilities for packet capture and netfilter access
+capabilities="cap_net_raw,cap_net_admin=ep"
+
+depend() {
+	need net
+	after network-online
+}
+
+start_pre() {
+	# Load environment variables from config file
+	if [ -f "$BANDWIDTH_MONITOR_CONFIG" ]; then
+		einfo "Loading configuration from $BANDWIDTH_MONITOR_CONFIG"
+		set -a
+		. "$BANDWIDTH_MONITOR_CONFIG"
+		set +a
+	else
+		ewarn "Configuration file $BANDWIDTH_MONITOR_CONFIG not found"
+	fi
+
+	# Verify working directory exists
+	if [ ! -d /opt/bandwidth-monitor ]; then
+		eerror "Working directory /opt/bandwidth-monitor does not exist"
+		return 1
+	fi
+}
+
+start() {
+	ebegin "Starting $description"
+
+	# Set capabilities for packet capture without full root
+	if command -v setcap >/dev/null 2>&1; then
+		setcap "$capabilities" "$command" 2>/dev/null || \
+			ewarn "Could not set capabilities; will run as root"
+	fi
+
+	cd /opt/bandwidth-monitor
+
+	# Prefer OpenRC supervision when available.
+	if command -v supervise-daemon >/dev/null 2>&1; then
+		supervise-daemon "$RC_SVCNAME" --start \
+			--pidfile "$pidfile" \
+			--respawn-delay "$respawn_delay" \
+			--respawn-max "$respawn_max" \
+			--chdir /opt/bandwidth-monitor \
+			-- "$command"
+		eend $?
+		return
+	fi
+
+	# Fallback for minimal OpenRC installs.
+	start-stop-daemon --start \
+		--background \
+		--make-pidfile \
+		--pidfile "$pidfile" \
+		--exec "$command"
+	eend $?
+}
+
+stop() {
+	ebegin "Stopping $description"
+	if command -v supervise-daemon >/dev/null 2>&1; then
+		supervise-daemon "$RC_SVCNAME" --stop --pidfile "$pidfile"
+		eend $?
+		return
+	fi
+	start-stop-daemon --stop --pidfile="$pidfile"
+	eend $?
+}
+
+status() {
+	einfo "Checking $description status"
+	if [ -f "$pidfile" ]; then
+		if kill -0 $(cat "$pidfile") 2>/dev/null; then
+			einfo "$description is running (PID: $(cat $pidfile))"
+			return 0
+		fi
+	fi
+	ewarn "$description is not running"
+	return 1
+}

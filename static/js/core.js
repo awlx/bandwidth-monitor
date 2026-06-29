@@ -43,7 +43,45 @@
 
     var _stHistoryLoaded = false;
 
+    // ── Tab Capability Tracking ──
+    // Track which optional tabs are available based on configured integrations
+    BM._capabilities = {
+        dns: false,   // AdGuard Home, NextDNS, or Pi-hole
+        wifi: false   // UniFi or Omada
+    };
+
+    function _updateTabVisibility() {
+        // Hide/show DNS tab
+        var dnsButton = document.querySelector('.main-nav-tab[data-tab="dns"]');
+        var dnsPanel = document.getElementById('tabDns');
+        if (dnsButton) dnsButton.style.display = BM._capabilities.dns ? '' : 'none';
+        if (dnsPanel) dnsPanel.style.display = BM._capabilities.dns ? '' : 'none';
+
+        // Hide/show WiFi tab
+        var wifiButton = document.querySelector('.main-nav-tab[data-tab="wifi"]');
+        var wifiPanel = document.getElementById('tabWifi');
+        if (wifiButton) wifiButton.style.display = BM._capabilities.wifi ? '' : 'none';
+        if (wifiPanel) wifiPanel.style.display = BM._capabilities.wifi ? '' : 'none';
+
+        // If current tab is now unavailable, fallback to traffic
+        if ((BM._activeTab === 'dns' && !BM._capabilities.dns) ||
+            (BM._activeTab === 'wifi' && !BM._capabilities.wifi)) {
+            window._switchTab('traffic');
+        }
+    }
+
+    function _isTabAvailable(tab) {
+        if (tab === 'dns') return BM._capabilities.dns;
+        if (tab === 'wifi') return BM._capabilities.wifi;
+        return true; // All other tabs are always available
+    }
+
     window._switchTab = function(tab) {
+        // Guard: if tab is unavailable, fallback to traffic
+        if (!_isTabAvailable(tab)) {
+            tab = 'traffic';
+        }
+
         BM._activeTab = tab;
         var panels = { traffic: 'tabTraffic', nat: 'tabNat', dns: 'tabDns', wifi: 'tabWifi', network: 'tabNetwork', monitor: 'tabMonitor', speedtest: 'tabSpeedtest', debug: 'tabDebug' };
         for (var k in panels) {
@@ -105,16 +143,19 @@
     (function() {
         var hash = location.hash.replace('#', '');
         var validTabs = ['traffic', 'nat', 'dns', 'wifi', 'network', 'monitor', 'speedtest', 'debug'];
-        if (hash && validTabs.indexOf(hash) !== -1) {
+        if (hash && validTabs.indexOf(hash) !== -1 && _isTabAvailable(hash)) {
             setTimeout(function() { window._switchTab(hash); }, 0);
         }
         window.addEventListener('hashchange', function() {
             var h = location.hash.replace('#', '');
-            if (h && validTabs.indexOf(h) !== -1 && h !== BM._activeTab) {
+            if (h && validTabs.indexOf(h) !== -1 && h !== BM._activeTab && _isTabAvailable(h)) {
                 window._switchTab(h);
             }
         });
     })();
+
+    // Initialize tab visibility (DNS/WiFi start hidden until capabilities are confirmed)
+    _updateTabVisibility();
 
     // ── SSE connection ──
     var sse = null;
@@ -154,6 +195,17 @@
 
     function process(d) {
         BM._lastPayload = d;
+
+        // Update tab capabilities based on payload key presence
+        var hasUpdated = false;
+        var newDnsCapability = 'dns' in d;
+        var newWifiCapability = 'wifi' in d;
+        if (newDnsCapability !== BM._capabilities.dns || newWifiCapability !== BM._capabilities.wifi) {
+            BM._capabilities.dns = newDnsCapability;
+            BM._capabilities.wifi = newWifiCapability;
+            hasUpdated = true;
+        }
+
         var ifaces = d.interfaces || [];
         var rx = 0, tx = 0;
         for (var f of ifaces) { rx += f.rx_rate || 0; tx += f.tx_rate || 0; BM.knownIfaces.add(f.name); }
@@ -206,6 +258,11 @@
         if (BM.drawAllSparklines) BM.drawAllSparklines();
         if (BM.renderIfaceTabs) BM.renderIfaceTabs();
         if (BM.updateChart) BM.updateChart();
+
+        // Update tab visibility if capabilities changed
+        if (hasUpdated) {
+            _updateTabVisibility();
+        }
 
         _renderTab(BM._activeTab, d);
     }
