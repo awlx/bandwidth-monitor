@@ -386,18 +386,25 @@
             tipEl.style.cssText = 'position:fixed;pointer-events:none;background:var(--card);color:var(--text-0);border:1px solid var(--border);padding:6px 10px;border-radius:6px;font-size:12px;font-family:Inter,sans-serif;z-index:9999;display:none;white-space:nowrap;box-shadow:0 4px 12px rgba(0,0,0,0.15)';
             document.body.appendChild(tipEl);
         }
-        svg.addEventListener('mousemove', function(e) {
-            var el = e.target.closest('.net-link-hover');
-            if (el) {
-                tipEl.textContent = el.getAttribute('data-tip');
-                tipEl.style.display = '';
-                tipEl.style.left = (e.clientX + 12) + 'px';
-                tipEl.style.top = (e.clientY - 8) + 'px';
-            } else {
-                tipEl.style.display = 'none';
-            }
-        });
-        svg.addEventListener('mouseleave', function() { tipEl.style.display = 'none'; });
+        // Bind hover listeners once: the SVG element persists across re-renders
+        // (only its innerHTML is replaced), so re-adding them every render — which
+        // runs on every SSE tick — leaked a handler per tick. Delegation via
+        // closest() keeps working after the innerHTML swaps.
+        if (!svg._tipBound) {
+            svg._tipBound = true;
+            svg.addEventListener('mousemove', function(e) {
+                var el = e.target.closest('.net-link-hover');
+                if (el) {
+                    tipEl.textContent = el.getAttribute('data-tip');
+                    tipEl.style.display = '';
+                    tipEl.style.left = (e.clientX + 12) + 'px';
+                    tipEl.style.top = (e.clientY - 8) + 'px';
+                } else {
+                    tipEl.style.display = 'none';
+                }
+            });
+            svg.addEventListener('mouseleave', function() { tipEl.style.display = 'none'; });
+        }
     }
 
     function computeTreeLayout(rootId, childrenMap, nodeById, positions, W, totalNodes) {

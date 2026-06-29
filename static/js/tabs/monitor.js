@@ -181,20 +181,26 @@
             tipEl.style.cssText = 'position:fixed;pointer-events:none;background:var(--card);color:var(--text-0);border:1px solid var(--border);padding:6px 10px;border-radius:6px;font-size:12px;font-family:Inter,sans-serif;z-index:9999;display:none;white-space:nowrap;box-shadow:0 4px 12px rgba(0,0,0,0.15)';
             document.body.appendChild(tipEl);
         }
-        container.addEventListener('mousemove', function(e) {
-            var el = e.target.closest('.map-tip');
-            if (el) {
-                tipEl.textContent = el.getAttribute('data-tip');
-                tipEl.style.display = '';
-                tipEl.style.left = (e.clientX + 12) + 'px';
-                tipEl.style.top = (e.clientY - 28) + 'px';
-            } else {
+        // Bind hover listeners once: the container persists across re-renders
+        // (only its innerHTML is replaced), so re-adding them every render leaked
+        // a handler per render. Delegation via closest() keeps working after swaps.
+        if (!container._tipBound) {
+            container._tipBound = true;
+            container.addEventListener('mousemove', function(e) {
+                var el = e.target.closest('.map-tip');
+                if (el) {
+                    tipEl.textContent = el.getAttribute('data-tip');
+                    tipEl.style.display = '';
+                    tipEl.style.left = (e.clientX + 12) + 'px';
+                    tipEl.style.top = (e.clientY - 28) + 'px';
+                } else {
+                    tipEl.style.display = 'none';
+                }
+            });
+            container.addEventListener('mouseleave', function() {
                 tipEl.style.display = 'none';
-            }
-        });
-        container.addEventListener('mouseleave', function() {
-            tipEl.style.display = 'none';
-        });
+            });
+        }
 
         // Zoom/pan transform
         var svgEl = container.querySelector('svg');

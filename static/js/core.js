@@ -168,6 +168,9 @@
         sse.onopen = function() {
             document.getElementById('statusDot').className = 'status-dot';
             document.getElementById('statusText').textContent = 'Live';
+            // Backfill the Live Traffic chart from stored history so a reload or
+            // a gap from a disconnect/hibernate is filled in, not lost.
+            if (BM._backfillLiveTraffic) BM._backfillLiveTraffic();
         };
         sse.onerror = function() {
             document.getElementById('statusDot').className = 'status-dot error';
@@ -229,7 +232,11 @@
             banner.className = 'vpn-banner inactive';
         }
 
-        var now = new Date();
+        // Use the server timestamp so live points share a clock with the
+        // backfilled history points (see BM._backfillLiveTraffic), keeping the
+        // Live Traffic chart contiguous across reloads/reconnects.
+        var ts = d.timestamp || Date.now();
+        var now = new Date(ts);
         for (var f of ifaces) {
             if (!BM.chartData[f.name]) BM.chartData[f.name] = { rx: [], tx: [] };
             if (!BM._emaState[f.name]) BM._emaState[f.name] = { rx: 0, tx: 0 };
@@ -238,9 +245,12 @@
             var rawTx = f.tx_rate || 0;
             em.rx = em.rx === 0 ? rawRx : BM.EMA_ALPHA * rawRx + (1 - BM.EMA_ALPHA) * em.rx;
             em.tx = em.tx === 0 ? rawTx : BM.EMA_ALPHA * rawTx + (1 - BM.EMA_ALPHA) * em.tx;
-            BM.chartData[f.name].rx.push({ x: now, y: em.rx });
-            BM.chartData[f.name].tx.push({ x: now, y: -(em.tx) });
-            if (BM.chartData[f.name].rx.length > BM.MAX_PTS) { BM.chartData[f.name].rx.shift(); BM.chartData[f.name].tx.shift(); }
+            var arr = BM.chartData[f.name];
+            var lastTs = arr.rx.length ? +arr.rx[arr.rx.length - 1].x : 0;
+            if (ts <= lastTs) continue; // already covered by backfill or a prior tick
+            arr.rx.push({ x: now, y: em.rx });
+            arr.tx.push({ x: now, y: -(em.tx) });
+            if (arr.rx.length > BM.MAX_PTS) { arr.rx.shift(); arr.tx.shift(); }
         }
 
         if (BM.renderIfaceCards) BM.renderIfaceCards(ifaces);

@@ -70,6 +70,7 @@ type Collector struct {
 	span           *spanOverlay      // nil when SPAN mode is disabled
 	spanPrevRx     uint64
 	spanPrevTx     uint64
+	spanPrevTs     time.Time // timestamp of the last SPAN snapshot (own baseline)
 	spanHasPrev    bool
 	poller.Runner
 }
@@ -339,6 +340,11 @@ func (c *Collector) poll() {
 		if _, exists := infos[name]; !exists {
 			delete(c.current, name)
 			delete(c.previous, name)
+			// Drop the SPAN baseline too, so a returning SPAN device
+			// re-baselines instead of reporting a rate spanning its downtime.
+			if c.span != nil && name == c.span.device {
+				c.spanHasPrev = false
+			}
 		}
 	}
 
@@ -413,8 +419,12 @@ func (c *Collector) poll() {
 			iface.RxPackets = rxP
 			iface.TxPackets = txP
 			iface.IfaceType = "span"
+			// Use the SPAN's own previous timestamp rather than the kernel
+			// rawStat's: prev is nil on the first poll and whenever the SPAN
+			// device has just (re)appeared after a flap (its entry is dropped
+			// from c.previous below), which would panic on prev.ts.
 			if c.spanHasPrev {
-				dt := now.Sub(prev.ts).Seconds()
+				dt := now.Sub(c.spanPrevTs).Seconds()
 				if dt > 0 {
 					iface.RxRate = float64(rxB-c.spanPrevRx) / dt
 					iface.TxRate = float64(txB-c.spanPrevTx) / dt
@@ -422,6 +432,7 @@ func (c *Collector) poll() {
 			}
 			c.spanPrevRx = rxB
 			c.spanPrevTx = txB
+			c.spanPrevTs = now
 			c.spanHasPrev = true
 		}
 
