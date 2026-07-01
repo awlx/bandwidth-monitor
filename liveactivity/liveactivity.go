@@ -290,15 +290,22 @@ func (m *Manager) send(token, environment string, state *contentState) {
 		Reason string `json:"reason"`
 	}
 	json.NewDecoder(resp.Body).Decode(&apns)
+	apnsID := resp.Header.Get("apns-id")
 	// Drop tokens Apple says are dead so we stop wasting pushes on them.
 	if resp.StatusCode == http.StatusGone || apns.Reason == "BadDeviceToken" || apns.Reason == "Unregistered" {
 		m.mu.Lock()
 		delete(m.tokens, token)
 		m.mu.Unlock()
-		log.Printf("liveactivity: dropped token (%d %s)", resp.StatusCode, apns.Reason)
+		log.Printf("liveactivity: dropped token (%d %s, apns-id=%s)", resp.StatusCode, apns.Reason, apnsID)
 		return
 	}
-	log.Printf("liveactivity: APNs %d %s", resp.StatusCode, apns.Reason)
+	// 403 is a provider-token (JWT) problem, not device/env. Surface the likely culprits.
+	if resp.StatusCode == http.StatusForbidden {
+		log.Printf("liveactivity: APNs 403 %s (apns-id=%s) — verify APNS_KEY_ID (%s) matches the .p8, APNS_TEAM_ID (%s), and the server clock (now=%s)",
+			apns.Reason, apnsID, m.cfg.KeyID, m.cfg.TeamID, time.Now().UTC().Format(time.RFC3339))
+		return
+	}
+	log.Printf("liveactivity: APNs %d %s (apns-id=%s)", resp.StatusCode, apns.Reason, apnsID)
 }
 
 // providerToken returns a cached ES256 APNs provider JWT, regenerating it at most every ~50 min

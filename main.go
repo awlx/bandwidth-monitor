@@ -309,7 +309,9 @@ func main() {
 		} else {
 			liveActivityMgr = mgr
 			go liveActivityMgr.Run()
-			log.Printf("Live Activity push: enabled (%s)", apnsEnv)
+			log.Printf("Live Activity push: enabled — key=%s team=%s bundle=%s env=%s interval=%s (server clock: %s)",
+				env("APNS_KEY_ID", ""), env("APNS_TEAM_ID", ""), env("APNS_BUNDLE_ID", ""),
+				apnsEnv, interval, time.Now().UTC().Format(time.RFC3339))
 		}
 	}
 
