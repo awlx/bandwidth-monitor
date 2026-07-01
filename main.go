@@ -24,6 +24,7 @@ import (
 	"bandwidth-monitor/geoip"
 	"bandwidth-monitor/handler"
 	"bandwidth-monitor/latency"
+	"bandwidth-monitor/liveactivity"
 	"bandwidth-monitor/nextdns"
 	"bandwidth-monitor/omada"
 	"bandwidth-monitor/pihole"
@@ -289,6 +290,29 @@ func main() {
 	go topoScanner.Run()
 	log.Println("Network topology scanner enabled")
 
+	// Live Activity push (optional): when an APNs auth key is configured, the server pushes iOS
+	// Live Activity updates so the Lock Screen view stays live while the app is suspended.
+	var liveActivityMgr *liveactivity.Manager
+	if keyFile := env("APNS_KEY_FILE", ""); keyFile != "" {
+		interval, _ := time.ParseDuration(env("APNS_PUSH_INTERVAL", "10s"))
+		apnsEnv := env("APNS_ENV", "production")
+		mgr, err := liveactivity.New(liveactivity.Config{
+			KeyFile:  keyFile,
+			KeyID:    env("APNS_KEY_ID", ""),
+			TeamID:   env("APNS_TEAM_ID", ""),
+			BundleID: env("APNS_BUNDLE_ID", ""),
+			Env:      apnsEnv,
+			Interval: interval,
+		}, statsCollector)
+		if err != nil {
+			log.Printf("Live Activity push: disabled (%v)", err)
+		} else {
+			liveActivityMgr = mgr
+			go liveActivityMgr.Run()
+			log.Printf("Live Activity push: enabled (%s)", apnsEnv)
+		}
+	}
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/interfaces", handler.InterfaceStats(statsCollector))
 	mux.HandleFunc("/api/interfaces/history", handler.InterfaceHistory(statsCollector))
@@ -307,6 +331,9 @@ func main() {
 	mux.HandleFunc("/api/summary", handler.MenuBarSummary(statsCollector, talkerTracker, dnsProvider, wifiProvider, conntrackTracker))
 	mux.HandleFunc("/api/topology", handler.TopologySummary(topoScanner))
 	mux.HandleFunc("/api/events", handler.SSE(statsCollector, talkerTracker, dnsProvider, wifiProvider, conntrackTracker, latencyMonitor, topoScanner, dnsResolver, geoDB))
+	if liveActivityMgr != nil {
+		mux.HandleFunc("/api/liveactivity/register", handler.LiveActivityRegister(liveActivityMgr))
+	}
 	staticSub, err := fs.Sub(staticFiles, "static")
 	if err != nil {
 		log.Fatalf("Failed to create sub filesystem: %v", err)
@@ -383,6 +410,9 @@ func main() {
 	conntrackTracker.Stop()
 	topoScanner.Stop()
 	latencyMonitor.Stop()
+	if liveActivityMgr != nil {
+		liveActivityMgr.Stop()
+	}
 	dnsResolver.Stop()
 }
 

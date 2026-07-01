@@ -20,6 +20,7 @@ import (
 	"bandwidth-monitor/geoip"
 	"bandwidth-monitor/httputil"
 	"bandwidth-monitor/latency"
+	"bandwidth-monitor/liveactivity"
 	"bandwidth-monitor/netutil"
 	"bandwidth-monitor/resolver"
 	"bandwidth-monitor/speedtest"
@@ -774,4 +775,26 @@ func readProcessCount() (running, total int) {
 		total, _ = strconv.Atoi(rt[1])
 	}
 	return
+}
+
+// LiveActivityRegister records an iOS Live Activity push token so the server can drive updates via
+// APNs. Body: {"token":"<hex>","interface":"eth0","environment":"production|sandbox"}.
+func LiveActivityRegister(m *liveactivity.Manager) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "POST required", http.StatusMethodNotAllowed)
+			return
+		}
+		var body struct {
+			Token       string `json:"token"`
+			Interface   string `json:"interface"`
+			Environment string `json:"environment"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Token == "" {
+			http.Error(w, "invalid body: expected {token, interface, environment}", http.StatusBadRequest)
+			return
+		}
+		m.Register(body.Token, body.Interface, body.Environment)
+		httputil.WriteJSON(w, map[string]string{"status": "ok"})
+	}
 }
