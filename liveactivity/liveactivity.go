@@ -3,8 +3,8 @@
 //
 // The iOS app registers a per-activity push token via POST /api/liveactivity/register; a background
 // loop then builds the Live Activity content-state from the collector and pushes it to APNs for each
-// registered token. Dependency-free beyond the stdlib and golang.org/x/net/http2 (already required):
-// crypto/ecdsa + crypto/x509 sign the ES256 provider JWT and parse the .p8 key.
+// registered token. Dependency-free: crypto/ecdsa + crypto/x509 (stdlib) sign the ES256 provider JWT
+// and parse the .p8 key; the stdlib http.Client auto-negotiates HTTP/2 over TLS, which APNs requires.
 package liveactivity
 
 import (
@@ -31,7 +31,14 @@ import (
 const (
 	historyWindow = time.Hour
 	maxPoints     = 38
-	staleAfter    = 120 * time.Second
+	// minStaleAfter is a floor on the stale-date cushion regardless of push interval, so a
+	// fast-configured cadence doesn't leave an unreasonably short window either.
+	minStaleAfter = 60 * time.Second
+	// staleAfterMultiple sizes the cushion relative to the configured push interval, so a few
+	// dropped pushes in a row (transient network blip, brief APNs error) don't prematurely mark the
+	// activity stale ahead of the next successful push. At the default 10s interval this gives 150s,
+	// more forgiving than the old fixed 120s.
+	staleAfterMultiple = 15
 )
 
 // Config holds APNs settings. The feature is enabled only when KeyFile, KeyID, TeamID, and BundleID
@@ -113,6 +120,15 @@ func (m *Manager) Run() { m.runner.Run(m.cfg.Interval, m.tick) }
 
 // Stop halts the push loop.
 func (m *Manager) Stop() { m.runner.Stop() }
+
+// staleAfter is the stale-date cushion: a multiple of the configured push interval (with a floor),
+// so one or two dropped pushes don't prematurely mark the activity stale.
+func (m *Manager) staleAfter() time.Duration {
+	if d := m.cfg.Interval * staleAfterMultiple; d > minStaleAfter {
+		return d
+	}
+	return minStaleAfter
+}
 
 func (m *Manager) tick() {
 	m.mu.Lock()
@@ -256,7 +272,7 @@ func (m *Manager) send(token, environment string, state *contentState) {
 		"timestamp":     now,
 		"event":         "update",
 		"content-state": state,
-		"stale-date":    now + int64(staleAfter.Seconds()),
+		"stale-date":    now + int64(m.staleAfter().Seconds()),
 	}}
 	body, err := json.Marshal(payload)
 	if err != nil {
