@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -52,7 +53,12 @@ func main() {
 		log.Fatalf("APNS_PUSH_INTERVAL: %v", err)
 	}
 
-	relay := NewRelay(apnsClient, interval)
+	maxResponseBytes, err := strconv.ParseInt(env("APNS_MAX_RESPONSE_BYTES", strconv.Itoa(DefaultMaxResponseBytes)), 10, 64)
+	if err != nil || maxResponseBytes <= 0 {
+		log.Fatalf("APNS_MAX_RESPONSE_BYTES: invalid value %q (expected a positive byte count)", env("APNS_MAX_RESPONSE_BYTES", ""))
+	}
+
+	relay := NewRelay(apnsClient, interval, maxResponseBytes)
 	go relay.Run()
 
 	mux := http.NewServeMux()
@@ -62,8 +68,8 @@ func main() {
 		w.Write([]byte("ok"))
 	})
 
-	log.Printf("apnsgateway: starting on %s (HTTPS) tls-cert=%s tls-key=%s, apns-key-id=%s team=%s bundle=%s push-interval=%s",
-		listenAddr, tlsCertFile, tlsKeyFile, keyID, teamID, bundleID, interval)
+	log.Printf("apnsgateway: starting on %s (HTTPS) tls-cert=%s tls-key=%s, apns-key-id=%s team=%s bundle=%s push-interval=%s max-response-bytes=%d",
+		listenAddr, tlsCertFile, tlsKeyFile, keyID, teamID, bundleID, interval, maxResponseBytes)
 
 	srv := &http.Server{
 		Addr:              listenAddr,
