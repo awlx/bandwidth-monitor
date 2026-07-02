@@ -94,6 +94,7 @@ func (r *Relay) HandleRegister(w http.ResponseWriter, req *http.Request) {
 
 	ip := clientIP(req)
 	if !r.limiter.allow(ip) {
+		log.Printf("apnsgateway: rejected registration from %s: rate limited", ip)
 		http.Error(w, "too many registrations, slow down", http.StatusTooManyRequests)
 		return
 	}
@@ -106,19 +107,23 @@ func (r *Relay) HandleRegister(w http.ResponseWriter, req *http.Request) {
 		Interface   string `json:"interface"`
 	}
 	if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+		log.Printf("apnsgateway: rejected registration from %s: invalid JSON body: %v", ip, err)
 		http.Error(w, "invalid JSON body", http.StatusBadRequest)
 		return
 	}
 	if body.Token == "" || len(body.Token) > 200 {
+		log.Printf("apnsgateway: rejected registration from %s: invalid token (len=%d)", ip, len(body.Token))
 		http.Error(w, "invalid token", http.StatusBadRequest)
 		return
 	}
 	if body.Environment != "sandbox" && body.Environment != "production" {
+		log.Printf("apnsgateway: rejected registration from %s: invalid environment %q", ip, body.Environment)
 		http.Error(w, "environment must be sandbox or production", http.StatusBadRequest)
 		return
 	}
 	normalizedURL, err := validateServerURL(body.ServerURL)
 	if err != nil {
+		log.Printf("apnsgateway: rejected registration from %s: invalid serverURL %q: %v", ip, body.ServerURL, err)
 		http.Error(w, "invalid serverURL: "+err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -127,6 +132,7 @@ func (r *Relay) HandleRegister(w http.ResponseWriter, req *http.Request) {
 	_, existed := r.subs[body.Token]
 	if !existed && len(r.subs) >= maxSubscriptions {
 		r.mu.Unlock()
+		log.Printf("apnsgateway: rejected registration from %s: relay at capacity (%d subscriptions)", ip, maxSubscriptions)
 		http.Error(w, "relay at capacity, try again later", http.StatusServiceUnavailable)
 		return
 	}
