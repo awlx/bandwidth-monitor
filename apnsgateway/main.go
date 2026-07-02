@@ -62,8 +62,8 @@ func main() {
 		w.Write([]byte("ok"))
 	})
 
-	log.Printf("apnsgateway: starting on %s (HTTPS), key=%s team=%s bundle=%s push-interval=%s",
-		listenAddr, keyID, teamID, bundleID, interval)
+	log.Printf("apnsgateway: starting on %s (HTTPS) tls-cert=%s tls-key=%s, apns-key-id=%s team=%s bundle=%s push-interval=%s",
+		listenAddr, tlsCertFile, tlsKeyFile, keyID, teamID, bundleID, interval)
 
 	srv := &http.Server{
 		Addr:              listenAddr,
