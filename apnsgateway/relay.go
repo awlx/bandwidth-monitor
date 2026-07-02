@@ -22,8 +22,12 @@ const (
 	maxSubscriptions   = 5000            // global cap so the relay can't grow unbounded
 	maxConcurrentFetch = 20              // bounded concurrency per tick, so one slow/unreachable
 	fetchTimeout       = 8 * time.Second // server doesn't delay pushes to everyone else
-	maxResponseBytes   = 2 << 20         // 2MB cap on a polled server's response
-	registrationTTL    = time.Hour       // drop a subscription if the app hasn't re-registered
+	// DefaultMaxResponseBytes caps a polled server's response absent APNS_MAX_RESPONSE_BYTES.
+	// /api/interfaces/history alone can run several MB per interface at the default 24h/1Hz
+	// retention, so this needs to comfortably clear one server's full history, not just a
+	// single Live Activity payload.
+	DefaultMaxResponseBytes = 16 << 20
+	registrationTTL         = time.Hour // drop a subscription if the app hasn't re-registered
 	// minStaleAfter/staleAfterMultiple mirror the local liveactivity package's cushion sizing.
 	minStaleAfter      = 60 * time.Second
 	staleAfterMultiple = 15
@@ -46,17 +50,22 @@ type subscription struct {
 // limiting on registration, a global subscription cap, response size caps, fetch timeouts, and TTL
 // expiry of subscriptions the app stops refreshing.
 type Relay struct {
-	apnsClient *apns.Client
-	httpClient *http.Client
-	interval   time.Duration
-	runner     poller.Runner
-	limiter    *ipRateLimiter
+	apnsClient       *apns.Client
+	httpClient       *http.Client
+	interval         time.Duration
+	maxResponseBytes int64
+	runner           poller.Runner
+	limiter          *ipRateLimiter
 
 	mu   sync.Mutex
 	subs map[string]subscription // push token -> subscription
 }
 
-func NewRelay(apnsClient *apns.Client, interval time.Duration) *Relay {
+// NewRelay builds a Relay. maxResponseBytes <= 0 falls back to DefaultMaxResponseBytes.
+func NewRelay(apnsClient *apns.Client, interval time.Duration, maxResponseBytes int64) *Relay {
+	if maxResponseBytes <= 0 {
+		maxResponseBytes = DefaultMaxResponseBytes
+	}
 	fetchClient := httputil.NewClient(fetchTimeout)
 	// Never follow redirects: a registered URL that passes the public-IP check could otherwise
 	// redirect the actual request somewhere that wouldn't (SSRF via redirect).
@@ -64,11 +73,12 @@ func NewRelay(apnsClient *apns.Client, interval time.Duration) *Relay {
 		return http.ErrUseLastResponse
 	}
 	r := &Relay{
-		apnsClient: apnsClient,
-		httpClient: fetchClient,
-		interval:   interval,
-		limiter:    newIPRateLimiter(20, 5*time.Minute),
-		subs:       make(map[string]subscription),
+		apnsClient:       apnsClient,
+		httpClient:       fetchClient,
+		interval:         interval,
+		maxResponseBytes: maxResponseBytes,
+		limiter:          newIPRateLimiter(20, 5*time.Minute),
+		subs:             make(map[string]subscription),
 	}
 	r.runner.Init()
 	return r
@@ -332,13 +342,13 @@ func (r *Relay) fetchJSON(target string, out any) error {
 	// truncated/reset connection can be told apart from a response that's simply too big:
 	// hitting the cap ends the read cleanly with no error, while a mid-transfer EOF surfaces
 	// here as a read error with the partial byte count and elapsed time attached.
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, r.maxResponseBytes+1))
 	elapsed := time.Since(start)
 	if err != nil {
 		return fmt.Errorf("read body (got %d bytes, content-length=%d, after %s): %w", len(body), resp.ContentLength, elapsed, err)
 	}
-	if len(body) > maxResponseBytes {
-		return fmt.Errorf("response exceeds %d byte cap (content-length=%d)", maxResponseBytes, resp.ContentLength)
+	if int64(len(body)) > r.maxResponseBytes {
+		return fmt.Errorf("response exceeds %d byte cap (content-length=%d)", r.maxResponseBytes, resp.ContentLength)
 	}
 	if err := json.Unmarshal(body, out); err != nil {
 		return fmt.Errorf("decode %d bytes (content-length=%d, after %s): %w", len(body), resp.ContentLength, elapsed, err)
