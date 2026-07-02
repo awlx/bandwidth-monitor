@@ -1,43 +1,37 @@
-// Package liveactivity pushes iOS Live Activity updates to Apple's APNs so the Bandwidth Monitor
-// Lock Screen / Dynamic Island view keeps updating while the app is suspended.
+// Package liveactivity pushes iOS Live Activity updates directly to Apple's APNs using an
+// operator-held key, so the Bandwidth Monitor Lock Screen / Dynamic Island view keeps updating
+// while the app is suspended.
+//
+// This is the "hold your own key" path: fully independent, no dependency on anyone else's
+// infrastructure. It's off by default (nil unless APNS_KEY_FILE is configured) — most users don't
+// need this because the app defaults to registering with a shared relay gateway instead (see the
+// apnsgateway package), which needs no APNs key on this server at all. Keep this path for operators
+// who'd rather not depend on a third party.
 //
 // The iOS app registers a per-activity push token via POST /api/liveactivity/register; a background
 // loop then builds the Live Activity content-state from the collector and pushes it to APNs for each
-// registered token. Dependency-free: crypto/ecdsa + crypto/x509 (stdlib) sign the ES256 provider JWT
-// and parse the .p8 key; the stdlib http.Client auto-negotiates HTTP/2 over TLS, which APNs requires.
+// registered token.
 package liveactivity
 
 import (
-	"bytes"
-	"crypto/ecdsa"
-	"crypto/rand"
-	"crypto/sha256"
-	"crypto/x509"
-	"encoding/base64"
-	"encoding/json"
-	"encoding/pem"
-	"fmt"
 	"log"
-	"math"
-	"net/http"
-	"os"
 	"sync"
 	"time"
 
+	"bandwidth-monitor/apns"
 	"bandwidth-monitor/collector"
+	"bandwidth-monitor/contentstate"
 	"bandwidth-monitor/poller"
 )
 
 const (
-	historyWindow = time.Hour
-	maxPoints     = 38
 	// minStaleAfter is a floor on the stale-date cushion regardless of push interval, so a
 	// fast-configured cadence doesn't leave an unreasonably short window either.
 	minStaleAfter = 60 * time.Second
 	// staleAfterMultiple sizes the cushion relative to the configured push interval, so a few
 	// dropped pushes in a row (transient network blip, brief APNs error) don't prematurely mark the
 	// activity stale ahead of the next successful push. At the default 10s interval this gives 150s,
-	// more forgiving than the old fixed 120s.
+	// more forgiving than a short fixed value.
 	staleAfterMultiple = 15
 )
 
@@ -58,26 +52,23 @@ type registration struct {
 	lastSeen    time.Time
 }
 
-// Manager owns the token registry, signing key, and push loop.
+// Manager owns the token registry and push loop.
 type Manager struct {
 	cfg    Config
 	col    *collector.Collector
-	key    *ecdsa.PrivateKey
-	client *http.Client
+	apns   *apns.Client
 	runner poller.Runner
 
 	mu     sync.Mutex
 	tokens map[string]registration
-
-	jwtMu     sync.Mutex
-	jwtCache  string
-	jwtIssued time.Time
 }
 
 // New parses the .p8 key and returns a configured Manager. Returns an error if the key is missing or
 // not a P-256 private key.
 func New(cfg Config, col *collector.Collector) (*Manager, error) {
-	key, err := loadKey(cfg.KeyFile)
+	client, err := apns.NewClient(apns.Config{
+		KeyFile: cfg.KeyFile, KeyID: cfg.KeyID, TeamID: cfg.TeamID, BundleID: cfg.BundleID,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -90,11 +81,8 @@ func New(cfg Config, col *collector.Collector) (*Manager, error) {
 	m := &Manager{
 		cfg:    cfg,
 		col:    col,
-		key:    key,
+		apns:   client,
 		tokens: make(map[string]registration),
-		// The stdlib client auto-negotiates HTTP/2 over TLS via ALPN (which APNs requires), so no
-		// golang.org/x/net/http2 dependency is needed.
-		client: &http.Client{Timeout: 10 * time.Second},
 	}
 	m.runner.Init()
 	return m, nil
@@ -139,32 +127,26 @@ func (m *Manager) tick() {
 	m.mu.Unlock()
 
 	for token, reg := range toks {
-		if state := m.buildState(reg.iface); state != nil {
-			m.send(token, reg.environment, state)
+		state, ok := m.buildState(reg.iface)
+		if !ok {
+			continue
+		}
+		result, err := m.apns.Send(token, reg.environment, m.staleAfter(), state)
+		if err != nil {
+			log.Printf("liveactivity: send: %v", err)
+			continue
+		}
+		if result.Dead() {
+			m.mu.Lock()
+			delete(m.tokens, token)
+			m.mu.Unlock()
 		}
 	}
 }
 
-// --- content-state (keys MUST match the iOS BandwidthActivityAttributes.ContentState) ------------
-
-type point struct {
-	T  int64   `json:"t"`
-	Rx float64 `json:"rx"`
-	Tx float64 `json:"tx"`
-}
-
-type contentState struct {
-	InterfaceName string  `json:"interfaceName"`
-	RxRate        float64 `json:"rxRate"`
-	TxRate        float64 `json:"txRate"`
-	Points        []point `json:"points"`
-	UpdatedAt     float64 `json:"updatedAt"`
-}
-
-// buildState mirrors the iOS liveState(): the selected interface's last hour, downsampled keeping
-// peaks, with a synthetic "now" sample carrying the live rate appended so the marked latest point
-// reflects the current rate.
-func (m *Manager) buildState(iface string) *contentState {
+// buildState gathers the selected interface's current rate and recent history from the local
+// collector and shapes it into a contentstate.State via the shared builder.
+func (m *Manager) buildState(iface string) (contentstate.State, bool) {
 	all := m.col.GetAll()
 	hist := m.col.GetHistory()
 
@@ -173,7 +155,7 @@ func (m *Manager) buildState(iface string) *contentState {
 		name = pickInterface(all, hist)
 	}
 	if name == "" {
-		return nil
+		return contentstate.State{}, false
 	}
 
 	var rx, tx float64
@@ -181,28 +163,12 @@ func (m *Manager) buildState(iface string) *contentState {
 		rx, tx = s.RxRate, s.TxRate
 	}
 
-	cutoff := time.Now().Add(-historyWindow).UnixMilli()
-	var windowed []collector.HistoryPoint
+	points := make([]contentstate.Point, 0, len(hist[name]))
 	for _, p := range hist[name] {
-		if p.Timestamp >= cutoff {
-			windowed = append(windowed, p)
-		}
+		points = append(points, contentstate.Point{T: p.Timestamp, Rx: p.RxRate, Tx: p.TxRate})
 	}
-	windowed = downsamplePeaks(windowed, maxPoints)
 
-	pts := make([]point, 0, len(windowed)+1)
-	for _, p := range windowed {
-		pts = append(pts, point{T: p.Timestamp, Rx: p.RxRate, Tx: p.TxRate})
-	}
-	pts = append(pts, point{T: time.Now().UnixMilli(), Rx: rx, Tx: tx})
-
-	return &contentState{
-		InterfaceName: name,
-		RxRate:        rx,
-		TxRate:        tx,
-		Points:        pts,
-		UpdatedAt:     float64(time.Now().UnixMilli()) / 1000,
-	}
+	return contentstate.Build(name, rx, tx, points), true
 }
 
 func statFor(all []collector.InterfaceStat, name string) *collector.InterfaceStat {
@@ -227,151 +193,4 @@ func pickInterface(all []collector.InterfaceStat, hist map[string][]collector.Hi
 		return k
 	}
 	return ""
-}
-
-// downsamplePeaks reduces pts to ~maxPoints, keeping the highest-rate sample in each bucket so brief
-// spikes survive (matches the iOS downsampledPreservingPeaks).
-func downsamplePeaks(pts []collector.HistoryPoint, maxPoints int) []collector.HistoryPoint {
-	if maxPoints <= 0 || len(pts) <= maxPoints {
-		return pts
-	}
-	bucket := float64(len(pts)) / float64(maxPoints)
-	out := make([]collector.HistoryPoint, 0, maxPoints)
-	start := 0
-	for i := 0; i < maxPoints; i++ {
-		end := len(pts)
-		if i < maxPoints-1 {
-			end = int(math.Round(float64(i+1) * bucket))
-		}
-		if start >= end {
-			continue
-		}
-		peak := pts[start]
-		for _, p := range pts[start:end] {
-			if math.Max(p.RxRate, p.TxRate) > math.Max(peak.RxRate, peak.TxRate) {
-				peak = p
-			}
-		}
-		out = append(out, peak)
-		start = end
-	}
-	return out
-}
-
-// --- APNs ---------------------------------------------------------------------------------------
-
-func (m *Manager) send(token, environment string, state *contentState) {
-	jwt, err := m.providerToken()
-	if err != nil {
-		log.Printf("liveactivity: jwt: %v", err)
-		return
-	}
-
-	now := time.Now().Unix()
-	payload := map[string]any{"aps": map[string]any{
-		"timestamp":     now,
-		"event":         "update",
-		"content-state": state,
-		"stale-date":    now + int64(m.staleAfter().Seconds()),
-	}}
-	body, err := json.Marshal(payload)
-	if err != nil {
-		return
-	}
-
-	host := "https://api.push.apple.com"
-	if environment == "sandbox" {
-		host = "https://api.sandbox.push.apple.com"
-	}
-	req, err := http.NewRequest(http.MethodPost, host+"/3/device/"+token, bytes.NewReader(body))
-	if err != nil {
-		return
-	}
-	req.Header.Set("authorization", "bearer "+jwt)
-	req.Header.Set("apns-topic", m.cfg.BundleID+".push-type.liveactivity")
-	req.Header.Set("apns-push-type", "liveactivity")
-	req.Header.Set("apns-priority", "10")
-
-	resp, err := m.client.Do(req)
-	if err != nil {
-		log.Printf("liveactivity: send: %v", err)
-		return
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode == http.StatusOK {
-		return
-	}
-	var apns struct {
-		Reason string `json:"reason"`
-	}
-	json.NewDecoder(resp.Body).Decode(&apns)
-	apnsID := resp.Header.Get("apns-id")
-	// Drop tokens Apple says are dead so we stop wasting pushes on them.
-	if resp.StatusCode == http.StatusGone || apns.Reason == "BadDeviceToken" || apns.Reason == "Unregistered" {
-		m.mu.Lock()
-		delete(m.tokens, token)
-		m.mu.Unlock()
-		log.Printf("liveactivity: dropped token (%d %s, apns-id=%s)", resp.StatusCode, apns.Reason, apnsID)
-		return
-	}
-	// 403 is a provider-token (JWT) problem, not device/env. Surface the likely culprits.
-	if resp.StatusCode == http.StatusForbidden {
-		log.Printf("liveactivity: APNs 403 %s (apns-id=%s) — verify APNS_KEY_ID (%s) matches the .p8, APNS_TEAM_ID (%s), and the server clock (now=%s)",
-			apns.Reason, apnsID, m.cfg.KeyID, m.cfg.TeamID, time.Now().UTC().Format(time.RFC3339))
-		return
-	}
-	log.Printf("liveactivity: APNs %d %s (apns-id=%s)", resp.StatusCode, apns.Reason, apnsID)
-}
-
-// providerToken returns a cached ES256 APNs provider JWT, regenerating it at most every ~50 min
-// (Apple rejects tokens older than an hour).
-func (m *Manager) providerToken() (string, error) {
-	m.jwtMu.Lock()
-	defer m.jwtMu.Unlock()
-	if m.jwtCache != "" && time.Since(m.jwtIssued) < 50*time.Minute {
-		return m.jwtCache, nil
-	}
-	header := base64url([]byte(fmt.Sprintf(`{"alg":"ES256","kid":"%s"}`, m.cfg.KeyID)))
-	claims := base64url([]byte(fmt.Sprintf(`{"iss":"%s","iat":%d}`, m.cfg.TeamID, time.Now().Unix())))
-	signingInput := header + "." + claims
-
-	digest := sha256.Sum256([]byte(signingInput))
-	r, s, err := ecdsa.Sign(rand.Reader, m.key, digest[:])
-	if err != nil {
-		return "", err
-	}
-	// JOSE wants the raw R||S, each left-padded to 32 bytes for P-256.
-	sig := make([]byte, 64)
-	r.FillBytes(sig[:32])
-	s.FillBytes(sig[32:])
-
-	jwt := signingInput + "." + base64url(sig)
-	m.jwtCache, m.jwtIssued = jwt, time.Now()
-	return jwt, nil
-}
-
-func base64url(b []byte) string { return base64.RawURLEncoding.EncodeToString(b) }
-
-func loadKey(path string) (*ecdsa.PrivateKey, error) {
-	if path == "" {
-		return nil, fmt.Errorf("APNS_KEY_FILE not set")
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("read key: %w", err)
-	}
-	block, _ := pem.Decode(data)
-	if block == nil {
-		return nil, fmt.Errorf("no PEM block in %s", path)
-	}
-	parsed, err := x509.ParsePKCS8PrivateKey(block.Bytes)
-	if err != nil {
-		return nil, fmt.Errorf("parse key: %w", err)
-	}
-	key, ok := parsed.(*ecdsa.PrivateKey)
-	if !ok {
-		return nil, fmt.Errorf("key is not ECDSA/P-256")
-	}
-	return key, nil
 }

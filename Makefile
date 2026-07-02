@@ -1,4 +1,5 @@
 BINARY=bandwidth-monitor
+GATEWAY_BINARY=apns-gateway
 INSTALL_DIR=/opt/bandwidth-monitor
 SERVICE_FILE=bandwidth-monitor.service
 
@@ -15,14 +16,19 @@ GEOLITE2_ASN=GeoLite2-ASN.mmdb
 GEOLITE2_CITY_URL=https://github.com/P3TERX/GeoLite.mmdb/raw/download/GeoLite2-City.mmdb
 GEOLITE2_ASN_URL=https://github.com/P3TERX/GeoLite.mmdb/raw/download/GeoLite2-ASN.mmdb
 
-.PHONY: build run clean geoip install uninstall
+.PHONY: build build-gateway run clean geoip install uninstall
 
 build:
 	go build -ldflags="$(LDFLAGS_VERSION)" -o $(BINARY) .
 
 build_stripped:
-	# Build and strip the binary. 
+	# Build and strip the binary.
 	go build -ldflags="-s -w $(LDFLAGS_VERSION)" -o $(BINARY) .
+
+# The Live Activity push relay — a separate, minimal binary meant to run on any ordinary host (not
+# the router). See apnsgateway/main.go and docs/apns-gateway.md.
+build-gateway:
+	go build -ldflags="$(LDFLAGS_VERSION)" -o $(GATEWAY_BINARY) ./apnsgateway
 
 geoip:
 	@[ -f $(GEOLITE2_CITY) ] || { echo "Downloading GeoLite2-City.mmdb..."; curl -fSL -o $(GEOLITE2_CITY) $(GEOLITE2_CITY_URL); }
@@ -60,4 +66,4 @@ uninstall:
 	@echo "Uninstalled."
 
 clean:
-	rm -f $(BINARY)
+	rm -f $(BINARY) $(GATEWAY_BINARY)

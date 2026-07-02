@@ -1,4 +1,4 @@
-package liveactivity
+package apns
 
 import (
 	"crypto/ecdsa"
@@ -18,9 +18,9 @@ func TestProviderTokenIsValidES256(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m := &Manager{cfg: Config{KeyID: "ABC123DEFG", TeamID: "TEAM123456"}, key: key}
+	c := &Client{cfg: Config{KeyID: "ABC123DEFG", TeamID: "TEAM123456"}, key: key}
 
-	tok, err := m.providerToken()
+	tok, err := c.providerToken()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -50,26 +50,22 @@ func TestProviderTokenIsValidES256(t *testing.T) {
 	}
 }
 
-// The content-state JSON keys must match the iOS BandwidthActivityAttributes.ContentState exactly,
-// or ActivityKit will reject the push.
-func TestContentStateJSONKeys(t *testing.T) {
-	cs := contentState{
-		InterfaceName: "eth0",
-		RxRate:        1,
-		TxRate:        2,
-		Points:        []point{{T: 123, Rx: 4, Tx: 5}},
-		UpdatedAt:     6.5,
+// A 410 or BadDeviceToken/Unregistered reason must be treated as dead so callers stop wasting
+// pushes on tokens Apple will never accept again.
+func TestResultDead(t *testing.T) {
+	cases := []struct {
+		r    Result
+		want bool
+	}{
+		{Result{StatusCode: 200}, false},
+		{Result{StatusCode: 410}, true},
+		{Result{StatusCode: 400, Reason: "BadDeviceToken"}, true},
+		{Result{StatusCode: 400, Reason: "Unregistered"}, true},
+		{Result{StatusCode: 403, Reason: "InvalidProviderToken"}, false},
 	}
-	b, err := json.Marshal(cs)
-	if err != nil {
-		t.Fatal(err)
-	}
-	got := string(b)
-	for _, key := range []string{
-		`"interfaceName"`, `"rxRate"`, `"txRate"`, `"points"`, `"updatedAt"`, `"t"`, `"rx"`, `"tx"`,
-	} {
-		if !strings.Contains(got, key) {
-			t.Errorf("content-state JSON missing key %s: %s", key, got)
+	for _, c := range cases {
+		if got := c.r.Dead(); got != c.want {
+			t.Errorf("Result{%d, %q}.Dead() = %v, want %v", c.r.StatusCode, c.r.Reason, got, c.want)
 		}
 	}
 }
