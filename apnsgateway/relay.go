@@ -318,15 +318,32 @@ func (r *Relay) fetchJSON(target string, out any) error {
 	if err != nil {
 		return err
 	}
+	start := time.Now()
 	resp, err := r.httpClient.Do(req)
 	if err != nil {
-		return err
+		return fmt.Errorf("after %s: %w", time.Since(start), err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("status %d", resp.StatusCode)
 	}
-	return json.NewDecoder(io.LimitReader(resp.Body, maxResponseBytes)).Decode(out)
+
+	// Read fully (bounded by the cap) rather than decoding straight off the body, so a
+	// truncated/reset connection can be told apart from a response that's simply too big:
+	// hitting the cap ends the read cleanly with no error, while a mid-transfer EOF surfaces
+	// here as a read error with the partial byte count and elapsed time attached.
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
+	elapsed := time.Since(start)
+	if err != nil {
+		return fmt.Errorf("read body (got %d bytes, content-length=%d, after %s): %w", len(body), resp.ContentLength, elapsed, err)
+	}
+	if len(body) > maxResponseBytes {
+		return fmt.Errorf("response exceeds %d byte cap (content-length=%d)", maxResponseBytes, resp.ContentLength)
+	}
+	if err := json.Unmarshal(body, out); err != nil {
+		return fmt.Errorf("decode %d bytes (content-length=%d, after %s): %w", len(body), resp.ContentLength, elapsed, err)
+	}
+	return nil
 }
 
 func ifaceStat(all []remoteInterfaceStat, name string) *remoteInterfaceStat {
