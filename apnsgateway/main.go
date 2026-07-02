@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
@@ -25,15 +24,15 @@ func env(key, fallback string) string {
 
 func main() {
 	listenAddr := env("LISTEN", ":8443")
-	listenProto := strings.ToLower(strings.TrimSpace(env("LISTEN_PROTOCOL", "http")))
 	tlsCertFile := env("TLS_CERT_FILE", "")
 	tlsKeyFile := env("TLS_KEY_FILE", "")
 
-	if listenProto != "http" && listenProto != "https" {
-		log.Fatalf("LISTEN_PROTOCOL: invalid value %q (expected http or https)", listenProto)
-	}
-	if listenProto == "https" && (tlsCertFile == "" || tlsKeyFile == "") {
-		log.Fatal("LISTEN_PROTOCOL=https requires TLS_CERT_FILE and TLS_KEY_FILE")
+	// apnsgateway always serves HTTPS: the iOS client uses App Transport
+	// Security defaults and will refuse to reach a plain-HTTP endpoint, so
+	// a misconfigured cert should fail loudly at startup rather than come
+	// up on HTTP and silently reject every registration.
+	if tlsCertFile == "" || tlsKeyFile == "" {
+		log.Fatal("apnsgateway requires TLS: set TLS_CERT_FILE and TLS_KEY_FILE to your certificate and private key paths")
 	}
 
 	keyID := env("APNS_KEY_ID", "")
@@ -63,8 +62,8 @@ func main() {
 		w.Write([]byte("ok"))
 	})
 
-	log.Printf("apnsgateway: starting on %s (%s), key=%s team=%s bundle=%s push-interval=%s",
-		listenAddr, strings.ToUpper(listenProto), keyID, teamID, bundleID, interval)
+	log.Printf("apnsgateway: starting on %s (HTTPS), key=%s team=%s bundle=%s push-interval=%s",
+		listenAddr, keyID, teamID, bundleID, interval)
 
 	srv := &http.Server{
 		Addr:              listenAddr,
@@ -75,18 +74,11 @@ func main() {
 
 	go awaitShutdown(srv)
 
-	serveErr := serve(srv, listenProto, tlsCertFile, tlsKeyFile)
+	serveErr := srv.ListenAndServeTLS(tlsCertFile, tlsKeyFile)
 	if serveErr != nil && serveErr != http.ErrServerClosed {
 		log.Fatalf("apnsgateway: server failed: %v", serveErr)
 	}
 	relay.Stop()
-}
-
-func serve(srv *http.Server, proto, certFile, keyFile string) error {
-	if proto == "https" {
-		return srv.ListenAndServeTLS(certFile, keyFile)
-	}
-	return srv.ListenAndServe()
 }
 
 // awaitShutdown blocks until SIGINT/SIGTERM, then gracefully shuts srv down (drains active
