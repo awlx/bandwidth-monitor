@@ -305,6 +305,16 @@ func (r *Relay) fetchInterfaces(serverURL string) ([]remoteInterfaceStat, error)
 	return out, nil
 }
 
+// TODO(api-versioning): this pulls every interface's full history (up to ~5.5MB per interface
+// at the default 24h/1Hz retention — see PR #8) when contentstate.Build only ever uses the last
+// contentstate.Window (1h), downsampled to contentstate.MaxPoints, for a single interface. Add
+// optional ?iface=&since= params to /api/interfaces/history so this can request just that slice
+// instead of relying on APNS_MAX_RESPONSE_BYTES to keep growing. This is additive/backward
+// compatible on its own — the server currently has no API versioning scheme (flat /api/* routes,
+// no /v1/ prefix; X-Bandwidth-Monitor is a build version, not a schema version) — so it likely
+// doesn't need one just for this, but should ride along if a versioning scheme gets introduced
+// for other reasons. Touches collector.go/handler.go on the main server as well as this file, so
+// it needs a coordinated rebuild/redeploy of both binaries where they run on separate hosts.
 func (r *Relay) fetchHistory(serverURL string) (map[string][]contentstate.Point, error) {
 	var out map[string][]contentstate.Point
 	if err := r.fetchJSON(serverURL+"/api/interfaces/history", &out); err != nil {
