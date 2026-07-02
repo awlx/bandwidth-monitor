@@ -15,6 +15,7 @@ Single-binary deployment with an embedded web UI, optional DNS stats (AdGuard Ho
 - [macOS Menu Bar Plugin](#macos-menu-bar-plugin)
 - [Windows System Tray Widget](#windows-system-tray-widget)
 - [GNOME/Linux Indicator](#gnomelinux-indicator)
+- [iOS App](#ios-app)
 - [Architecture](#architecture)
 - [API Endpoints](#api-endpoints)
 - [External Services Transparency](#external-services-transparency)
@@ -615,6 +616,33 @@ Or for the current user only, symlink the script and edit the `Exec=` path in th
 
 ---
 
+## iOS App
+
+An iOS client is available at [yeled/bandwidth-monitor-ios](https://github.com/yeled/bandwidth-monitor-ios). It displays live traffic graphs, per-interface sparklines, and — via ActivityKit — a **Lock Screen widget and Dynamic Island Live Activity** that keep updating in real time while the app is in the background.
+
+### Live Activity push (Lock Screen / Dynamic Island)
+
+The Live Activity is kept alive by server-sent APNs push notifications. There are two ways this can work:
+
+**Default (no server configuration needed):** The iOS app registers its push token with a shared relay gateway (`apnsgateway`). The gateway polls your server's existing `/api/interfaces` and `/api/interfaces/history` endpoints and pushes updates to APNs using its own key — your server needs no APNs configuration at all.
+
+**Self-hosted key (advanced):** If you'd rather not depend on the shared gateway, you can push directly from your own bandwidth-monitor instance by providing your own Apple Developer APNs key. Enable it with these environment variables:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `APNS_KEY_FILE` | *(disabled)* | Path to the APNs auth key (`.p8`) from [developer.apple.com](https://developer.apple.com) (Keys → Apple Push Notification service). Keep it `chmod 0600`. When set, enables `POST /api/liveactivity/register`. |
+| `APNS_KEY_ID` | | 10-character key ID from the Apple Developer portal |
+| `APNS_TEAM_ID` | | Apple Developer team ID |
+| `APNS_BUNDLE_ID` | | App bundle ID (e.g. `com.example.BandwidthMonitor`) |
+| `APNS_ENV` | `production` | APNs environment: `production` (App Store / TestFlight) or `sandbox` (Xcode dev builds) |
+| `APNS_PUSH_INTERVAL` | `10s` | How often to push an update to each registered device |
+
+The server needs outbound HTTPS to `api.push.apple.com:443`. The feature is entirely off unless `APNS_KEY_FILE` is set.
+
+For running the shared relay gateway yourself, see [docs/apns-gateway.md](docs/apns-gateway.md).
+
+---
+
 ## Architecture
 
 main.go                   → entry point, env config, wires all components
@@ -626,6 +654,11 @@ latency/                  → continuous ICMP + HTTPS latency monitoring with ro
 speedtest/                → HTTP-based speed test client (download/upload/ping against OpenSpeedTest servers)
 debug/                    → traceroute (native ICMP), DNS checker (multi-server), resolver leak detection
 handler/                  → HTTP REST API + SSE streaming handler
+apns/                     → ES256 JWT signing + APNs HTTP/2 push client (shared by liveactivity and apnsgateway)
+liveactivity/             → optional per-instance Live Activity push loop (operator holds own APNs key; off unless APNS_KEY_FILE set)
+contentstate/             → Live Activity content-state builder + peak-preserving downsampler (shared by liveactivity and apnsgateway)
+poller/                   → generic tick-based runner used by liveactivity and apnsgateway
+apnsgateway/              → standalone relay binary (make build-gateway): polls any server's /api/interfaces* and pushes to APNs; the one place holding the key so self-hosters don't need one
 dns/                      → common DNS provider interface
 adguard/                  → AdGuard Home API client (stats, top clients/domains)
 nextdns/                  → NextDNS API client (stats, top clients/domains)
@@ -676,6 +709,7 @@ Makefile                  → build, install, GeoIP download targets
 | `/api/debug/dns` | GET | DNS check against 14 servers + resolver leak test; params: `domain`, `type` |
 | `/api/summary` | GET | Compact summary for menu bar clients |
 | `/api/events` | GET | SSE stream — pushes all data every second (Server-Sent Events) |
+| `/api/liveactivity/register` | POST | Register an iOS Live Activity push token (only available when `APNS_KEY_FILE` is set) |
 
 ---
 
