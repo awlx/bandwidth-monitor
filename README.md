@@ -696,7 +696,7 @@ Makefile                  → build, install, GeoIP download targets
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/api/interfaces` | GET | Current stats for all interfaces |
-| `/api/interfaces/history` | GET | 24h time-series per interface |
+| `/api/interfaces/history` | GET | 24h time-series per interface. Optional params: `iface` (single interface), `since` (Unix ms — only newer points). Additive: servers predating them ignore them and return everything |
 | `/api/talkers/bandwidth` | GET | Top 10 by current bandwidth |
 | `/api/talkers/volume` | GET | Top 10 by 24h volume |
 | `/api/dns` | GET | DNS summary (AdGuard Home, NextDNS, or Pi-hole) |

@@ -35,9 +35,27 @@ func InterfaceStats(c *collector.Collector) http.HandlerFunc {
 	}
 }
 
+// InterfaceHistory serves per-interface rate history. Optional query params narrow the response
+// (both are additive — old clients that send neither get the full map exactly as before):
+//   - iface: return only this interface's history
+//   - since: return only points at or after this Unix-milliseconds timestamp
 func InterfaceHistory(c *collector.Collector) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		httputil.WriteJSON(w, c.GetHistory())
+		iface := r.URL.Query().Get("iface")
+		if len(iface) > 64 {
+			http.Error(w, "iface too long", http.StatusBadRequest)
+			return
+		}
+		var since int64
+		if s := r.URL.Query().Get("since"); s != "" {
+			var err error
+			since, err = strconv.ParseInt(s, 10, 64)
+			if err != nil || since < 0 {
+				http.Error(w, "since must be a Unix-milliseconds timestamp", http.StatusBadRequest)
+				return
+			}
+		}
+		httputil.WriteJSON(w, c.GetHistoryFiltered(iface, since))
 	}
 }
 

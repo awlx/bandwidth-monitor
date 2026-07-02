@@ -4,6 +4,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -87,6 +88,15 @@ type rawStat struct {
 	ts        time.Time
 }
 
+// NewForTest returns a Collector pre-seeded with history and no netlink handle. Only for use
+// in tests of packages that consume the collector (e.g. handler); never poll it.
+func NewForTest(history map[string][]HistoryPoint) *Collector {
+	if history == nil {
+		history = make(map[string][]HistoryPoint)
+	}
+	return &Collector{history: history}
+}
+
 func New(vpnStatusFiles map[string]string, allowedIfaces []string, wanIfaces []string) *Collector {
 	if vpnStatusFiles == nil {
 		vpnStatusFiles = make(map[string]string)
@@ -164,12 +174,26 @@ func (c *Collector) GetAll() []InterfaceStat {
 }
 
 func (c *Collector) GetHistory() map[string][]HistoryPoint {
+	return c.GetHistoryFiltered("", 0)
+}
+
+// GetHistoryFiltered returns per-interface history, optionally narrowed to a single interface
+// (iface != "") and/or to points at or after sinceMillis (Unix milliseconds, > 0). Zero values
+// mean no filtering, so GetHistoryFiltered("", 0) is equivalent to GetHistory.
+func (c *Collector) GetHistoryFiltered(iface string, sinceMillis int64) map[string][]HistoryPoint {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	result := make(map[string][]HistoryPoint, len(c.history))
 	for k, v := range c.history {
+		if iface != "" && k != iface {
+			continue
+		}
 		if c.allowedIfaces != nil && !c.allowedIfaces[k] {
 			continue
+		}
+		if sinceMillis > 0 {
+			// Timestamps are append-only ascending, so binary-search the first point in range.
+			v = v[sort.Search(len(v), func(i int) bool { return v[i].Timestamp >= sinceMillis }):]
 		}
 		cp := make([]HistoryPoint, len(v))
 		copy(cp, v)

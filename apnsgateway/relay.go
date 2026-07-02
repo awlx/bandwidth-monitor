@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -309,23 +310,42 @@ func (r *Relay) pushOne(token string, sub subscription) {
 // fetchState polls the subscriber's own bandwidth-monitor server — the exact same plain
 // /api/interfaces and /api/interfaces/history endpoints the iOS app already uses directly — and
 // shapes the response into a contentstate.State via the shared builder.
+//
+// The interface name is resolved from /api/interfaces first so the history fetch can be narrowed
+// with ?iface=&since= to just the slice contentstate.Build actually uses, instead of every
+// interface's full 24h history (multiple MB). Old servers ignore the params and return the full
+// map — Build's own windowing handles the superset, so no version negotiation is needed.
 func (r *Relay) fetchState(sub subscription) (contentstate.State, bool) {
 	all, err := r.fetchInterfaces(sub.serverURL)
 	if err != nil {
 		log.Printf("apnsgateway: fetch %s/api/interfaces: %v", sub.serverURL, err)
 		return contentstate.State{}, false
 	}
-	hist, err := r.fetchHistory(sub.serverURL)
+
+	name := sub.iface
+	if name == "" {
+		name = pickInterface(all, nil)
+	}
+	hist, err := r.fetchHistory(sub.serverURL, name)
 	if err != nil {
 		log.Printf("apnsgateway: fetch %s/api/interfaces/history: %v", sub.serverURL, err)
 		return contentstate.State{}, false
 	}
 
-	name := sub.iface
-	if name == "" || (hist[name] == nil && ifaceStat(all, name) == nil) {
-		name = pickInterface(all, hist)
+	// The requested interface is unknown to this server (no history, not in /api/interfaces) —
+	// fall back to whatever it does have, refetching if the first fetch was filtered to the
+	// wrong name. Rare path: a misconfigured subscription or an empty /api/interfaces.
+	if hist[name] == nil && ifaceStat(all, name) == nil {
+		fallback := pickInterface(all, hist)
+		if fallback != "" && fallback != name && hist[fallback] == nil {
+			if hist, err = r.fetchHistory(sub.serverURL, fallback); err != nil {
+				log.Printf("apnsgateway: fetch %s/api/interfaces/history: %v", sub.serverURL, err)
+				return contentstate.State{}, false
+			}
+		}
+		name = fallback
 	}
-	if name == "" {
+	if name == "" || (hist[name] == nil && ifaceStat(all, name) == nil) {
 		return contentstate.State{}, false
 	}
 
@@ -354,19 +374,18 @@ func (r *Relay) fetchInterfaces(serverURL string) ([]remoteInterfaceStat, error)
 	return out, nil
 }
 
-// TODO(api-versioning): this pulls every interface's full history (up to ~5.5MB per interface
-// at the default 24h/1Hz retention — see PR #8) when contentstate.Build only ever uses the last
-// contentstate.Window (1h), downsampled to contentstate.MaxPoints, for a single interface. Add
-// optional ?iface=&since= params to /api/interfaces/history so this can request just that slice
-// instead of relying on APNS_MAX_RESPONSE_BYTES to keep growing. This is additive/backward
-// compatible on its own — the server currently has no API versioning scheme (flat /api/* routes,
-// no /v1/ prefix; X-Bandwidth-Monitor is a build version, not a schema version) — so it likely
-// doesn't need one just for this, but should ride along if a versioning scheme gets introduced
-// for other reasons. Touches collector.go/handler.go on the main server as well as this file, so
-// it needs a coordinated rebuild/redeploy of both binaries where they run on separate hosts.
-func (r *Relay) fetchHistory(serverURL string) (map[string][]contentstate.Point, error) {
+// fetchHistory pulls history narrowed with ?iface=&since= to just the slice contentstate.Build
+// uses (the last contentstate.Window for one interface) instead of every interface's full 24h
+// history. The params are additive: old servers ignore them and return the full map, which
+// Build's own windowing (and the response size cap) absorbs — so no version negotiation is
+// needed against servers that predate the params. iface == "" fetches all interfaces.
+func (r *Relay) fetchHistory(serverURL, iface string) (map[string][]contentstate.Point, error) {
+	params := url.Values{"since": {strconv.FormatInt(time.Now().Add(-contentstate.Window).UnixMilli(), 10)}}
+	if iface != "" {
+		params.Set("iface", iface)
+	}
 	var out map[string][]contentstate.Point
-	if err := r.fetchJSON(serverURL+"/api/interfaces/history", &out); err != nil {
+	if err := r.fetchJSON(serverURL+"/api/interfaces/history?"+params.Encode(), &out); err != nil {
 		return nil, err
 	}
 	return out, nil
