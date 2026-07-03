@@ -114,4 +114,4 @@ No secret is required to register. The threat model is that registering a `serve
 
 ## Notes
 
-- **TODO (api-versioning):** The gateway currently fetches full history from `/api/interfaces/history` and discards all but the last hour for a single interface. Adding optional `?iface=&since=` query parameters to that endpoint would let the gateway request only the slice it needs, avoiding unnecessarily large responses. This is additive and backward-compatible on its own. See the `fetchHistory` TODO comment in `apnsgateway/relay.go` for details.
+- **Filtered history fetches:** The gateway narrows its `/api/interfaces/history` requests with `?iface=<name>&since=<Unix ms>` so a current server sends only the last hour of one interface's history (a few KB) instead of every interface's full 24h retention (multiple MB). The parameters are additive, so no version negotiation is needed: servers that predate them ignore them and return the full map, which the gateway's own content-state windowing (and `APNS_MAX_RESPONSE_BYTES`) absorbs transparently.

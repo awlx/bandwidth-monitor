@@ -1,12 +1,16 @@
 package main
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"bandwidth-monitor/contentstate"
 )
 
 // A registered serverURL must resolve only to public addresses — a bandwidth-monitor server can
@@ -94,5 +98,107 @@ func TestRateLimiterSweepsStaleSources(t *testing.T) {
 	}
 	if _, ok := l.events["192.0.2.1"]; !ok {
 		t.Error("fresh source missing after sweep")
+	}
+}
+
+// testRelay returns a Relay whose dial-time IP check is disabled so it can talk to the
+// loopback-hosted httptest server. Everything else matches production wiring.
+func testRelay() *Relay {
+	r := NewRelay(nil, 10*time.Second, 0)
+	r.httpClient = newFetchClient(fetchTimeout, nil)
+	return r
+}
+
+// mockServer simulates a bandwidth-monitor instance. filtered controls whether it honours the
+// ?iface=&since= params (new server) or ignores them and returns everything (old server).
+func mockServer(t *testing.T, filtered bool, gotQueries *[]string) *httptest.Server {
+	t.Helper()
+	now := time.Now().UnixMilli()
+	history := map[string][]contentstate.Point{
+		"eth0": {{T: now - 30_000, Rx: 100, Tx: 200}, {T: now - 10_000, Rx: 300, Tx: 400}},
+		"ppp0": {{T: now - 20_000, Rx: 1, Tx: 2}},
+	}
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		switch req.URL.Path {
+		case "/api/interfaces":
+			json.NewEncoder(w).Encode([]remoteInterfaceStat{
+				{Name: "eth0", WAN: true, RxRate: 500, TxRate: 600},
+				{Name: "ppp0", RxRate: 5, TxRate: 6},
+			})
+		case "/api/interfaces/history":
+			*gotQueries = append(*gotQueries, req.URL.RawQuery)
+			out := history
+			if filtered {
+				if iface := req.URL.Query().Get("iface"); iface != "" {
+					out = map[string][]contentstate.Point{iface: history[iface]}
+				}
+			}
+			json.NewEncoder(w).Encode(out)
+		default:
+			http.NotFound(w, req)
+		}
+	}))
+}
+
+// The relay must narrow the history fetch with ?iface=&since= so a new server can send just the
+// slice contentstate.Build uses, and the built state must reflect the requested interface.
+func TestFetchStateSendsFilterParams(t *testing.T) {
+	var queries []string
+	srv := mockServer(t, true, &queries)
+	defer srv.Close()
+
+	state, ok := testRelay().fetchState(subscription{serverURL: srv.URL, iface: "eth0"})
+	if !ok {
+		t.Fatal("fetchState failed")
+	}
+	if state.InterfaceName != "eth0" || state.RxRate != 500 {
+		t.Errorf("state = %+v, want eth0 with live rx=500", state)
+	}
+	if len(queries) != 1 {
+		t.Fatalf("want 1 history fetch, got %d (%v)", len(queries), queries)
+	}
+	q, _ := url.ParseQuery(queries[0])
+	if q.Get("iface") != "eth0" || q.Get("since") == "" {
+		t.Errorf("history query = %q, want iface=eth0 and a since param", queries[0])
+	}
+}
+
+// Against an old server that ignores the params and returns every interface's history (the
+// pre-params superset), the relay must still build a correct single-interface state — this is
+// the no-version-negotiation fallback.
+func TestFetchStateToleratesOldServerSuperset(t *testing.T) {
+	var queries []string
+	srv := mockServer(t, false, &queries)
+	defer srv.Close()
+
+	state, ok := testRelay().fetchState(subscription{serverURL: srv.URL, iface: "ppp0"})
+	if !ok {
+		t.Fatal("fetchState failed")
+	}
+	if state.InterfaceName != "ppp0" || state.RxRate != 5 {
+		t.Errorf("state = %+v, want ppp0 with live rx=5", state)
+	}
+	// Points: 1 windowed history point + the synthetic now point; eth0's points must not leak in.
+	if len(state.Points) != 2 {
+		t.Errorf("want 2 points (ppp0 history + now), got %d: %+v", len(state.Points), state.Points)
+	}
+}
+
+// A subscription naming an interface the server doesn't have must fall back to the server's WAN
+// interface (refetching the filtered history for it) rather than pushing an empty state.
+func TestFetchStateFallsBackForUnknownInterface(t *testing.T) {
+	var queries []string
+	srv := mockServer(t, true, &queries)
+	defer srv.Close()
+
+	state, ok := testRelay().fetchState(subscription{serverURL: srv.URL, iface: "wg9"})
+	if !ok {
+		t.Fatal("fetchState failed")
+	}
+	if state.InterfaceName != "eth0" {
+		t.Errorf("state interface = %q, want fallback to WAN eth0", state.InterfaceName)
+	}
+	if len(queries) != 2 {
+		t.Errorf("want 2 history fetches (wg9 miss, then eth0), got %d (%v)", len(queries), queries)
 	}
 }
