@@ -88,19 +88,32 @@ func New(cfg Config, col *collector.Collector) (*Manager, error) {
 	return m, nil
 }
 
+// maxTokens caps the registry so the (unauthenticated) register endpoint can't grow it without
+// bound — the same class of leak as an unswept rate-limiter map. Dead tokens are already pruned
+// on APNs 410/BadDeviceToken/Unregistered; this bounds the live set. Far above any realistic
+// number of devices watching one household router, so hitting it means abuse, not use.
+const maxTokens = 1000
+
 // Register records (or refreshes) a push token and the interface + APNs environment it wants.
-func (m *Manager) Register(token, iface, environment string) {
+// Returns false when the registry is at capacity and the token is new.
+func (m *Manager) Register(token, iface, environment string) bool {
 	if token == "" {
-		return
+		return false
 	}
 	if environment != "sandbox" && environment != "production" {
 		environment = m.cfg.Env
 	}
 	m.mu.Lock()
+	if _, existed := m.tokens[token]; !existed && len(m.tokens) >= maxTokens {
+		m.mu.Unlock()
+		log.Printf("liveactivity: rejected registration: at capacity (%d tokens)", maxTokens)
+		return false
+	}
 	m.tokens[token] = registration{iface: iface, environment: environment, lastSeen: time.Now()}
 	n := len(m.tokens)
 	m.mu.Unlock()
 	log.Printf("liveactivity: registered token for %q (%s); %d active", iface, environment, n)
+	return true
 }
 
 // Run pushes to all registered tokens every Interval until Stop. Blocks; call via `go m.Run()`.

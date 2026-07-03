@@ -785,16 +785,20 @@ func LiveActivityRegister(m *liveactivity.Manager) http.HandlerFunc {
 			http.Error(w, "POST required", http.StatusMethodNotAllowed)
 			return
 		}
+		r.Body = http.MaxBytesReader(w, r.Body, 4<<10)
 		var body struct {
 			Token       string `json:"token"`
 			Interface   string `json:"interface"`
 			Environment string `json:"environment"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Token == "" {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Token == "" || len(body.Token) > 200 {
 			http.Error(w, "invalid body: expected {token, interface, environment}", http.StatusBadRequest)
 			return
 		}
-		m.Register(body.Token, body.Interface, body.Environment)
+		if !m.Register(body.Token, body.Interface, body.Environment) {
+			http.Error(w, "registry at capacity", http.StatusServiceUnavailable)
+			return
+		}
 		httputil.WriteJSON(w, map[string]string{"status": "ok"})
 	}
 }

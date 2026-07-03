@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"bandwidth-monitor/apns"
@@ -66,15 +67,9 @@ func NewRelay(apnsClient *apns.Client, interval time.Duration, maxResponseBytes 
 	if maxResponseBytes <= 0 {
 		maxResponseBytes = DefaultMaxResponseBytes
 	}
-	fetchClient := httputil.NewClient(fetchTimeout)
-	// Never follow redirects: a registered URL that passes the public-IP check could otherwise
-	// redirect the actual request somewhere that wouldn't (SSRF via redirect).
-	fetchClient.CheckRedirect = func(*http.Request, []*http.Request) error {
-		return http.ErrUseLastResponse
-	}
 	r := &Relay{
 		apnsClient:       apnsClient,
-		httpClient:       fetchClient,
+		httpClient:       newFetchClient(fetchTimeout, checkIP),
 		interval:         interval,
 		maxResponseBytes: maxResponseBytes,
 		limiter:          newIPRateLimiter(20, 5*time.Minute),
@@ -82,6 +77,49 @@ func NewRelay(apnsClient *apns.Client, interval time.Duration, maxResponseBytes 
 	}
 	r.runner.Init()
 	return r
+}
+
+// newFetchClient builds the HTTP client used to poll registered servers. ipCheck (nil = allow
+// all, tests only) runs inside the dialer's Control hook, which observes the concrete IP of
+// every connection attempt *after* the client's own DNS resolution — unlike a LookupIP
+// pre-check, this can't be split from the connection by a DNS-rebinding attacker serving one
+// answer to the check and another to the dial.
+func newFetchClient(timeout time.Duration, ipCheck func(net.IP) error) *http.Client {
+	dialer := &net.Dialer{
+		Timeout: timeout,
+		Control: func(network, address string, _ syscall.RawConn) error {
+			if ipCheck == nil {
+				return nil
+			}
+			host, _, err := net.SplitHostPort(address)
+			if err != nil {
+				return fmt.Errorf("dial %q: %w", address, err)
+			}
+			// Strip any IPv6 zone (fe80::1%eth0) so ParseIP accepts the literal.
+			if i := strings.IndexByte(host, '%'); i >= 0 {
+				host = host[:i]
+			}
+			ip := net.ParseIP(host)
+			if ip == nil {
+				return fmt.Errorf("dial %q: not an IP literal", address)
+			}
+			if err := ipCheck(ip); err != nil {
+				return fmt.Errorf("dial %s: %w", ip, err)
+			}
+			return nil
+		},
+	}
+	client := &http.Client{
+		Timeout:   timeout,
+		Transport: httputil.WrapTransport(&http.Transport{DialContext: dialer.DialContext}),
+	}
+	// Never follow redirects: a registered URL that dials a public IP could otherwise redirect
+	// the request chain somewhere else entirely (SSRF via redirect) — though even a followed
+	// redirect would still hit the dial-time IP check above.
+	client.CheckRedirect = func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+	return client
 }
 
 func (r *Relay) Run()  { r.runner.Run(r.interval, r.tick) }
@@ -165,9 +203,9 @@ func (r *Relay) HandleRegister(w http.ResponseWriter, req *http.Request) {
 // can never legitimately live at a private/loopback/link-local address anyway, since the gateway
 // reaches it over the public internet, not the operator's LAN — so rejecting those targets costs
 // the real use case nothing while closing off internal-network and cloud-metadata-endpoint probing.
-// checkPublicHost is called again immediately before every fetch (not just at registration) to
-// narrow the DNS-rebinding window where a hostname resolves to a public IP at registration time but
-// to a private one later.
+// This registration-time resolve is for fast 400 feedback only; the authoritative check runs in
+// the fetch client's dialer against the concrete IP of every connection attempt (newFetchClient),
+// which DNS rebinding can't split from the connection.
 func validateServerURL(raw string) (string, error) {
 	if raw == "" || len(raw) > 2048 {
 		return "", fmt.Errorf("empty or too long")
@@ -188,18 +226,29 @@ func validateServerURL(raw string) (string, error) {
 	return strings.TrimSuffix(raw, "/"), nil
 }
 
-// checkPublicHost resolves host and rejects it if any resolved address is private, loopback,
-// link-local (which covers the 169.254.169.254 cloud-metadata pattern), multicast, or unspecified.
+// checkPublicHost resolves host and rejects it if any resolved address fails checkIP. This is
+// the registration-time check, for fast feedback (400) on obviously invalid targets; the
+// authoritative enforcement is the dial-time checkIP in newFetchClient, which a DNS-rebinding
+// attacker can't bypass.
 func checkPublicHost(host string) error {
 	ips, err := net.LookupIP(host)
 	if err != nil {
 		return fmt.Errorf("resolve %q: %w", host, err)
 	}
 	for _, ip := range ips {
-		if ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast() ||
-			ip.IsLinkLocalMulticast() || ip.IsMulticast() || ip.IsUnspecified() {
-			return fmt.Errorf("%q resolves to a non-public address (%s)", host, ip)
+		if err := checkIP(ip); err != nil {
+			return fmt.Errorf("%q: %w", host, err)
 		}
+	}
+	return nil
+}
+
+// checkIP rejects private, loopback, link-local (which covers the 169.254.169.254
+// cloud-metadata pattern), multicast, and unspecified addresses.
+func checkIP(ip net.IP) error {
+	if ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast() ||
+		ip.IsLinkLocalMulticast() || ip.IsMulticast() || ip.IsUnspecified() {
+		return fmt.Errorf("non-public address %s", ip)
 	}
 	return nil
 }
@@ -323,17 +372,12 @@ func (r *Relay) fetchHistory(serverURL string) (map[string][]contentstate.Point,
 	return out, nil
 }
 
+// fetchJSON GETs target and decodes it. SSRF enforcement happens inside the client's dialer
+// (see newFetchClient): every connection attempt validates the concrete resolved IP, so a
+// hostname repointed at a private address after registration (DNS rebinding) fails at dial
+// time — there is deliberately no separate LookupIP pre-check here, because a check that
+// resolves independently of the dial can be fed a different answer than the dial receives.
 func (r *Relay) fetchJSON(target string, out any) error {
-	parsed, err := url.Parse(target)
-	if err != nil {
-		return err
-	}
-	// Re-check on every fetch, not just at registration, to narrow the window where a hostname
-	// resolved to a public IP when registered but has since been repointed at a private one.
-	if err := checkPublicHost(parsed.Hostname()); err != nil {
-		return err
-	}
-
 	req, err := http.NewRequest(http.MethodGet, target, nil)
 	if err != nil {
 		return err
@@ -399,16 +443,20 @@ func clientIP(req *http.Request) string {
 
 // ipRateLimiter is a minimal fixed-window-per-source limiter — no external dependency, just enough
 // to stop a single source from hammering the (intentionally unauthenticated) register endpoint.
+// A periodic sweep drops sources whose events have all aged out, so the map stays bounded by the
+// number of currently-active sources rather than every source ever seen — without it, a long-lived
+// public relay leaks an entry per churned client IP forever.
 type ipRateLimiter struct {
 	max    int
 	window time.Duration
 
-	mu     sync.Mutex
-	events map[string][]time.Time
+	mu        sync.Mutex
+	events    map[string][]time.Time
+	lastSweep time.Time
 }
 
 func newIPRateLimiter(max int, window time.Duration) *ipRateLimiter {
-	return &ipRateLimiter{max: max, window: window, events: make(map[string][]time.Time)}
+	return &ipRateLimiter{max: max, window: window, events: make(map[string][]time.Time), lastSweep: time.Now()}
 }
 
 func (l *ipRateLimiter) allow(ip string) bool {
@@ -416,6 +464,23 @@ func (l *ipRateLimiter) allow(ip string) bool {
 	defer l.mu.Unlock()
 	now := time.Now()
 	cutoff := now.Add(-l.window)
+
+	// At most once per window, drop sources with no events left in the window. Amortized cost is
+	// negligible; keyed off registration traffic itself, so an idle relay holds only idle memory.
+	if now.Sub(l.lastSweep) > l.window {
+		for k, ts := range l.events {
+			i := 0
+			for i < len(ts) && ts[i].Before(cutoff) {
+				i++
+			}
+			if i == len(ts) {
+				delete(l.events, k)
+			} else if i > 0 {
+				l.events[k] = ts[i:]
+			}
+		}
+		l.lastSweep = now
+	}
 
 	times := l.events[ip]
 	i := 0
