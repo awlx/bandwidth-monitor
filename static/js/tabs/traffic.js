@@ -265,7 +265,12 @@
                 BM.chartData[name] = { rx: rx, tx: tx };
             }
             if (BM.renderIfaceTabs) BM.renderIfaceTabs();
-            if (BM.updateChart) BM.updateChart();
+            // Force a y-axis rescale: the backfilled window can contain far larger
+            // peaks than the handful of live points added since reload, and a plain
+            // updateChart() skips recompute when the interface is unchanged and it
+            // isn't a 10th tick — which would leave the axis stuck at the small
+            // live-only scale even though the big history is now drawn.
+            if (BM.updateChart) BM.updateChart(true);
         }).catch(function(e) { console.error('live backfill:', e); });
     };
 
@@ -317,7 +322,7 @@
         }
     }
 
-    BM.updateChart = function() {
+    BM.updateChart = function(forceRescale) {
         _normalizeSelectedIface();
         var ds = [], ci = 0;
         // Sort so the series order (and thus colour assignment) is stable across
@@ -340,7 +345,7 @@
         // always immediately on an interface toggle, so the axis still drops
         // right away when a series is hidden.
         var sig = selectedIface === null ? '__all__' : selectedIface;
-        var recompute = (sig !== _yAxisSig) || (_yAxisTick % 10 === 0);
+        var recompute = forceRescale || (sig !== _yAxisSig) || (_yAxisTick % 10 === 0);
         _yAxisTick++;
         if (recompute) {
             var vals = [];
@@ -356,8 +361,8 @@
                 vals.sort(function(a, b) { return a - b; });
                 target = vals[Math.floor((vals.length - 1) * 0.99)] * 1.15;
             }
-            if (sig !== _yAxisSig || target >= _yAxisMax) {
-                _yAxisMax = target;                              // toggle or genuine rise → snap
+            if (forceRescale || sig !== _yAxisSig || target >= _yAxisMax) {
+                _yAxisMax = target;                              // forced reload, toggle, or genuine rise → snap
             } else {
                 _yAxisMax = Math.max(target, _yAxisMax * 0.9);   // ease down smoothly, no flicker
             }
