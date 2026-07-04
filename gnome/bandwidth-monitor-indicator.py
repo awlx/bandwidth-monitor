@@ -196,11 +196,24 @@ def fetch_external_ips() -> tuple:
 class BWIndicator:
     EXT_IP_INTERVAL = 300  # seconds
 
-    def __init__(self, server: str, prefer_iface: str, refresh: int, show_ext_ip: bool):
+    def __init__(
+        self,
+        server: str,
+        prefer_iface: str,
+        refresh: int,
+        show_ext_ip: bool,
+        auto_detect: bool = False,
+        port: int = 8080,
+    ):
         self.server = server
         self.prefer_iface = prefer_iface
         self.refresh = refresh
         self.show_ext_ip = show_ext_ip
+        # Only re-detect the server on failure if it was auto-detected from
+        # the default gateway in the first place -- an explicit --server/
+        # BW_SERVER should never be silently overridden.
+        self.auto_detect = auto_detect
+        self.port = port
         self.ext_ip4 = ""
         self.ext_ip6 = ""
         self.ext_ip_last = 0.0
@@ -374,8 +387,32 @@ class BWIndicator:
             self.ext_ip6_item.set_visible(False)
         return False  # remove from idle
 
+    def _redetect_server(self) -> bool:
+        """Re-run gateway auto-detection and switch servers if it changed.
+
+        The gateway can change after the indicator has started (DHCP lease
+        renewal, router reboot, switching networks, VPN connect/disconnect),
+        which otherwise leaves the indicator stuck polling a dead address
+        until it's manually restarted. Returns True if the server changed.
+        """
+        if not self.auto_detect:
+            return False
+        new_server = auto_detect_server(self.port)
+        if new_server == self.server:
+            return False
+        print(
+            f"bandwidth-monitor indicator: gateway changed, "
+            f"switching server from {self.server} to {new_server}"
+        )
+        self.server = new_server
+        self.server_item.set_label(f"Server: {self.server}")
+        return True
+
     def _tick(self):
         data = fetch_summary(self.server)
+
+        if not data and self._redetect_server():
+            data = fetch_summary(self.server)
 
         if not data:
             self.indicator.set_label(" -- ", "")
@@ -567,6 +604,7 @@ def main():
     )
     args = parser.parse_args()
 
+    auto_detect = not args.server
     server = args.server or auto_detect_server(args.port)
     show_ext = args.show_external_ip.lower() == "true"
 
@@ -577,7 +615,14 @@ def main():
     # Allow clean Ctrl+C
     signal.signal(signal.SIGINT, signal.SIG_DFL)
 
-    BWIndicator(server, args.prefer_iface, args.refresh, show_ext)
+    BWIndicator(
+        server,
+        args.prefer_iface,
+        args.refresh,
+        show_ext,
+        auto_detect=auto_detect,
+        port=args.port,
+    )
     Gtk.main()
 
 
