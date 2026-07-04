@@ -127,7 +127,8 @@
 
     BM._historyLoaded = false;
     var _historyRefreshInterval = null;
-    var _historyData = {};            // latest /api/interfaces/history payload
+    var _historyData = {};            // accumulated /api/interfaces/history points, pruned to 24h
+    var _lastHistoryTs = 0;           // newest point seen; refreshes fetch ?since= from here
     var selectedHistoryIface = null;  // null = All (mirrors the Live chart's selectedIface)
 
     // Build the 24h chart datasets from _historyData, honouring the interface
@@ -173,9 +174,36 @@
 
     window._shi = function(n) { selectedHistoryIface = n; _renderHistoryIfaceTabs(); _renderHistoryChart(); };
 
+    // First call fetches the full 24h history; refreshes fetch only ?since= the newest point
+    // already held and merge, so the periodic refresh parses a few KB instead of the multi-MB
+    // full payload. The t > _lastHistoryTs guard both dedupes and absorbs servers that predate
+    // the since param (they ignore it and return everything).
     function _fetchInterfaceHistory() {
-        fetch('/api/interfaces/history').then(function(r) { return r.json(); }).then(function(data) {
-            _historyData = data || {};
+        var url = '/api/interfaces/history' + (_lastHistoryTs ? '?since=' + (_lastHistoryTs + 1) : '');
+        fetch(url).then(function(r) { return r.json(); }).then(function(data) {
+            data = data || {};
+            var cutoff = Date.now() - 24 * 3600 * 1000;
+            var newest = _lastHistoryTs;
+            var dataNames = Object.keys(data);
+            for (var di = 0; di < dataNames.length; di++) {
+                var dn = dataNames[di];
+                var incoming = data[dn];
+                if (!incoming || !incoming.length) continue;
+                var cur = _historyData[dn] || (_historyData[dn] = []);
+                for (var ii = 0; ii < incoming.length; ii++) {
+                    var p = incoming[ii];
+                    if (p.t > _lastHistoryTs) cur.push(p);
+                    if (p.t > newest) newest = p.t;
+                }
+            }
+            _lastHistoryTs = newest;
+            var histNames = Object.keys(_historyData);
+            for (var hi = 0; hi < histNames.length; hi++) {
+                var pts = _historyData[histNames[hi]];
+                var drop = 0;
+                while (drop < pts.length && pts[drop].t < cutoff) drop++;
+                if (drop) _historyData[histNames[hi]] = pts.slice(drop);
+            }
             _renderHistoryIfaceTabs();
             _renderHistoryChart();
             // Subtitle reflects overall collection age, independent of the toggle.
@@ -208,7 +236,9 @@
     // window (last MAX_PTS seconds) and rebuild BM.chartData; live SSE ticks then
     // continue appending from where history left off. Called on every (re)connect.
     BM._backfillLiveTraffic = function() {
-        return fetch('/api/interfaces/history').then(function(r) { return r.json(); }).then(function(data) {
+        // Only the chart window is kept (see cutoff below), so ask the server for just that
+        // slice; servers predating the since param ignore it and return everything.
+        return fetch('/api/interfaces/history?since=' + (Date.now() - BM.MAX_PTS * 1000)).then(function(r) { return r.json(); }).then(function(data) {
             if (!data) return;
             var cutoff = Date.now() - BM.MAX_PTS * 1000;
             var names = Object.keys(data);

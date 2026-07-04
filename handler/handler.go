@@ -20,6 +20,7 @@ import (
 	"bandwidth-monitor/geoip"
 	"bandwidth-monitor/httputil"
 	"bandwidth-monitor/latency"
+	"bandwidth-monitor/liveactivity"
 	"bandwidth-monitor/netutil"
 	"bandwidth-monitor/resolver"
 	"bandwidth-monitor/speedtest"
@@ -34,9 +35,27 @@ func InterfaceStats(c *collector.Collector) http.HandlerFunc {
 	}
 }
 
+// InterfaceHistory serves per-interface rate history. Optional query params narrow the response
+// (both are additive — old clients that send neither get the full map exactly as before):
+//   - iface: return only this interface's history
+//   - since: return only points at or after this Unix-milliseconds timestamp
 func InterfaceHistory(c *collector.Collector) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		httputil.WriteJSON(w, c.GetHistory())
+		iface := r.URL.Query().Get("iface")
+		if len(iface) > 64 {
+			http.Error(w, "iface too long", http.StatusBadRequest)
+			return
+		}
+		var since int64
+		if s := r.URL.Query().Get("since"); s != "" {
+			var err error
+			since, err = strconv.ParseInt(s, 10, 64)
+			if err != nil || since < 0 {
+				http.Error(w, "since must be a Unix-milliseconds timestamp", http.StatusBadRequest)
+				return
+			}
+		}
+		httputil.WriteJSON(w, c.GetHistoryFiltered(iface, since))
 	}
 }
 
@@ -774,4 +793,30 @@ func readProcessCount() (running, total int) {
 		total, _ = strconv.Atoi(rt[1])
 	}
 	return
+}
+
+// LiveActivityRegister records an iOS Live Activity push token so the server can drive updates via
+// APNs. Body: {"token":"<hex>","interface":"eth0","environment":"production|sandbox"}.
+func LiveActivityRegister(m *liveactivity.Manager) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "POST required", http.StatusMethodNotAllowed)
+			return
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, 4<<10)
+		var body struct {
+			Token       string `json:"token"`
+			Interface   string `json:"interface"`
+			Environment string `json:"environment"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Token == "" || len(body.Token) > 200 {
+			http.Error(w, "invalid body: expected {token, interface, environment}", http.StatusBadRequest)
+			return
+		}
+		if !m.Register(body.Token, body.Interface, body.Environment) {
+			http.Error(w, "registry at capacity", http.StatusServiceUnavailable)
+			return
+		}
+		httputil.WriteJSON(w, map[string]string{"status": "ok"})
+	}
 }
