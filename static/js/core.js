@@ -76,6 +76,9 @@
         return true; // All other tabs are always available
     }
 
+    // Hash-state helpers (BM._hashTab / _hashParams / _setHashParam) live in
+    // utils.js so they're defined before the deferred tab modules parse.
+
     window._switchTab = function(tab) {
         // Guard: if tab is unavailable, fallback to traffic
         if (!_isTabAvailable(tab)) {
@@ -91,10 +94,14 @@
         document.querySelectorAll('.main-nav-tab').forEach(function(t) {
             t.classList.toggle('active', t.getAttribute('data-tab') === tab);
         });
+        // Preserve any per-tab params (e.g. the selected interface) so switching
+        // away and back — or reloading — keeps the view intact.
+        var qs = BM._hashParams().toString();
+        var newHash = '#' + tab + (qs ? '?' + qs : '');
         if (history.replaceState) {
-            history.replaceState(null, '', '#' + tab);
+            history.replaceState(null, '', newHash);
         } else {
-            location.hash = tab;
+            location.hash = newHash;
         }
         if (tab === 'speedtest' && !_stHistoryLoaded) {
             _stHistoryLoaded = true;
@@ -141,13 +148,13 @@
 
     // Restore tab from URL hash on load
     (function() {
-        var hash = location.hash.replace('#', '');
+        var hash = BM._hashTab();
         var validTabs = ['traffic', 'nat', 'dns', 'wifi', 'network', 'monitor', 'speedtest', 'debug'];
         if (hash && validTabs.indexOf(hash) !== -1 && _isTabAvailable(hash)) {
             setTimeout(function() { window._switchTab(hash); }, 0);
         }
         window.addEventListener('hashchange', function() {
-            var h = location.hash.replace('#', '');
+            var h = BM._hashTab();
             if (h && validTabs.indexOf(h) !== -1 && h !== BM._activeTab && _isTabAvailable(h)) {
                 window._switchTab(h);
             }
