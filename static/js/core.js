@@ -76,6 +76,37 @@
         return true; // All other tabs are always available
     }
 
+    // ── URL hash state ──
+    // The hash carries the active tab and, on tabs that have per-view state,
+    // query-style params after a "?": e.g. "#traffic?iface=eth0&hist=eth0".
+    // Splitting on "?" keeps tab routing working while letting a tab persist
+    // its selected interface across reloads.
+    BM._hashTab = function() {
+        return location.hash.replace(/^#/, '').split('?')[0];
+    };
+    BM._hashParams = function() {
+        return new URLSearchParams(location.hash.split('?')[1] || '');
+    };
+    // _setHashParam updates one param without disturbing the tab or other
+    // params. Pass null/'' to remove it. Uses replaceState so it doesn't spam
+    // history or fire hashchange.
+    BM._setHashParam = function(key, value) {
+        var params = BM._hashParams();
+        if (value === null || value === undefined || value === '') {
+            params.delete(key);
+        } else {
+            params.set(key, value);
+        }
+        var tab = BM._hashTab() || BM._activeTab || 'traffic';
+        var qs = params.toString();
+        var newHash = '#' + tab + (qs ? '?' + qs : '');
+        if (history.replaceState) {
+            history.replaceState(null, '', newHash);
+        } else {
+            location.hash = newHash;
+        }
+    };
+
     window._switchTab = function(tab) {
         // Guard: if tab is unavailable, fallback to traffic
         if (!_isTabAvailable(tab)) {
@@ -91,10 +122,14 @@
         document.querySelectorAll('.main-nav-tab').forEach(function(t) {
             t.classList.toggle('active', t.getAttribute('data-tab') === tab);
         });
+        // Preserve any per-tab params (e.g. the selected interface) so switching
+        // away and back — or reloading — keeps the view intact.
+        var qs = BM._hashParams().toString();
+        var newHash = '#' + tab + (qs ? '?' + qs : '');
         if (history.replaceState) {
-            history.replaceState(null, '', '#' + tab);
+            history.replaceState(null, '', newHash);
         } else {
-            location.hash = tab;
+            location.hash = newHash;
         }
         if (tab === 'speedtest' && !_stHistoryLoaded) {
             _stHistoryLoaded = true;
@@ -141,13 +176,13 @@
 
     // Restore tab from URL hash on load
     (function() {
-        var hash = location.hash.replace('#', '');
+        var hash = BM._hashTab();
         var validTabs = ['traffic', 'nat', 'dns', 'wifi', 'network', 'monitor', 'speedtest', 'debug'];
         if (hash && validTabs.indexOf(hash) !== -1 && _isTabAvailable(hash)) {
             setTimeout(function() { window._switchTab(hash); }, 0);
         }
         window.addEventListener('hashchange', function() {
-            var h = location.hash.replace('#', '');
+            var h = BM._hashTab();
             if (h && validTabs.indexOf(h) !== -1 && h !== BM._activeTab && _isTabAvailable(h)) {
                 window._switchTab(h);
             }

@@ -129,7 +129,8 @@
     var _historyRefreshInterval = null;
     var _historyData = {};            // accumulated /api/interfaces/history points, pruned to 24h
     var _lastHistoryTs = 0;           // newest point seen; refreshes fetch ?since= from here
-    var selectedHistoryIface = null;  // null = All (mirrors the Live chart's selectedIface)
+    // null = All. Restored from the URL hash so a reload keeps the selection.
+    var selectedHistoryIface = (BM._hashParams && BM._hashParams().get('hist')) || null;
 
     // Build the 24h chart datasets from _historyData, honouring the interface
     // toggle. Mirrors BM.updateChart for the Live chart: a single selected
@@ -137,7 +138,13 @@
     // the per-series RX/TX legend toggles keep working on top.
     function _renderHistoryChart() {
         var names = Object.keys(_historyData).sort();
-        if (selectedHistoryIface && names.indexOf(selectedHistoryIface) === -1) selectedHistoryIface = null;
+        // Only clear a hash-restored selection once data has actually loaded and
+        // the interface genuinely isn't present — not during the initial empty
+        // window, which would wipe a valid selection before its points arrive.
+        if (selectedHistoryIface && names.length && names.indexOf(selectedHistoryIface) === -1) {
+            selectedHistoryIface = null;
+            if (BM._setHashParam) BM._setHashParam('hist', null);
+        }
         var list = selectedHistoryIface ? [selectedHistoryIface] : names;
         var ds = [], ci = 0;
         for (var ni = 0; ni < list.length; ni++) {
@@ -172,7 +179,7 @@
         el.innerHTML = h;
     }
 
-    window._shi = function(n) { selectedHistoryIface = n; _renderHistoryIfaceTabs(); _renderHistoryChart(); };
+    window._shi = function(n) { selectedHistoryIface = n; if (BM._setHashParam) BM._setHashParam('hist', n); _renderHistoryIfaceTabs(); _renderHistoryChart(); };
 
     // First call fetches the full 24h history; refreshes fetch only ?since= the newest point
     // already held and merge, so the periodic refresh parses a few KB instead of the multi-MB
@@ -292,14 +299,18 @@
     BM._asnChart = asnChart;
     BM._ipvChart = ipvChart;
 
-    var selectedIface = null;
+    // Restore the selected interface from the URL hash so a reload keeps it.
+    var selectedIface = (BM._hashParams && BM._hashParams().get('iface')) || null;
     var _yAxisMax = 0;
     var _yAxisSig = '';  // signature of the visible series; changes on interface toggle
     var _yAxisTick = 0;  // throttles the percentile recompute (see updateChart)
 
     BM.updateChart = function() {
         var ds = [], ci = 0;
-        var list = selectedIface ? [selectedIface] : Array.from(BM.knownIfaces);
+        // Sort so the series order (and thus colour assignment) is stable across
+        // reloads and matches the 24h chart, instead of following the order
+        // interfaces happened to be discovered in.
+        var list = selectedIface ? [selectedIface] : Array.from(BM.knownIfaces).sort();
         for (var n of list) {
             if (!BM.chartData[n]) continue;
             var c = chartColors[ci % chartColors.length];
@@ -352,13 +363,14 @@
     BM.renderIfaceTabs = function() {
         var el = document.getElementById('ifaceTabs');
         var h = '<div class="iface-tab' + (selectedIface === null ? ' active' : '') + '" onclick="window._si(null)">All</div>';
-        BM.knownIfaces.forEach(function(n) {
+        // Sorted so the tab order is the same on every load and matches the 24h row.
+        Array.from(BM.knownIfaces).sort().forEach(function(n) {
             h += '<div class="iface-tab' + (selectedIface === n ? ' active' : '') + '" onclick="window._si(\'' + n + '\')">' + n + '</div>';
         });
         el.innerHTML = h;
     };
 
-    window._si = function(n) { selectedIface = n; BM.renderIfaceTabs(); BM.updateChart(); };
+    window._si = function(n) { selectedIface = n; if (BM._setHashParam) BM._setHashParam('iface', n); BM.renderIfaceTabs(); BM.updateChart(); };
 
     function classifyIface(f) {
         if (f.wan) return 'wan';
