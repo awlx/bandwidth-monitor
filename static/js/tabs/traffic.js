@@ -305,7 +305,20 @@
     var _yAxisSig = '';  // signature of the visible series; changes on interface toggle
     var _yAxisTick = 0;  // throttles the percentile recompute (see updateChart)
 
+    // Drop a hash-restored selection once interfaces are known but the chosen
+    // one isn't among them (a stale bookmark, or a removed interface), so the
+    // view falls back to All instead of an empty chart with no active tab.
+    // Mirrors the 24h chart's guard. Only acts once knownIfaces is populated,
+    // so a valid selection isn't wiped during the initial empty window.
+    function _normalizeSelectedIface() {
+        if (selectedIface && BM.knownIfaces.size && !BM.knownIfaces.has(selectedIface)) {
+            selectedIface = null;
+            if (BM._setHashParam) BM._setHashParam('iface', null);
+        }
+    }
+
     BM.updateChart = function() {
+        _normalizeSelectedIface();
         var ds = [], ci = 0;
         // Sort so the series order (and thus colour assignment) is stable across
         // reloads and matches the 24h chart, instead of following the order
@@ -361,6 +374,7 @@
     };
 
     BM.renderIfaceTabs = function() {
+        _normalizeSelectedIface();
         var el = document.getElementById('ifaceTabs');
         var h = '<div class="iface-tab' + (selectedIface === null ? ' active' : '') + '" onclick="window._si(null)">All</div>';
         // Sorted so the tab order is the same on every load and matches the 24h row.

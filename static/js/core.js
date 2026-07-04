@@ -76,36 +76,8 @@
         return true; // All other tabs are always available
     }
 
-    // ── URL hash state ──
-    // The hash carries the active tab and, on tabs that have per-view state,
-    // query-style params after a "?": e.g. "#traffic?iface=eth0&hist=eth0".
-    // Splitting on "?" keeps tab routing working while letting a tab persist
-    // its selected interface across reloads.
-    BM._hashTab = function() {
-        return location.hash.replace(/^#/, '').split('?')[0];
-    };
-    BM._hashParams = function() {
-        return new URLSearchParams(location.hash.split('?')[1] || '');
-    };
-    // _setHashParam updates one param without disturbing the tab or other
-    // params. Pass null/'' to remove it. Uses replaceState so it doesn't spam
-    // history or fire hashchange.
-    BM._setHashParam = function(key, value) {
-        var params = BM._hashParams();
-        if (value === null || value === undefined || value === '') {
-            params.delete(key);
-        } else {
-            params.set(key, value);
-        }
-        var tab = BM._hashTab() || BM._activeTab || 'traffic';
-        var qs = params.toString();
-        var newHash = '#' + tab + (qs ? '?' + qs : '');
-        if (history.replaceState) {
-            history.replaceState(null, '', newHash);
-        } else {
-            location.hash = newHash;
-        }
-    };
+    // Hash-state helpers (BM._hashTab / _hashParams / _setHashParam) live in
+    // utils.js so they're defined before the deferred tab modules parse.
 
     window._switchTab = function(tab) {
         // Guard: if tab is unavailable, fallback to traffic
