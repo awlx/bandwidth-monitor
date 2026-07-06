@@ -384,15 +384,26 @@ func MenuBarSummary(c *collector.Collector, t *talkers.Tracker, dp dns.Provider,
 	}
 }
 
-// SpeedTestRun triggers a new speed test and streams progress as SSE.
-func SpeedTestRun(st *speedtest.Tester) http.HandlerFunc {
+// SpeedTestRun triggers a new speed test and streams progress as SSE. An
+// optional "iface" query param binds the test to a specific WAN interface
+// (multi-WAN setups) via SO_BINDTODEVICE instead of the default route; it
+// must name one of the currently-known WAN interfaces reported by the
+// collector, to prevent binding to arbitrary/unintended interfaces from
+// untrusted input. Omitting it preserves the original single-WAN behavior.
+func SpeedTestRun(st *speedtest.Tester, c *collector.Collector) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "POST" {
 			http.Error(w, "POST required", http.StatusMethodNotAllowed)
 			return
 		}
 
-		ch := st.Run()
+		iface := r.URL.Query().Get("iface")
+		if iface != "" && !isKnownWANInterface(c, iface) {
+			http.Error(w, "unknown WAN interface", http.StatusBadRequest)
+			return
+		}
+
+		ch := st.Run(iface)
 		if ch == nil {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusConflict)
@@ -401,6 +412,38 @@ func SpeedTestRun(st *speedtest.Tester) http.HandlerFunc {
 		}
 
 		httputil.StreamChannel(w, ch)
+	}
+}
+
+// isKnownWANInterface reports whether name matches one of the interfaces
+// the collector currently reports as a WAN uplink.
+func isKnownWANInterface(c *collector.Collector, name string) bool {
+	if c == nil {
+		return false
+	}
+	for _, iface := range c.GetAll() {
+		if iface.WAN && iface.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+// SpeedTestInterfaces lists the currently-known WAN interfaces that a speed
+// test can be bound to, for a multi-WAN interface picker in the UI.
+func SpeedTestInterfaces(c *collector.Collector) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		type wanIface struct {
+			Name  string   `json:"name"`
+			Addrs []string `json:"addrs,omitempty"`
+		}
+		out := []wanIface{}
+		for _, iface := range c.GetAll() {
+			if iface.WAN {
+				out = append(out, wanIface{Name: iface.Name, Addrs: iface.Addrs})
+			}
+		}
+		httputil.WriteJSON(w, map[string]interface{}{"interfaces": out})
 	}
 }
 
