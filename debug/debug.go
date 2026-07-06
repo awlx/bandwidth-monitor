@@ -1,6 +1,7 @@
 package debug
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"math"
@@ -9,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"bandwidth-monitor/netutil"
 	"bandwidth-monitor/resolver"
 
 	mdns "github.com/miekg/dns"
@@ -40,6 +42,51 @@ func sanitizeError(err error) string {
 }
 
 // ── Traceroute (native Go, no external binary) ──
+
+// icmpConn is a thin wrapper around a raw ICMP net.PacketConn, providing
+// the ipv4.PacketConn/ipv6.PacketConn accessors that golang.org/x/net/icmp's
+// PacketConn also offers. We build our own instead of using icmp.ListenPacket
+// directly because that package's ListenPacket doesn't expose any way to
+// bind the resulting socket to a specific network interface — which we need
+// for per-WAN-interface traceroute/MTU tests. All other methods (ReadFrom,
+// WriteTo, SetDeadline, Close, ...) are provided by the embedded
+// net.PacketConn.
+type icmpConn struct {
+	net.PacketConn
+	p4 *ipv4.PacketConn
+	p6 *ipv6.PacketConn
+}
+
+func (c *icmpConn) IPv4PacketConn() *ipv4.PacketConn { return c.p4 }
+func (c *icmpConn) IPv6PacketConn() *ipv6.PacketConn { return c.p6 }
+
+// listenICMP opens a raw ICMP (v4 or v6) socket, optionally bound to a
+// specific WAN interface via SO_BINDTODEVICE (pass "" for the default
+// route/no binding). See netutil.DialerForInterface for the rationale and
+// caveats around interface binding.
+func listenICMP(isV4 bool, iface string) (*icmpConn, error) {
+	network, address := "ip4:icmp", "0.0.0.0"
+	if !isV4 {
+		network, address = "ip6:ipv6-icmp", "::"
+	}
+	pc, err := listenRawIP(network, address, iface)
+	if err != nil {
+		return nil, err
+	}
+	conn := &icmpConn{PacketConn: pc}
+	if isV4 {
+		conn.p4 = ipv4.NewPacketConn(pc)
+	} else {
+		conn.p6 = ipv6.NewPacketConn(pc)
+	}
+	return conn, nil
+}
+
+// listenRawIP opens a raw IP-level packet connection (e.g. "ip4:icmp"),
+// optionally bound to a specific WAN interface via SO_BINDTODEVICE.
+func listenRawIP(network, address, iface string) (net.PacketConn, error) {
+	return netutil.ListenConfigForInterface(iface).ListenPacket(context.Background(), network, address)
+}
 
 // TracerouteHop holds aggregated stats for one TTL hop.
 type TracerouteHop struct {
@@ -76,7 +123,7 @@ type TracerouteProgress struct {
 
 // RunTraceroute performs N probes per hop from TTL 1..maxTTL using ICMP echo.
 // It streams progress updates over the returned channel.
-func RunTraceroute(target string, probesPerTTL int, maxTTL int, dns *resolver.Resolver) <-chan TracerouteProgress {
+func RunTraceroute(target string, probesPerTTL int, maxTTL int, dns *resolver.Resolver, iface string) <-chan TracerouteProgress {
 	ch := make(chan TracerouteProgress, 64)
 
 	go func() {
@@ -106,21 +153,24 @@ func RunTraceroute(target string, probesPerTTL int, maxTTL int, dns *resolver.Re
 		}
 
 		isV4 := destIP.To4() != nil
-		log.Printf("debug/traceroute: starting to %s (%s), %d probes/ttl, max TTL %d", target, destIP, probesPerTTL, maxTTL)
+		if iface != "" {
+			log.Printf("debug/traceroute: starting to %s (%s) via interface %s, %d probes/ttl, max TTL %d", target, destIP, iface, probesPerTTL, maxTTL)
+		} else {
+			log.Printf("debug/traceroute: starting to %s (%s), %d probes/ttl, max TTL %d", target, destIP, probesPerTTL, maxTTL)
+		}
 		ch <- TracerouteProgress{Phase: "running", Message: fmt.Sprintf("Traceroute to %s (%s) — %d probes per hop", target, destIP, probesPerTTL)}
 
 		var hops []TracerouteHop
 		reachedDest := false
 
 		// Open a single ICMP socket for the entire traceroute run.
-		var conn *icmp.PacketConn
-		if isV4 {
-			conn, err = icmp.ListenPacket("ip4:icmp", "0.0.0.0")
-		} else {
-			conn, err = icmp.ListenPacket("ip6:ipv6-icmp", "::")
-		}
+		conn, err := listenICMP(isV4, iface)
 		if err != nil {
-			ch <- TracerouteProgress{Phase: "error", Message: fmt.Sprintf("cannot open ICMP socket (need root/CAP_NET_RAW): %v", err)}
+			msg := fmt.Sprintf("cannot open ICMP socket (need root/CAP_NET_RAW): %v", err)
+			if iface != "" {
+				msg = fmt.Sprintf("cannot open ICMP socket bound to interface %s (need root/CAP_NET_RAW, and the interface needs its own working route): %v", iface, err)
+			}
+			ch <- TracerouteProgress{Phase: "error", Message: msg}
 			return
 		}
 		defer conn.Close()
@@ -168,7 +218,7 @@ func hopLabel(h TracerouteHop) string {
 	return h.IP
 }
 
-func probeHop(conn *icmp.PacketConn, dest net.IP, ttl int, count int, isV4 bool, dns *resolver.Resolver) TracerouteHop {
+func probeHop(conn *icmpConn, dest net.IP, ttl int, count int, isV4 bool, dns *resolver.Resolver) TracerouteHop {
 	hop := TracerouteHop{TTL: ttl, Sent: count}
 
 	var rtts []float64
@@ -216,14 +266,14 @@ func probeHop(conn *icmp.PacketConn, dest net.IP, ttl int, count int, isV4 bool,
 	return hop
 }
 
-func sendProbe(conn *icmp.PacketConn, dest net.IP, ttl int, isV4 bool, seq int) (respIP string, rttMs float64, err error) {
+func sendProbe(conn *icmpConn, dest net.IP, ttl int, isV4 bool, seq int) (respIP string, rttMs float64, err error) {
 	if isV4 {
 		return sendProbeV4(conn, dest, ttl, seq)
 	}
 	return sendProbeV6(conn, dest, ttl, seq)
 }
 
-func sendProbeV4(conn *icmp.PacketConn, dest net.IP, ttl int, seq int) (string, float64, error) {
+func sendProbeV4(conn *icmpConn, dest net.IP, ttl int, seq int) (string, float64, error) {
 	raw := conn.IPv4PacketConn()
 	if err := raw.SetTTL(ttl); err != nil {
 		return "", 0, fmt.Errorf("set TTL: %w", err)
@@ -313,7 +363,7 @@ func matchInnerICMP(data []byte, expectedID uint16) bool {
 	return innerID == expectedID
 }
 
-func sendProbeV6(conn *icmp.PacketConn, dest net.IP, ttl int, seq int) (string, float64, error) {
+func sendProbeV6(conn *icmpConn, dest net.IP, ttl int, seq int) (string, float64, error) {
 	raw := conn.IPv6PacketConn()
 	if err := raw.SetHopLimit(ttl); err != nil {
 		return "", 0, fmt.Errorf("set hop limit: %w", err)
@@ -407,7 +457,7 @@ type MTUProgress struct {
 // RunMTUDiscovery performs a binary-search path MTU discovery by sending
 // ICMP echo packets with the DF (Don't Fragment) bit set. It streams
 // progress updates over the returned channel.
-func RunMTUDiscovery(target string) <-chan MTUProgress {
+func RunMTUDiscovery(target string, iface string) <-chan MTUProgress {
 	ch := make(chan MTUProgress, 64)
 
 	go func() {
@@ -432,17 +482,27 @@ func RunMTUDiscovery(target string) <-chan MTUProgress {
 			return
 		}
 
-		log.Printf("debug/mtu: starting path MTU discovery to %s (%s)", target, destIP)
-		ch <- MTUProgress{Phase: "running", Message: fmt.Sprintf("Path MTU discovery to %s (%s)", target, destIP)}
+		if iface != "" {
+			log.Printf("debug/mtu: starting path MTU discovery to %s (%s) via interface %s", target, destIP, iface)
+			ch <- MTUProgress{Phase: "running", Message: fmt.Sprintf("Path MTU discovery to %s (%s) via %s", target, destIP, iface)}
+		} else {
+			log.Printf("debug/mtu: starting path MTU discovery to %s (%s)", target, destIP)
+			ch <- MTUProgress{Phase: "running", Message: fmt.Sprintf("Path MTU discovery to %s (%s)", target, destIP)}
+		}
 
 		// Detect the local interface MTU for the route to destIP
-		localMTU := detectLocalMTU(destIP)
+		localMTU := detectLocalMTU(destIP, iface)
 
-		// Open a raw ICMP socket via net.ListenPacket so we can access
-		// the underlying fd to set the Don't Fragment socket option.
-		rawPC, err := net.ListenPacket("ip4:icmp", "0.0.0.0")
+		// Open a raw ICMP socket, optionally bound to a specific WAN
+		// interface, so we can access the underlying fd to set the Don't
+		// Fragment socket option.
+		rawPC, err := listenRawIP("ip4:icmp", "0.0.0.0", iface)
 		if err != nil {
-			ch <- MTUProgress{Phase: "error", Message: fmt.Sprintf("cannot open ICMP socket (need root/CAP_NET_RAW): %v", err)}
+			msg := fmt.Sprintf("cannot open ICMP socket (need root/CAP_NET_RAW): %v", err)
+			if iface != "" {
+				msg = fmt.Sprintf("cannot open ICMP socket bound to interface %s (need root/CAP_NET_RAW, and the interface needs its own working route): %v", iface, err)
+			}
+			ch <- MTUProgress{Phase: "error", Message: msg}
 			return
 		}
 		defer rawPC.Close()
@@ -618,9 +678,19 @@ func probeMTU(pc net.PacketConn, dest net.IP, size int) (bool, float64, string) 
 }
 
 // detectLocalMTU finds the MTU of the interface that routes to the given IP.
-func detectLocalMTU(dest net.IP) int {
+// If iface is non-empty, it looks up that specific interface's MTU directly
+// instead of using the subnet-matching heuristic.
+func detectLocalMTU(dest net.IP, iface string) int {
 	ifaces, err := net.Interfaces()
 	if err != nil {
+		return 0
+	}
+	if iface != "" {
+		for _, ifi := range ifaces {
+			if ifi.Name == iface {
+				return ifi.MTU
+			}
+		}
 		return 0
 	}
 	// Try to find the interface that can reach dest by checking routes

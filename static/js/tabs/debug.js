@@ -2,6 +2,38 @@
     'use strict';
     var BM = window.BM;
 
+    // ── WAN interface picker (shared across all Debug tools) ──
+    // Multi-WAN setups get a "test via" select next to each tool so results
+    // can be pinned to a specific uplink instead of whatever the default
+    // route happens to send traffic through. Hidden entirely on single-WAN
+    // setups (the common case) to avoid cluttering the UI.
+    var _debugIfaceSelectIds = ['trIfaceSelect', 'mtuIfaceSelect', 'pubIPIfaceSelect', 'tcpCheckIfaceSelect'];
+    function loadDebugInterfaces() {
+        fetch('/api/speedtest/interfaces').then(function(r) { return r.json(); }).then(function(data) {
+            var ifaces = data.interfaces || [];
+            for (var s = 0; s < _debugIfaceSelectIds.length; s++) {
+                var sel = document.getElementById(_debugIfaceSelectIds[s]);
+                if (!sel) continue;
+                if (ifaces.length < 2) {
+                    sel.style.display = 'none';
+                    continue;
+                }
+                var h = '<option value="">Auto (default route)</option>';
+                for (var i = 0; i < ifaces.length; i++) {
+                    h += '<option value="' + BM.escSvg(ifaces[i].name) + '">' + BM.escSvg(ifaces[i].name) + '</option>';
+                }
+                sel.innerHTML = h;
+                sel.style.display = '';
+            }
+        }).catch(function() {});
+    }
+    loadDebugInterfaces();
+
+    function selectedIface(selectId) {
+        var sel = document.getElementById(selectId);
+        return (sel && sel.style.display !== 'none') ? sel.value : '';
+    }
+
     // ── Traceroute ──
     var _trRunning = false;
 
@@ -10,6 +42,7 @@
         var target = (document.getElementById('trTarget').value || '').trim();
         if (!target) { alert('Enter an IP or hostname'); return; }
         var count = parseInt(document.getElementById('trCount').value) || 20;
+        var iface = selectedIface('trIfaceSelect');
 
         _trRunning = true;
         var btn = document.getElementById('trBtn');
@@ -27,8 +60,9 @@
         document.getElementById('trResults').style.display = 'none';
 
         BM.streamSSE({
-            url: '/api/debug/traceroute?target=' + encodeURIComponent(target) + '&count=' + count,
+            url: '/api/debug/traceroute?target=' + encodeURIComponent(target) + '&count=' + count + (iface ? '&iface=' + encodeURIComponent(iface) : ''),
             method: 'POST',
+
             onMessage: function(p) {
                 if (p.phase === 'running') {
                     phase.textContent = p.message;
@@ -99,6 +133,7 @@
         if (_mtuRunning) return;
         var target = (document.getElementById('mtuTarget').value || '').trim();
         if (!target) { alert('Enter an IP or hostname'); return; }
+        var iface = selectedIface('mtuIfaceSelect');
 
         _mtuRunning = true;
         var btn = document.getElementById('mtuBtn');
@@ -118,7 +153,7 @@
         var probeCount = 0;
 
         BM.streamSSE({
-            url: '/api/debug/mtu?target=' + encodeURIComponent(target),
+            url: '/api/debug/mtu?target=' + encodeURIComponent(target) + (iface ? '&iface=' + encodeURIComponent(iface) : ''),
             method: 'POST',
             onMessage: function(p) {
                 if (p.phase === 'running') {
@@ -456,4 +491,66 @@
         }
         body.innerHTML = h;
     }
+
+    // ── Public IP ──
+    window._runPublicIPCheck = function() {
+        var iface = selectedIface('pubIPIfaceSelect');
+        var btn = document.getElementById('pubIPBtn');
+        var out = document.getElementById('pubIPResult');
+        btn.disabled = true;
+        btn.innerHTML = '<span class="speedtest-spinner"></span> Checking...';
+        out.textContent = '';
+        out.style.color = '';
+
+        fetch('/api/debug/publicip' + (iface ? '?iface=' + encodeURIComponent(iface) : ''))
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            btn.disabled = false;
+            btn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg> Check';
+            if (data.error) {
+                out.style.color = 'var(--danger)';
+                out.textContent = data.error;
+            } else {
+                out.style.color = 'var(--success)';
+                out.textContent = data.ip + (data.interface ? ' (via ' + data.interface + ')' : '');
+            }
+        }).catch(function() {
+            btn.disabled = false;
+            btn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg> Check';
+            out.style.color = 'var(--danger)';
+            out.textContent = 'Connection error';
+        });
+    };
+
+    // ── TCP Port Check ──
+    window._runTCPCheck = function() {
+        var target = (document.getElementById('tcpCheckTarget').value || '').trim();
+        if (!target) { alert('Enter a host:port'); return; }
+        var iface = selectedIface('tcpCheckIfaceSelect');
+        var btn = document.getElementById('tcpCheckBtn');
+        var out = document.getElementById('tcpCheckResult');
+        btn.disabled = true;
+        btn.innerHTML = '<span class="speedtest-spinner"></span> Testing...';
+        out.textContent = '';
+        out.style.color = '';
+
+        fetch('/api/debug/tcpcheck?target=' + encodeURIComponent(target) + (iface ? '&iface=' + encodeURIComponent(iface) : ''))
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            btn.disabled = false;
+            btn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px"><path d="M4 17V7a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2z"/><path d="M4 8h16"/></svg> Test';
+            if (data.success) {
+                out.style.color = 'var(--success)';
+                out.textContent = '✓ Connected in ' + data.elapsed_ms.toFixed(1) + ' ms' + (data.interface ? ' (via ' + data.interface + ')' : '');
+            } else {
+                out.style.color = 'var(--danger)';
+                out.textContent = '✗ ' + (data.error || 'Connection failed');
+            }
+        }).catch(function() {
+            btn.disabled = false;
+            btn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px"><path d="M4 17V7a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2z"/><path d="M4 8h16"/></svg> Test';
+            out.style.color = 'var(--danger)';
+            out.textContent = 'Connection error';
+        });
+    };
 })();

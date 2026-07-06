@@ -927,6 +927,7 @@
                 <input type="text" id="trTarget" class="input-control" placeholder="IP or hostname (e.g. 1.1.1.1)" style="width:220px;font-family:var(--font-mono)">
                 <input type="number" id="trCount" class="input-control" value="20" min="1" max="100" style="width:70px" title="Probes per hop">
                 <span style="font-size:11px;color:var(--text-2)">probes/hop</span>
+                <select class="select-control select-control--sm debug-iface-select" id="trIfaceSelect" style="display:none" title="Choose which WAN interface to test through"></select>
                 <button class="speedtest-btn" id="trBtn" onclick="window._runTraceroute()">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px"><polygon points="5 3 19 12 5 21 5 3"/></svg>
                     Run
@@ -1017,6 +1018,7 @@
             </div>
             <div style="padding:12px 20px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;border-top:1px solid var(--border)">
                 <input type="text" id="mtuTarget" class="input-control" placeholder="IP or hostname (e.g. 1.1.1.1)" style="width:220px;font-family:var(--font-mono)">
+                <select class="select-control select-control--sm debug-iface-select" id="mtuIfaceSelect" style="display:none" title="Choose which WAN interface to test through"></select>
                 <button class="speedtest-btn" id="mtuBtn" onclick="window._runMTUDiscovery()">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px"><path d="M12 2v20M2 12h20"/></svg>
                     Discover
@@ -1042,6 +1044,43 @@
                     </div>
                 </div>
                 <div id="mtuResultBody"></div>
+            </div>
+        </div>
+
+        <!-- Public IP Section -->
+        <div class="card" style="margin-bottom:16px">
+            <div class="card-header">
+                <div>
+                    <div class="card-title">Public IP</div>
+                    <div class="card-subtitle">Check the public (external) IP address as seen from a WAN uplink &mdash; useful for spotting a WAN silently egressing via the wrong interface</div>
+                </div>
+            </div>
+            <div style="padding:12px 20px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;border-top:1px solid var(--border)">
+                <select class="select-control select-control--sm debug-iface-select" id="pubIPIfaceSelect" style="display:none" title="Choose which WAN interface to check"></select>
+                <button class="speedtest-btn" id="pubIPBtn" onclick="window._runPublicIPCheck()">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+                    Check
+                </button>
+                <span id="pubIPResult" style="font-size:13px;font-family:var(--font-mono)"></span>
+            </div>
+        </div>
+
+        <!-- TCP Port Check Section -->
+        <div class="card" style="margin-bottom:16px">
+            <div class="card-header">
+                <div>
+                    <div class="card-title">TCP Port Check</div>
+                    <div class="card-subtitle">Test whether the router can open a TCP connection to a given host:port &mdash; e.g. verify a port-forward or that a WAN isn&rsquo;t blocking a port</div>
+                </div>
+            </div>
+            <div style="padding:12px 20px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;border-top:1px solid var(--border)">
+                <input type="text" id="tcpCheckTarget" class="input-control" placeholder="host:port (e.g. example.com:443)" style="width:220px;font-family:var(--font-mono)">
+                <select class="select-control select-control--sm debug-iface-select" id="tcpCheckIfaceSelect" style="display:none" title="Choose which WAN interface to test through"></select>
+                <button class="speedtest-btn" id="tcpCheckBtn" onclick="window._runTCPCheck()">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px"><path d="M4 17V7a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2z"/><path d="M4 8h16"/></svg>
+                    Test
+                </button>
+                <span id="tcpCheckResult" style="font-size:13px;font-family:var(--font-mono)"></span>
             </div>
         </div>
 
