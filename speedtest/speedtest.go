@@ -346,7 +346,14 @@ func dialerFor(iface string) *net.Dialer {
 
 // dialTransport builds a plain Transport (HTTP/2 allowed) bound to iface,
 // used for latency measurement where connection multiplexing doesn't matter.
-func dialTransport(iface string) *http.Transport {
+//
+// Returns http.RoundTripper (not *http.Transport) so that the iface=="" case
+// below returns a genuinely nil interface value. Returning a nil
+// *http.Transport instead would produce a non-nil http.RoundTripper
+// interface wrapping a nil pointer once passed to httputil.WrapTransport,
+// whose "base == nil" check would then miss it and call RoundTrip on a nil
+// *http.Transport, panicking with "http: nil Transport".
+func dialTransport(iface string) http.RoundTripper {
 	if iface == "" {
 		return nil
 	}
