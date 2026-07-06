@@ -12,6 +12,7 @@
     --bg-2: #18181b;
     --bg-3: #1f1f23;
     --bg-hover: #27272a;
+    --card: var(--bg-2);
     --accent: #3b82f6;
     --accent-dim: rgba(59, 130, 246, 0.12);
     --rx: #22d3ee;
@@ -26,6 +27,7 @@
     --success: #22c55e;
     --warning: #eab308;
     --radius: 8px;
+    --font-mono: 'JetBrains Mono', monospace;
 }
 
 /* ── Light theme (explicit) ── */
@@ -246,6 +248,41 @@ body {
 .card-body {
     padding: 16px 20px;
 }
+
+/* ── System Overview stats grid ── */
+.system-stats {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+    gap: 10px;
+    padding: 16px 20px;
+}
+
+.system-stat {
+    background: var(--bg-2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 10px 12px;
+}
+
+.system-stat-label {
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-2);
+    margin-bottom: 4px;
+}
+
+.system-stat-value {
+    font-size: 16px;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.02em;
+    color: var(--text-0);
+}
+
+.system-stat-value.rx { color: var(--rx); }
+.system-stat-value.tx { color: var(--tx); }
 
 /* ── Chart ── */
 .chart-section { margin-bottom: 20px; }
@@ -751,21 +788,21 @@ canvas { outline: none; }
 }
 
 /* ── WiFi Section ── */
-.wifi-stats-row {
+.wifi-stats-row, .net-stats-row {
     display: grid;
     grid-template-columns: repeat(3, 1fr);
     gap: 12px;
     margin-bottom: 16px;
 }
 
-.wifi-stat-card {
+.wifi-stat-card, .net-stat-card {
     background: var(--bg-1);
     border: 1px solid var(--border);
     border-radius: var(--radius);
     padding: 14px 18px;
 }
 
-.wifi-stat-label {
+.wifi-stat-label, .net-stat-label {
     font-size: 10px;
     font-weight: 600;
     text-transform: uppercase;
@@ -774,7 +811,7 @@ canvas { outline: none; }
     margin-bottom: 4px;
 }
 
-.wifi-stat-value {
+.wifi-stat-value, .net-stat-value {
     font-size: 22px;
     font-weight: 700;
     font-variant-numeric: tabular-nums;
@@ -786,11 +823,10 @@ canvas { outline: none; }
 .wifi-stat-value.clients { color: var(--rx); }
 .wifi-stat-value.ssids { color: var(--tx); }
 
-.wifi-stat-value.net-nodes { color: var(--text-0); }
-.wifi-stat-value.net-gw { color: var(--accent); font-size: 15px; }
-.wifi-stat-value.net-aps { color: #34d399; }
-.wifi-stat-value.net-clients { color: var(--rx); }
-.wifi-stat-value.net-sources { color: var(--text-1); }
+.net-stat-value.net-gw { color: var(--accent); font-size: 15px; }
+.net-stat-value.net-aps { color: #34d399; }
+.net-stat-value.net-clients { color: var(--rx); }
+.net-stat-value.net-sources { color: var(--text-1); }
 
 /* Signal strength badges */
 .signal-badge {
@@ -970,6 +1006,32 @@ canvas { outline: none; }
     color: var(--text-0);
     box-shadow: 0 1px 2px rgba(0,0,0,0.08);
 }
+
+/* ── Unified text input / select controls (search, filter, sort) ── */
+.input-control, .select-control {
+    padding: 6px 12px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: var(--bg-2);
+    color: var(--text-0);
+    font-size: 13px;
+    font-family: 'Inter', sans-serif;
+    outline: none;
+    transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.select-control { padding: 6px 10px; }
+
+.input-control::placeholder { color: var(--text-2); }
+
+.input-control:focus, .select-control:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-dim);
+}
+
+/* Compact variants for inline card-header filters */
+.input-control--sm { padding: 4px 10px; font-size: 12px; }
+.select-control--sm { padding: 4px 8px; font-size: 12px; }
 
 .nat-badge {
     display: inline-block;

@@ -174,6 +174,7 @@
 
         sse.onopen = function() {
             document.getElementById('statusDot').className = 'status-dot';
+            document.getElementById('statusDot').setAttribute('aria-label', 'Connection status: live');
             document.getElementById('statusText').textContent = 'Live';
             // Backfill the Live Traffic chart from stored history so a reload or
             // a gap from a disconnect/hibernate is filled in, not lost.
@@ -181,6 +182,7 @@
         };
         sse.onerror = function() {
             document.getElementById('statusDot').className = 'status-dot error';
+            document.getElementById('statusDot').setAttribute('aria-label', 'Connection status: reconnecting');
             document.getElementById('statusText').textContent = 'Reconnecting';
         };
         sse.onmessage = function(e) {

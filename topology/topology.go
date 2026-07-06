@@ -331,26 +331,50 @@ func (s *Scanner) discoverWANGateway(nodeMap map[string]*Node, linkSet map[strin
 		iface := ifaceNames[n.LinkIndex]
 		id := "wan-" + mac
 
-		if _, exists := nodeMap[id]; exists {
-			continue
-		}
-
-		nodeMap[id] = &Node{
-			ID:       id,
-			MAC:      mac,
-			IPs:      []string{ip},
-			Hostname: "WAN Gateway",
-			Type:     NodeWANGW,
-			Iface:    iface,
-			Source:   "arp",
+		// discoverGateway() may have already created a node for this same
+		// device — keyed by bare MAC — from the default route (e.g. an
+		// ISP router that's both the default gateway and the ARP-visible
+		// device on the WAN interface). Reuse that node instead of adding
+		// a second one, otherwise the same physical device shows up twice
+		// in the tree under two different IDs.
+		if existing, ok := nodeMap[mac]; ok {
+			id = mac
+			existing.Type = NodeWANGW
+			if existing.Hostname == "" {
+				existing.Hostname = "WAN Gateway"
+			}
+			if existing.Iface == "" {
+				existing.Iface = iface
+			}
+			if !slices.Contains(existing.IPs, ip) {
+				existing.IPs = append(existing.IPs, ip)
+			}
+			if !strings.Contains(existing.Source, "arp") {
+				existing.Source += ",arp"
+			}
+		} else {
+			if _, exists := nodeMap[id]; exists {
+				continue
+			}
+			nodeMap[id] = &Node{
+				ID:       id,
+				MAC:      mac,
+				IPs:      []string{ip},
+				Hostname: "WAN Gateway",
+				Type:     NodeWANGW,
+				Iface:    iface,
+				Source:   "arp",
+			}
 		}
 
 		linkKey := fmt.Sprintf("%s|%s", id, selfNode)
-		linkSet[linkKey] = &Link{
-			SourceID: id,
-			TargetID: selfNode,
-			Type:     LinkWAN,
-			Label:    iface,
+		if _, exists := linkSet[linkKey]; !exists {
+			linkSet[linkKey] = &Link{
+				SourceID: id,
+				TargetID: selfNode,
+				Type:     LinkWAN,
+				Label:    iface,
+			}
 		}
 		wanIDs = append(wanIDs, id)
 	}
@@ -1511,9 +1535,6 @@ func (s *Scanner) inferLinks(nodeMap map[string]*Node, linkSet map[string]*Link,
 		if hasUpstream[swMAC] {
 			continue
 		}
-		if gwNode == nil {
-			continue
-		}
 		// Route through the uplink switch if this is a different switch
 		if uplinkSwitch != "" && swMAC != uplinkSwitch {
 			linkKey := fmt.Sprintf("%s|%s", uplinkSwitch, swMAC)
@@ -1522,20 +1543,35 @@ func (s *Scanner) inferLinks(nodeMap map[string]*Node, linkSet map[string]*Link,
 				TargetID: swMAC,
 				Type:     LinkWired,
 			}
-		} else {
-			linkKey := fmt.Sprintf("%s|%s", gwNode.ID, swMAC)
-			linkSet[linkKey] = &Link{
-				SourceID: gwNode.ID,
-				TargetID: swMAC,
-				Type:     LinkWired,
-			}
+			hasUpstream[swMAC] = true
+			continue
+		}
+		// Otherwise this switch uplinks directly into self — self is the
+		// actual LAN router/hub these devices are physically attached to.
+		// Only fall back to the WAN gateway if we have no self node at all
+		// (e.g. self couldn't be discovered), since the gateway is the
+		// upstream-of-self WAN device, not a stand-in for the LAN router.
+		target := selfID
+		if target == "" && gwNode != nil {
+			target = gwNode.ID
+		}
+		if target == "" {
+			continue
+		}
+		linkKey := fmt.Sprintf("%s|%s", target, swMAC)
+		linkSet[linkKey] = &Link{
+			SourceID: target,
+			TargetID: swMAC,
+			Type:     LinkWired,
 		}
 		hasUpstream[swMAC] = true
 	}
 
 	// Ensure every AP has an upstream link.  APs may already be linked
 	// as sources of wireless client links, but they still need a parent
-	// connection (to a switch on the same interface, or to the gateway).
+	// connection (to a switch on the same interface, to self — the LAN
+	// router these devices are physically attached to — or, failing
+	// that, to the WAN gateway).
 	for mac, node := range nodeMap {
 		if node.Type != NodeAP {
 			continue
@@ -1551,6 +1587,9 @@ func (s *Scanner) inferLinks(nodeMap map[string]*Node, linkSet map[string]*Link,
 			if swMAC, ok := lookupSwitch(node.Iface); ok {
 				target = swMAC
 			}
+		}
+		if target == "" && selfID != "" {
+			target = selfID
 		}
 		if target == "" && gwNode != nil {
 			target = gwNode.ID
@@ -1575,7 +1614,9 @@ func (s *Scanner) inferLinks(nodeMap map[string]*Node, linkSet map[string]*Link,
 	}
 
 	// Connect remaining orphan nodes: prefer routing wired clients
-	// through a switch, otherwise connect directly to the gateway.
+	// through a switch, then through self (the LAN router these devices
+	// are physically attached to), and only fall back to the WAN
+	// gateway if self is unknown.
 	for mac, node := range nodeMap {
 		if linked[mac] {
 			continue
@@ -1589,6 +1630,9 @@ func (s *Scanner) inferLinks(nodeMap map[string]*Node, linkSet map[string]*Link,
 			if swMAC, ok := lookupSwitch(node.Iface); ok {
 				target = swMAC
 			}
+		}
+		if target == "" && selfID != "" {
+			target = selfID
 		}
 		if target == "" && gwNode != nil {
 			target = gwNode.ID

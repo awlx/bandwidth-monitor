@@ -614,20 +614,21 @@ func buildPayload(c *collector.Collector, t *talkers.Tracker, dp dns.Provider, w
 	}
 
 	payload := map[string]interface{}{
-		"interfaces":         c.GetAll(),
-		"sparklines":         c.GetSparklines(5*time.Minute, 50),
-		"protocols":          t.GetProtocolBreakdown(),
-		"ip_versions":        t.GetIPVersionBreakdown(),
-		"countries":          geo.Countries,
-		"asns":               geo.ASNs,
-		"top_bandwidth":      t.TopByBandwidth(10),
-		"topology_bandwidth": topologyBandwidth,
-		"top_volume":         t.TopByVolume(10),
-		"unique_ips":         t.UniqueIPs(),
-		"uptime_secs":        readUptime(),
-		"load_avg":           readLoadAvg(),
-		"processes":          func() map[string]int { r, t := readProcessCount(); return map[string]int{"running": r, "total": t} }(),
-		"timestamp":          time.Now().UnixMilli(),
+		"interfaces":          c.GetAll(),
+		"sparklines":          c.GetSparklines(5*time.Minute, 50),
+		"protocols":           t.GetProtocolBreakdown(),
+		"ip_versions":         t.GetIPVersionBreakdown(),
+		"countries":           geo.Countries,
+		"asns":                geo.ASNs,
+		"top_bandwidth":       t.TopByBandwidth(10),
+		"topology_bandwidth":  topologyBandwidth,
+		"top_volume":          t.TopByVolume(10),
+		"unique_ips":          t.UniqueIPs(),
+		"uptime_secs":         readUptime(),
+		"process_uptime_secs": time.Since(processStartTime).Seconds(),
+		"load_avg":            readLoadAvg(),
+		"processes":           func() map[string]int { r, t := readProcessCount(); return map[string]int{"running": r, "total": t} }(),
+		"timestamp":           time.Now().UnixMilli(),
 	}
 	if origin != nil {
 		if og := origin.resolve(c); og != nil {
@@ -744,6 +745,10 @@ func SSE(c *collector.Collector, t *talkers.Tracker, dp dns.Provider, wp wifi.Pr
 		}
 	}
 }
+
+// processStartTime records when this handler package was initialised, used to compute the
+// running process's own uptime (distinct from the host's system uptime).
+var processStartTime = time.Now()
 
 // readUptime reads the system uptime from /proc/uptime in seconds.
 func readUptime() float64 {

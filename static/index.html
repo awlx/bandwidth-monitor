@@ -22,7 +22,7 @@
                     <button class="theme-btn" data-theme-val="dark" title="Dark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg></button>
                 </div>
                 <div class="status-badge">
-                    <span class="status-dot" id="statusDot"></span>
+                    <span class="status-dot" id="statusDot" role="img" aria-label="Connection status: connecting"></span>
                     <span id="statusText">Connecting</span>
                 </div>
             </div>
@@ -53,7 +53,7 @@
                     <div class="card-subtitle" id="systemSubtitle">Loading…</div>
                 </div>
             </div>
-            <div id="systemStats" style="padding:0 16px 16px;display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:12px"></div>
+            <div id="systemStats" class="system-stats"></div>
         </div>
 
         <div class="stats-row" id="statsRow"></div>
@@ -337,8 +337,8 @@
                         <div class="card-subtitle" id="natTableSubtitle">Active conntrack entries (top 200 by traffic volume)</div>
                     </div>
                     <div style="display:flex;gap:8px;align-items:center">
-                        <input type="text" id="natSearch" placeholder="Filter entries…" style="padding:4px 10px;border-radius:6px;border:1px solid var(--border);background:var(--card);color:var(--text-1);font-size:12px;width:200px;outline:none">
-                        <select id="natFilter" style="padding:4px 8px;border-radius:6px;border:1px solid var(--border);background:var(--card);color:var(--text-1);font-size:12px;outline:none">
+                        <input type="text" id="natSearch" class="input-control input-control--sm" placeholder="Filter entries…" style="width:200px">
+                        <select id="natFilter" class="select-control select-control--sm">
                             <option value="all">All NAT Types</option>
                             <option value="snat">SNAT</option>
                             <option value="dnat">DNAT</option>
@@ -652,8 +652,8 @@
                         <div class="card-subtitle">Per-client wireless traffic &amp; signal</div>
                     </div>
                     <div style="display:flex;gap:8px;align-items:center">
-                        <input type="text" id="wifiClientSearch" placeholder="Filter clients…" style="padding:4px 10px;border-radius:6px;border:1px solid var(--border);background:var(--card);color:var(--text-1);font-size:12px;width:180px;outline:none">
-                        <select id="wifiClientSort" style="padding:4px 8px;border-radius:6px;border:1px solid var(--border);background:var(--card);color:var(--text-1);font-size:12px;outline:none">
+                        <input type="text" id="wifiClientSearch" class="input-control input-control--sm" placeholder="Filter clients…" style="width:180px">
+                        <select id="wifiClientSort" class="select-control select-control--sm">
                             <option value="traffic">Sort: Traffic</option>
                             <option value="rate">Sort: Rate</option>
                             <option value="name">Sort: Name</option>
@@ -692,26 +692,26 @@
         <div id="networkHasData" style="display:none">
 
         <!-- Summary stats -->
-        <div class="wifi-stats-row" style="grid-template-columns:repeat(5,1fr)" id="networkStatsRow">
-            <div class="wifi-stat-card">
-                <div class="wifi-stat-label">Total Nodes</div>
-                <div class="wifi-stat-value net-nodes" id="netTotalNodes">0</div>
+        <div class="net-stats-row" style="grid-template-columns:repeat(5,1fr)" id="networkStatsRow">
+            <div class="net-stat-card">
+                <div class="net-stat-label">Total Nodes</div>
+                <div class="net-stat-value net-nodes" id="netTotalNodes">0</div>
             </div>
-            <div class="wifi-stat-card">
-                <div class="wifi-stat-label">Gateway</div>
-                <div class="wifi-stat-value net-gw" id="netGateway">&mdash;</div>
+            <div class="net-stat-card">
+                <div class="net-stat-label">Gateway</div>
+                <div class="net-stat-value net-gw" id="netGateway">&mdash;</div>
             </div>
-            <div class="wifi-stat-card">
-                <div class="wifi-stat-label">Access Points</div>
-                <div class="wifi-stat-value net-aps" id="netTotalAPs">0</div>
+            <div class="net-stat-card">
+                <div class="net-stat-label">Access Points</div>
+                <div class="net-stat-value net-aps" id="netTotalAPs">0</div>
             </div>
-            <div class="wifi-stat-card">
-                <div class="wifi-stat-label">Clients</div>
-                <div class="wifi-stat-value net-clients" id="netTotalClients">0</div>
+            <div class="net-stat-card">
+                <div class="net-stat-label">Clients</div>
+                <div class="net-stat-value net-clients" id="netTotalClients">0</div>
             </div>
-            <div class="wifi-stat-card">
-                <div class="wifi-stat-label">Discovery Sources</div>
-                <div class="wifi-stat-value net-sources" id="netSources" style="font-size:14px">&mdash;</div>
+            <div class="net-stat-card">
+                <div class="net-stat-label">Discovery Sources</div>
+                <div class="net-stat-value net-sources" id="netSources" style="font-size:14px">&mdash;</div>
             </div>
         </div>
 
@@ -723,7 +723,7 @@
                     <div class="card-subtitle">Approximate local network map &mdash; derived from ARP, NDP, LLDP, and controller data</div>
                 </div>
                 <div style="display:flex;gap:8px;align-items:center">
-                    <select id="networkLayout" class="wifi-client-sort" onchange="window._updateNetworkLayout()">
+                    <select id="networkLayout" class="select-control select-control--sm" onchange="window._updateNetworkLayout()">
                         <option value="tree" selected>Tree</option>
                         <option value="radial">Radial</option>
                     </select>
@@ -742,8 +742,8 @@
                     <div class="card-subtitle" id="networkClientCount">0 nodes discovered</div>
                 </div>
                 <div style="display:flex;gap:8px;align-items:center">
-                    <input type="text" id="networkClientSearch" placeholder="Filter by name, IP, MAC…" style="padding:6px 12px;border-radius:6px;border:1px solid var(--border);background:var(--bg-2);color:var(--text-0);font-size:13px;width:200px;outline:none" oninput="window._filterNetworkClients()">
-                    <select id="networkClientSort" class="wifi-client-sort" onchange="window._filterNetworkClients()">
+                    <input type="text" id="networkClientSearch" class="input-control" placeholder="Filter by name, IP, MAC…" style="width:200px" oninput="window._filterNetworkClients()">
+                    <select id="networkClientSort" class="select-control select-control--sm" onchange="window._filterNetworkClients()">
                         <option value="type">Sort: Type</option>
                         <option value="name">Sort: Name</option>
                         <option value="ip">Sort: IP</option>
@@ -898,8 +898,8 @@
                 </div>
             </div>
             <div style="padding:12px 20px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;border-top:1px solid var(--border)">
-                <input type="text" id="trTarget" placeholder="IP or hostname (e.g. 1.1.1.1)" style="padding:6px 12px;border-radius:6px;border:1px solid var(--border);background:var(--bg-2);color:var(--text-0);font-size:13px;width:220px;outline:none;font-family:'JetBrains Mono',monospace">
-                <input type="number" id="trCount" value="20" min="1" max="100" style="padding:6px 10px;border-radius:6px;border:1px solid var(--border);background:var(--bg-2);color:var(--text-0);font-size:13px;width:70px;outline:none" title="Probes per hop">
+                <input type="text" id="trTarget" class="input-control" placeholder="IP or hostname (e.g. 1.1.1.1)" style="width:220px;font-family:var(--font-mono)">
+                <input type="number" id="trCount" class="input-control" value="20" min="1" max="100" style="width:70px" title="Probes per hop">
                 <span style="font-size:11px;color:var(--text-2)">probes/hop</span>
                 <button class="speedtest-btn" id="trBtn" onclick="window._runTraceroute()">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px"><polygon points="5 3 19 12 5 21 5 3"/></svg>
@@ -951,8 +951,8 @@
                 </div>
             </div>
             <div style="padding:12px 20px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;border-top:1px solid var(--border)">
-                <input type="text" id="dnsCheckDomain" placeholder="Domain (e.g. example.com)" style="padding:6px 12px;border-radius:6px;border:1px solid var(--border);background:var(--bg-2);color:var(--text-0);font-size:13px;width:220px;outline:none;font-family:'JetBrains Mono',monospace">
-                <select id="dnsCheckType" style="padding:6px 10px;border-radius:6px;border:1px solid var(--border);background:var(--bg-2);color:var(--text-0);font-size:13px;outline:none">
+                <input type="text" id="dnsCheckDomain" class="input-control" placeholder="Domain (e.g. example.com)" style="width:220px;font-family:var(--font-mono)">
+                <select id="dnsCheckType" class="select-control">
                     <option value="A">A</option>
                     <option value="AAAA">AAAA</option>
                     <option value="MX">MX</option>
@@ -990,7 +990,7 @@
                 </div>
             </div>
             <div style="padding:12px 20px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;border-top:1px solid var(--border)">
-                <input type="text" id="mtuTarget" placeholder="IP or hostname (e.g. 1.1.1.1)" style="padding:6px 12px;border-radius:6px;border:1px solid var(--border);background:var(--bg-2);color:var(--text-0);font-size:13px;width:220px;outline:none;font-family:'JetBrains Mono',monospace">
+                <input type="text" id="mtuTarget" class="input-control" placeholder="IP or hostname (e.g. 1.1.1.1)" style="width:220px;font-family:var(--font-mono)">
                 <button class="speedtest-btn" id="mtuBtn" onclick="window._runMTUDiscovery()">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px"><path d="M12 2v20M2 12h20"/></svg>
                     Discover

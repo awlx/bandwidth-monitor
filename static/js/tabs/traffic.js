@@ -420,10 +420,11 @@
         var sub = document.getElementById('systemSubtitle');
         if (!el) return;
         function stat(label, value, cls) {
-            return '<div style="padding:8px 4px"><div style="font-size:10px;color:var(--text-2);margin-bottom:4px">' + label + '</div><div style="font-size:15px;font-weight:700;font-variant-numeric:tabular-nums' + (cls ? ';color:var(--' + cls + ')' : '') + '">' + value + '</div></div>';
+            return '<div class="system-stat"><div class="system-stat-label">' + label + '</div><div class="system-stat-value' + (cls ? ' ' + cls : '') + '">' + value + '</div></div>';
         }
         var h = '';
         h += stat('Uptime', d && d.uptime_secs ? BM.formatUptime(d.uptime_secs) : '—');
+        h += stat('Process Uptime', d && d.process_uptime_secs ? BM.formatUptime(d.process_uptime_secs) : '—');
         if (d && d.load_avg) {
             h += stat('Load 1m', d.load_avg[0].toFixed(2));
             h += stat('Load 5m', d.load_avg[1].toFixed(2));
