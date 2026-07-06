@@ -545,7 +545,7 @@
 
     BM.renderTalkers = function(tid, talkers, vk, fmt, cls) {
         var tb = document.getElementById(tid);
-        if (!talkers || !talkers.length) { tb.innerHTML = '<tr><td colspan="5" class="empty-state">No data &mdash; requires root / CAP_NET_RAW</td></tr>'; return; }
+        if (!talkers || !talkers.length) { tb.innerHTML = '<tr><td colspan="6" class="empty-state">No data &mdash; requires root / CAP_NET_RAW</td></tr>'; return; }
 
         var hasDirection = false;
         for (var di = 0; di < talkers.length; di++) {
@@ -561,10 +561,12 @@
             var geoName = (t.city && t.country_name) ? t.city + ', ' + t.country_name : (t.country_name || '');
             if (t.as_org) geo = '<span class="hostname">' + flag + geoName + ' &middot; AS' + (t.asn || '') + ' ' + t.as_org + '</span>';
             else if (geoName) geo = '<span class="hostname">' + flag + geoName + '</span>';
-            var host = t.hostname && t.hostname !== t.ip
-                ? '<span class="ip-cell ip-clickable" data-ip="' + t.ip + '">' + t.ip + '</span><span class="hostname">' + t.hostname + '</span>' + geo
+            var displayName = BM.deviceDisplayName(null, [t.ip], t.hostname);
+            var host = displayName && displayName !== t.ip
+                ? '<span class="ip-cell ip-clickable" data-ip="' + t.ip + '">' + t.ip + '</span><span class="hostname">' + displayName + '</span>' + geo
                 : '<span class="ip-cell ip-clickable" data-ip="' + t.ip + '">' + t.ip + '</span>' + geo;
             h += '<tr><td><span class="' + BM.rankClass(i) + '">' + (i + 1) + '</span></td>';
+            h += '<td>' + BM.favoriteStarHtml(t.ip) + '</td>';
             h += '<td>' + host + '</td>';
             if (hasDirection) {
                 if (isRate) {
@@ -582,9 +584,9 @@
         var thead = tb.parentElement.querySelector('thead tr');
         if (thead) {
             if (hasDirection) {
-                thead.innerHTML = '<th>#</th><th>Host</th><th style="width:12%">RX</th><th style="width:12%">TX</th><th style="width:12%">Total</th><th style="width:18%"></th>';
+                thead.innerHTML = '<th>#</th><th></th><th>Host</th><th style="width:12%">RX</th><th style="width:12%">TX</th><th style="width:12%">Total</th><th style="width:18%"></th>';
             } else {
-                thead.innerHTML = '<th>#</th><th>Host</th><th>' + (isRate ? 'Rate' : 'Total') + '</th><th style="width:28%"></th>';
+                thead.innerHTML = '<th>#</th><th></th><th>Host</th><th>' + (isRate ? 'Rate' : 'Total') + '</th><th style="width:28%"></th>';
             }
         }
         tb.innerHTML = h;

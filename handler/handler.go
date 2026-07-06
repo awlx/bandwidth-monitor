@@ -214,6 +214,47 @@ func HostDetail(t *talkers.Tracker, ct *conntrack.Tracker, geoDB *geoip.DB) http
 	}
 }
 
+// HostDNSLog returns recent DNS queries made by a specific client IP, if the
+// configured DNS provider supports per-client query history (currently only
+// AdGuard Home does, via dns.ClientQueryLogger). Additive endpoint; existing
+// clients that don't call it are unaffected.
+func HostDNSLog(dnsProvider dns.Provider) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ip := r.URL.Query().Get("ip")
+		if ip == "" {
+			http.Error(w, "ip parameter required", http.StatusBadRequest)
+			return
+		}
+		if len(ip) > 45 {
+			http.Error(w, "invalid ip", http.StatusBadRequest)
+			return
+		}
+
+		type response struct {
+			Available bool                `json:"available"`
+			Queries   []dns.QueryLogEntry `json:"queries"`
+		}
+
+		if dnsProvider == nil || !dnsProvider.Available() {
+			httputil.WriteJSON(w, response{Available: false})
+			return
+		}
+		logger, ok := dnsProvider.(dns.ClientQueryLogger)
+		if !ok {
+			httputil.WriteJSON(w, response{Available: false})
+			return
+		}
+
+		entries, err := logger.QueryLog(ip, 50)
+		if err != nil {
+			log.Printf("host dns log: %v", err)
+			httputil.WriteJSON(w, response{Available: false})
+			return
+		}
+		httputil.WriteJSON(w, response{Available: true, Queries: entries})
+	}
+}
+
 // MenuBarSummary returns a compact JSON snapshot for menu-bar widgets.
 func MenuBarSummary(c *collector.Collector, t *talkers.Tracker, dp dns.Provider, wp wifi.Provider, ctr *conntrack.Tracker) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {

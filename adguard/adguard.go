@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -141,6 +142,77 @@ func (c *Client) Available() bool {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.stats != nil
+}
+
+// queryLogResponse mirrors the subset of AdGuard Home's /control/querylog
+// response we care about.
+type queryLogResponse struct {
+	Data []struct {
+		Time     string `json:"time"`
+		Client   string `json:"client"`
+		Reason   string `json:"reason"`
+		Status   string `json:"status"`
+		ElapsedM string `json:"elapsedMs"`
+		Question struct {
+			Name string `json:"name"`
+			Type string `json:"type"`
+		} `json:"question"`
+	} `json:"data"`
+}
+
+// QueryLog returns the most recent DNS queries made by clientIP, newest
+// first. It implements dns.ClientQueryLogger. AdGuard Home's "search" query
+// param matches either a domain name or a client IP, so it's constrained
+// here to an exact client match to avoid pulling in unrelated domain hits.
+func (c *Client) QueryLog(clientIP string, limit int) ([]dns.QueryLogEntry, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	url := fmt.Sprintf("%s/control/querylog?search=%s&limit=%d", c.baseURL, clientIP, limit)
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+	if c.user != "" {
+		req.SetBasicAuth(c.user, c.pass)
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("adguard: querylog status %d: %s", resp.StatusCode, string(body))
+	}
+
+	var qlr queryLogResponse
+	if err := json.NewDecoder(resp.Body).Decode(&qlr); err != nil {
+		return nil, err
+	}
+
+	out := make([]dns.QueryLogEntry, 0, len(qlr.Data))
+	for _, e := range qlr.Data {
+		// The search param can also match on domain name, so double-check
+		// the client IP to keep results scoped to this one client.
+		if e.Client != clientIP {
+			continue
+		}
+		elapsed := 0.0
+		fmt.Sscanf(e.ElapsedM, "%f", &elapsed)
+		out = append(out, dns.QueryLogEntry{
+			Time:      e.Time,
+			Domain:    e.Question.Name,
+			Type:      e.Question.Type,
+			Blocked:   strings.HasPrefix(e.Reason, "Filtered"),
+			Reason:    e.Reason,
+			ElapsedMs: elapsed,
+		})
+		if len(out) >= limit {
+			break
+		}
+	}
+	return out, nil
 }
 
 func parseDomainEntries(raw []map[string]float64, limit int) []dns.DomainStat {

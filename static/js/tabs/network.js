@@ -4,6 +4,8 @@
 
     var _lastTopology = null;
     var _lastBandwidth = [];
+    var _selectedNodeId = null;
+    var _lastNodeById = {};
 
     BM.updateNetwork = function(topo, bandwidth) {
         if (!topo || !topo.nodes || !topo.nodes.length) {
@@ -56,6 +58,7 @@
         var nodes = (_lastTopology.nodes || []).slice();
         var filter = ((document.getElementById('networkClientSearch') || {}).value || '').toLowerCase();
         var sortKey = ((document.getElementById('networkClientSort') || {}).value || 'type');
+        var pinnedOnly = !!(document.getElementById('networkPinnedOnly') || {}).checked;
 
         if (filter) {
             nodes = nodes.filter(function(n) {
@@ -66,6 +69,9 @@
                        (n.ssid || '').toLowerCase().indexOf(filter) !== -1 ||
                        (n.source || '').toLowerCase().indexOf(filter) !== -1;
             });
+        }
+        if (pinnedOnly) {
+            nodes = nodes.filter(function(n) { return BM.isFavoriteDevice(BM.deviceLabelKey(n.mac, n.ips)); });
         }
 
         if (sortKey === 'name') {
@@ -78,7 +84,7 @@
 
         var tb = document.getElementById('networkClientTable');
         if (!nodes.length) {
-            tb.innerHTML = '<tr><td colspan="9" class="empty-state">' + (filter ? 'No matching nodes' : 'No nodes discovered') + '</td></tr>';
+            tb.innerHTML = '<tr><td colspan="10" class="empty-state">' + (filter || pinnedOnly ? 'No matching nodes' : 'No nodes discovered') + '</td></tr>';
             return;
         }
         var h = '';
@@ -90,9 +96,12 @@
             if (n.signal && n.signal !== 0) {
                 sigStr = n.signal + ' dBm';
             }
+            var favKey = BM.deviceLabelKey(n.mac, n.ips);
+            var displayName = BM.deviceDisplayName(n.mac, n.ips, n.hostname);
             h += '<tr>';
+            h += '<td>' + BM.favoriteStarHtml(favKey) + '</td>';
             h += '<td><span class="net-type-badge net-type-' + n.type + '">' + typeIcon + ' ' + typeLabel + '</span></td>';
-            h += '<td>' + (n.hostname || '<span style="color:var(--text-2)">—</span>') + '</td>';
+            h += '<td>' + (displayName || '<span style="color:var(--text-2)">—</span>') + '</td>';
             h += '<td style="font-family:JetBrains Mono,monospace;font-size:12px">' + formatClickableIPs(n.ips) + '</td>';
             h += '<td style="font-family:JetBrains Mono,monospace;font-size:12px">' + (n.mac || '—') + '</td>';
             h += '<td>' + (n.iface || '—') + '</td>';
@@ -104,6 +113,7 @@
         }
         tb.innerHTML = h;
     };
+    window._refreshFavoriteFilters = window._filterNetworkClients;
 
     function formatClickableIPs(ips) {
         if (!ips || !ips.length) return '—';
@@ -241,6 +251,45 @@
             }
         });
 
+        // Parent map (BFS from root over the adjacency list) used to trace
+        // the path from any clicked node back up to the gateway/root,
+        // independent of which layout (tree/radial) is currently active.
+        var nodeParent = {};
+        (function computeParents() {
+            var visited = {};
+            visited[rootId] = true;
+            var queue = [rootId];
+            while (queue.length > 0) {
+                var cur = queue.shift();
+                var kids = childrenMap[cur] || [];
+                for (var i = 0; i < kids.length; i++) {
+                    var kid = kids[i].id;
+                    if (!visited[kid]) {
+                        visited[kid] = true;
+                        nodeParent[kid] = cur;
+                        queue.push(kid);
+                    }
+                }
+            }
+        })();
+
+        // Build the set of nodes/links along the path from the currently
+        // selected node up to the root, for the click-to-highlight feature.
+        var highlightNodes = {};
+        var highlightLinks = {};
+        if (_selectedNodeId && nodeById[_selectedNodeId]) {
+            var cur = _selectedNodeId;
+            highlightNodes[cur] = true;
+            var guard = 0;
+            while (nodeParent[cur] !== undefined && guard++ < 1000) {
+                var p = nodeParent[cur];
+                highlightLinks[cur + '|' + p] = true;
+                highlightLinks[p + '|' + cur] = true;
+                highlightNodes[p] = true;
+                cur = p;
+            }
+        }
+
         // Sort children so that downstream infrastructure (gateway, switch,
         // ap) comes first, keeping WAN/tunnel nodes to the edges.
         var childSortPrio = { 'gateway': 0, 'self': 1, 'switch': 2, 'ap': 3, 'client': 4, 'wan_gw': 5, 'tunnel': 6 };
@@ -291,6 +340,9 @@
             var from = nodePositions[l.source];
             var to = nodePositions[l.target];
             if (!from || !to) return;
+            if (highlightLinks[l.source + '|' + l.target]) {
+                svgHtml += '<line x1="' + from.x + '" y1="' + from.y + '" x2="' + to.x + '" y2="' + to.y + '" stroke="#fbbf24" stroke-width="4.5" stroke-linecap="round" opacity="0.55"/>';
+            }
             var dash = '';
             var col = lineCol;
             var sw = '1.5';
@@ -363,6 +415,13 @@
             if (!node) continue;
             var r = nodeRadius(node.type);
             var fill = nodeColor(node.type);
+            var isSelected = !!highlightNodes[nid];
+            svgHtml += '<g class="net-node" data-id="' + BM.escSvg(nid) + '">';
+            // Larger invisible hit area makes small client nodes easy to click.
+            svgHtml += '<circle cx="' + pos.x + '" cy="' + pos.y + '" r="' + (r + 10) + '" fill="transparent"/>';
+            if (isSelected) {
+                svgHtml += '<circle cx="' + pos.x + '" cy="' + pos.y + '" r="' + (r + 6) + '" fill="none" stroke="#fbbf24" stroke-width="2.5" opacity="0.85"><animate attributeName="opacity" values="0.85;0.35;0.85" dur="1.4s" repeatCount="indefinite"/></circle>';
+            }
             svgHtml += '<circle cx="' + pos.x + '" cy="' + pos.y + '" r="' + r + '" fill="' + fill + '" stroke="' + fill + '" stroke-width="2" fill-opacity="0.15"/>';
             var nr = nodeRates[nid];
             if (nr && nr.total > 0) {
@@ -374,14 +433,16 @@
             }
             var emoji = node.type === 'client' && node.device_class ? deviceClassEmoji(node.device_class) : nodeTypeEmoji(node.type);
             svgHtml += '<text x="' + pos.x + '" y="' + (pos.y + 4) + '" text-anchor="middle" font-size="' + (r > 14 ? 14 : 11) + '" fill="' + fill + '">' + emoji + '</text>';
-            var label = node.hostname || (node.ips && node.ips[0]) || node.mac || node.id;
+            var label = BM.deviceDisplayName(node.mac, node.ips, node.hostname) || (node.ips && node.ips[0]) || node.mac || node.id;
             if (label.length > 20) label = label.substring(0, 18) + '…';
             svgHtml += '<text x="' + pos.x + '" y="' + (pos.y + r + 14) + '" text-anchor="middle" font-size="11" fill="' + textCol + '">' + BM.escSvg(label) + '</text>';
             var typeLabel = node.device_class || node.type;
             svgHtml += '<text x="' + pos.x + '" y="' + (pos.y + r + 26) + '" text-anchor="middle" font-size="9" fill="' + textCol2 + '">' + typeLabel + '</text>';
+            svgHtml += '</g>';
         }
 
         svg.innerHTML = svgHtml;
+        _lastNodeById = nodeById;
 
         // Tooltip
         var tipEl = document.getElementById('netTooltip');
@@ -391,7 +452,7 @@
             tipEl.style.cssText = 'position:fixed;pointer-events:none;background:var(--card);color:var(--text-0);border:1px solid var(--border);padding:6px 10px;border-radius:6px;font-size:12px;font-family:Inter,sans-serif;z-index:9999;display:none;white-space:nowrap;box-shadow:0 4px 12px rgba(0,0,0,0.15)';
             document.body.appendChild(tipEl);
         }
-        // Bind hover listeners once: the SVG element persists across re-renders
+        // Bind hover/click listeners once: the SVG element persists across re-renders
         // (only its innerHTML is replaced), so re-adding them every render — which
         // runs on every SSE tick — leaked a handler per tick. Delegation via
         // closest() keeps working after the innerHTML swaps.
@@ -409,6 +470,19 @@
                 }
             });
             svg.addEventListener('mouseleave', function() { tipEl.style.display = 'none'; });
+            svg.style.cursor = 'default';
+            svg.addEventListener('click', function(e) {
+                var el = e.target.closest('.net-node');
+                if (!el) return;
+                var id = el.getAttribute('data-id');
+                var node = _lastNodeById[id];
+                if (!node) return;
+                _selectedNodeId = (_selectedNodeId === id) ? null : id;
+                if (_lastTopology) renderNetworkTopology(_lastTopology, _lastBandwidth);
+                if (node.ips && node.ips.length) {
+                    window._openHostModal(node.ips[0], node.mac);
+                }
+            });
         }
     }
 

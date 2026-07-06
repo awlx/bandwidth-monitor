@@ -47,3 +47,21 @@ type UpstreamStat struct {
 	Responses int     `json:"responses"`
 	AvgMs     float64 `json:"avg_ms"`
 }
+
+// QueryLogEntry is a single recent DNS query made by a client.
+type QueryLogEntry struct {
+	Time      string  `json:"time"`
+	Domain    string  `json:"domain"`
+	Type      string  `json:"type,omitempty"`
+	Blocked   bool    `json:"blocked"`
+	Reason    string  `json:"reason,omitempty"`
+	ElapsedMs float64 `json:"elapsed_ms,omitempty"`
+}
+
+// ClientQueryLogger is implemented by providers that can return recent
+// per-client query history (e.g. AdGuard Home's /control/querylog). It is
+// intentionally separate from Provider so existing providers that can't
+// support it (NextDNS, Pi-hole today) aren't forced to implement a stub.
+type ClientQueryLogger interface {
+	QueryLog(clientIP string, limit int) ([]QueryLogEntry, error)
+}

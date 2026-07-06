@@ -1357,6 +1357,18 @@ canvas { outline: none; }
 .ip-clickable { cursor: pointer; text-decoration: underline; text-decoration-style: dotted; text-underline-offset: 2px; }
 .ip-clickable:hover { color: var(--accent); }
 
+/* Favorite/pin star used on device rows across Network, WiFi, and Traffic tables */
+.fav-star { cursor: pointer; color: var(--text-3); font-size: 14px; margin-right: 4px; user-select: none; display: inline-block; }
+.fav-star:hover { color: var(--accent); }
+.fav-star-active { color: #eab308; }
+
+.net-node { cursor: pointer; }
+.net-node:hover circle:nth-child(2) { filter: brightness(1.3); }
+
+/* Device rename affordance in the host modal */
+.device-name-edit { cursor: pointer; color: var(--text-2); font-size: 12px; margin-left: 6px; opacity: 0.7; }
+.device-name-edit:hover { opacity: 1; color: var(--accent); }
+
 /* ── Network Topology Tab ── */
 .net-type-badge {
     display: inline-flex; align-items: center; gap: 4px;

@@ -284,9 +284,9 @@
     BM._origUpdateWiFi = null;
     // Wrap updateWiFi after wifi-tab.js loads — defer wiring
     (function wireWiFiRerender() {
-        ['wifiClientSearch', 'wifiClientSort'].forEach(function(id) {
+        ['wifiClientSearch', 'wifiClientSort', 'wifiPinnedOnly'].forEach(function(id) {
             var el = document.getElementById(id);
-            if (el) el.addEventListener(id === 'wifiClientSearch' ? 'input' : 'change', function() {
+            if (el) el.addEventListener((id === 'wifiClientSearch') ? 'input' : 'change', function() {
                 if (_lastWiFi && BM.updateWiFi) BM.updateWiFi(_lastWiFi);
             });
         });
@@ -303,6 +303,14 @@
             }
         }, 100);
     })();
+
+    // Re-renders every tab that shows device tables, so toggling a pin/star
+    // (which is stored client-side only) is reflected everywhere immediately
+    // without waiting for the next SSE tick.
+    window._refreshAllViews = function() {
+        if (_lastWiFi && BM.updateWiFi) BM.updateWiFi(_lastWiFi);
+        if (window._filterNetworkClients) window._filterNetworkClients();
+    };
 
     connect();
 })();

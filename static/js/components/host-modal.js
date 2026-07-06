@@ -3,12 +3,14 @@
     var BM = window.BM;
 
     // ── Host Detail Modal ──
-    window._openHostModal = function(ip) {
+    window._openHostModal = function(ip, mac) {
         var modal = document.getElementById('hostModal');
         var body = document.getElementById('hostModalBody');
         var title = document.getElementById('hostModalTitle');
         var subtitle = document.getElementById('hostModalSubtitle');
         modal.style.display = '';
+        modal.dataset.ip = ip;
+        modal.dataset.mac = mac || '';
         title.textContent = ip;
         subtitle.textContent = 'Loading…';
         body.innerHTML = '<div style="text-align:center;padding:32px;color:var(--text-2)">Loading…</div>';
@@ -16,9 +18,36 @@
 
         fetch('/api/host?ip=' + encodeURIComponent(ip))
             .then(function(r) { return r.json(); })
-            .then(function(d) { renderHostModal(d, title, subtitle, body); })
+            .then(function(d) {
+                d._mac = mac || '';
+                renderHostModal(d, title, subtitle, body);
+                loadHostDNSLog(ip, body);
+            })
             .catch(function(e) { body.innerHTML = '<div style="text-align:center;padding:32px;color:var(--danger)">Failed to load: ' + e + '</div>'; });
     };
+
+    window._renameHostDevice = function() {
+        var modal = document.getElementById('hostModal');
+        var ip = modal.dataset.ip;
+        var mac = modal.dataset.mac;
+        var key = BM.deviceLabelKey(mac, ip ? [ip] : []);
+        if (!key) return;
+        var current = BM.getDeviceLabel(key);
+        var name = window.prompt('Custom name for ' + (mac || ip) + ':', current);
+        if (name === null) return;
+        BM.setDeviceLabel(key, name);
+        var title = document.getElementById('hostModalTitle');
+        var d = title._lastData;
+        if (d) {
+            var flag = d.country ? BM.countryFlag(d.country) + ' ' : '';
+            title.innerHTML = flag + BM.escSvg(name.trim() || d.hostname || d.ip) + renamePencilHtml();
+        }
+        if (window._refreshAllViews) window._refreshAllViews();
+    };
+
+    function renamePencilHtml() {
+        return ' <span class="device-name-edit" title="Rename this device" onclick="window._renameHostDevice()">&#9998;</span>';
+    }
 
     window._closeHostModal = function() {
         document.getElementById('hostModal').style.display = 'none';
@@ -34,7 +63,9 @@
 
     function renderHostModal(d, titleEl, subtitleEl, bodyEl) {
         var flag = d.country ? BM.countryFlag(d.country) + ' ' : '';
-        titleEl.textContent = flag + (d.hostname || d.ip);
+        var displayName = BM.deviceDisplayName(d._mac, [d.ip], d.hostname) || d.hostname || d.ip;
+        titleEl.innerHTML = flag + BM.escSvg(displayName) + renamePencilHtml();
+        titleEl._lastData = d;
         var sub = d.ip;
         if (d.city && d.country_name) sub += ' \u00b7 ' + d.city + ', ' + d.country_name;
         else if (d.country_name) sub += ' \u00b7 ' + d.country_name;
@@ -114,7 +145,49 @@
             h += '<div style="text-align:center;padding:20px;color:var(--text-2);font-size:13px">No active connections tracked for this host</div>';
         }
 
+        // Recent DNS queries — filled in asynchronously by loadHostDNSLog()
+        // once /api/host/dns responds, since it may hit a slower remote
+        // DNS provider API rather than in-memory state like the rest of
+        // this modal.
+        h += '<div id="hostDNSSection" style="margin-top:20px"></div>';
+
         bodyEl.innerHTML = h;
+    }
+
+    function loadHostDNSLog(ip, bodyEl) {
+        var section = bodyEl.querySelector('#hostDNSSection');
+        if (!section) return;
+        fetch('/api/host/dns?ip=' + encodeURIComponent(ip))
+            .then(function(r) { return r.json(); })
+            .then(function(d) {
+                if (!d || !d.available || !d.queries || !d.queries.length) return;
+                var h = '<div style="font-size:14px;font-weight:600;margin-bottom:10px">Recent DNS Queries <span style="font-weight:400;color:var(--text-2);font-size:12px">(' + d.queries.length + ')</span></div>';
+                h += '<div style="overflow-x:auto;max-height:250px;overflow-y:auto;border:1px solid var(--border);border-radius:8px">';
+                h += '<table style="width:100%;font-size:12px;border-collapse:collapse"><thead><tr style="background:var(--bg-2);position:sticky;top:0">';
+                h += '<th style="padding:8px 10px;text-align:left;font-size:11px;font-weight:600;color:var(--text-2)">Time</th>';
+                h += '<th style="padding:8px 10px;text-align:left;font-size:11px;font-weight:600;color:var(--text-2)">Domain</th>';
+                h += '<th style="padding:8px 10px;text-align:left;font-size:11px;font-weight:600;color:var(--text-2)">Type</th>';
+                h += '<th style="padding:8px 10px;text-align:left;font-size:11px;font-weight:600;color:var(--text-2)">Result</th>';
+                h += '</tr></thead><tbody>';
+                for (var i = 0; i < d.queries.length; i++) {
+                    var q = d.queries[i];
+                    var rowBg = i % 2 === 0 ? '' : ' style="background:var(--bg-1)"';
+                    var t = q.time ? new Date(q.time) : null;
+                    var timeStr = t && !isNaN(t.getTime()) ? t.toLocaleTimeString() : '—';
+                    var resultHtml = q.blocked
+                        ? '<span style="color:var(--danger)">Blocked</span>'
+                        : '<span style="color:var(--text-2)">Allowed</span>';
+                    h += '<tr' + rowBg + '>';
+                    h += '<td style="padding:6px 10px;white-space:nowrap;color:var(--text-2)">' + timeStr + '</td>';
+                    h += '<td style="padding:6px 10px;font-family:var(--font-mono,monospace);font-size:11px">' + BM.escSvg(q.domain || '') + '</td>';
+                    h += '<td style="padding:6px 10px;color:var(--text-2)">' + (q.type || '—') + '</td>';
+                    h += '<td style="padding:6px 10px">' + resultHtml + '</td>';
+                    h += '</tr>';
+                }
+                h += '</tbody></table></div>';
+                section.innerHTML = h;
+            })
+            .catch(function() { /* DNS provider unavailable or doesn't support per-client logs; leave section empty */ });
     }
 
     function renderHostHistoryChart(history) {

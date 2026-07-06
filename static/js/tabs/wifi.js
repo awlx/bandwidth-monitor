@@ -156,10 +156,14 @@
                        (cl.ap_name || '').toLowerCase().indexOf(filter) !== -1;
             });
         }
+        var pinnedOnly = !!(document.getElementById('wifiPinnedOnly') || {}).checked;
+        if (pinnedOnly) {
+            clients = clients.filter(function(cl) { return BM.isFavoriteDevice(BM.deviceLabelKey(cl.mac, cl.ip ? [cl.ip] : [])); });
+        }
 
         var ctb = document.getElementById('wifiClientTable');
         if (!clients.length) {
-            ctb.innerHTML = '<tr><td colspan="11" class="empty-state">' + (filter ? 'No matching clients' : 'No wireless clients') + '</td></tr>';
+            ctb.innerHTML = '<tr><td colspan="12" class="empty-state">' + (filter || pinnedOnly ? 'No matching clients' : 'No wireless clients') + '</td></tr>';
         } else {
             var maxBw = 1;
             for (var i = 0; i < clients.length; i++) {
@@ -171,13 +175,18 @@
                 var cl = clients[i];
                 var total = (cl.tx_bytes || 0) + (cl.rx_bytes || 0);
                 var pct = maxBw > 0 ? ((total / maxBw) * 100).toFixed(1) : '0';
-                var name = cl.hostname || cl.ip || cl.mac || '—';
+                var ips = cl.ip ? [cl.ip] : [];
+                var name = BM.deviceDisplayName(cl.mac, ips, cl.hostname) || cl.ip || cl.mac || '—';
                 var sub = cl.ip && cl.hostname ? cl.ip : (cl.mac || '');
                 var sig = cl.signal || 0;
                 var sigClass = sig >= -50 ? 'sig-great' : sig >= -65 ? 'sig-good' : sig >= -75 ? 'sig-ok' : 'sig-weak';
+                var favKey = BM.deviceLabelKey(cl.mac, ips);
                 ch += '<tr>';
                 ch += '<td><span class="' + BM.rankClass(i) + '">' + (i + 1) + '</span></td>';
-                ch += '<td><span class="ip-cell">' + name + '</span>';
+                ch += '<td>' + BM.favoriteStarHtml(favKey) + '</td>';
+                ch += '<td>';
+                if (cl.ip) ch += '<span class="ip-cell ip-clickable" data-ip="' + cl.ip + '">' + name + '</span>';
+                else ch += '<span class="ip-cell">' + name + '</span>';
                 if (sub && sub !== name) ch += '<div style="font-size:10px;color:var(--text-2);font-family:JetBrains Mono,monospace">' + sub + '</div>';
                 ch += '</td>';
                 ch += '<td style="font-size:12px">' + (cl.ssid || '—') + '</td>';

@@ -324,6 +324,7 @@ func main() {
 	mux.HandleFunc("/api/wifi", handler.WiFiSummary(wifiProvider))
 	mux.HandleFunc("/api/conntrack", handler.ConntrackSummary(conntrackTracker))
 	mux.HandleFunc("/api/host", handler.HostDetail(talkerTracker, conntrackTracker, geoDB))
+	mux.HandleFunc("/api/host/dns", handler.HostDNSLog(dnsProvider))
 	mux.HandleFunc("/api/latency", handler.LatencyStatus(latencyMonitor))
 	mux.HandleFunc("/api/speedtest/run", handler.SpeedTestRun(speedTester))
 	mux.HandleFunc("/api/speedtest/results", handler.SpeedTestResults(speedTester))
