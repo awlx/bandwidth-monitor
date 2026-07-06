@@ -1149,6 +1149,19 @@ canvas { outline: none; }
     margin-top: 2px;
 }
 
+.speedtest-gauge-sub {
+    font-size: 10px;
+    color: var(--text-3);
+    margin-top: 6px;
+    min-height: 13px;
+}
+
+.speedtest-gauge-label-hint {
+    font-weight: 400;
+    opacity: 0.6;
+    font-size: 10px;
+}
+
 .speedtest-progress-wrap {
     background: var(--bg-1);
     border: 1px solid var(--border);
