@@ -835,10 +835,13 @@
                     <div class="card-title">Speed Test</div>
                     <div class="card-subtitle">Runs from your router against <a href="https://speed.ffmuc.net" target="_blank" style="color:var(--accent)">speed.ffmuc.net</a> &mdash; to test from your client, open the link directly</div>
                 </div>
-                <button class="speedtest-btn" id="speedtestBtn" onclick="window._runSpeedTest()">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px"><polygon points="5 3 19 12 5 21 5 3"/></svg>
-                    Start Test
-                </button>
+                <div style="display:flex;align-items:center;gap:10px">
+                    <select class="select-control select-control--sm speedtest-iface-select" id="speedtestIfaceSelect" style="display:none" title="Choose which WAN interface to test through"></select>
+                    <button class="speedtest-btn" id="speedtestBtn" onclick="window._runSpeedTest()">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+                        Start Test
+                    </button>
+                </div>
             </div>
         </div>
 
@@ -897,13 +900,14 @@
                 <thead><tr>
                     <th>#</th>
                     <th>Date</th>
+                    <th>Interface</th>
                     <th>Download</th>
                     <th>Upload</th>
                     <th>Ping</th>
                     <th>Jitter</th>
                 </tr></thead>
                 <tbody id="speedtestHistory">
-                    <tr><td colspan="6" class="empty-state">No tests yet &mdash; click Start Test</td></tr>
+                    <tr><td colspan="7" class="empty-state">No tests yet &mdash; click Start Test</td></tr>
                 </tbody>
             </table>
         </div>

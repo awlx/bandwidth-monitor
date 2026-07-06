@@ -6,10 +6,14 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"sort"
 	"sync"
+	"syscall"
 	"time"
+
+	"golang.org/x/sys/unix"
 
 	"bandwidth-monitor/httputil"
 )
@@ -29,7 +33,11 @@ type Result struct {
 	UploadSingleMbps   float64 `json:"upload_single_mbps,omitempty"`
 	PingMs             float64 `json:"ping_ms"`
 	JitterMs           float64 `json:"jitter_ms"`
-	Timestamp          int64   `json:"timestamp"`
+	// Interface is the WAN interface the test was bound to via
+	// SO_BINDTODEVICE, or empty if the test used the default route (the
+	// original, pre-multi-WAN behavior).
+	Interface string `json:"interface,omitempty"`
+	Timestamp int64  `json:"timestamp"`
 }
 
 // Progress is sent over SSE while a test is running.
@@ -77,9 +85,11 @@ func (t *Tester) GetResults() []Result {
 	return out
 }
 
-// Run starts a speed test in the background. Returns a channel that receives
-// progress updates. If a test is already running, returns nil.
-func (t *Tester) Run() <-chan Progress {
+// Run starts a speed test in the background, optionally bound to a specific
+// WAN interface via SO_BINDTODEVICE (pass "" to use the default route, the
+// original single-WAN behavior). Returns a channel that receives progress
+// updates. If a test is already running, returns nil.
+func (t *Tester) Run(iface string) <-chan Progress {
 	t.mu.Lock()
 	if t.running {
 		t.mu.Unlock()
@@ -90,11 +100,11 @@ func (t *Tester) Run() <-chan Progress {
 	t.progress = ch
 	t.mu.Unlock()
 
-	go t.run(ch)
+	go t.run(iface, ch)
 	return ch
 }
 
-func (t *Tester) run(ch chan<- Progress) {
+func (t *Tester) run(iface string, ch chan<- Progress) {
 	defer func() {
 		t.mu.Lock()
 		t.running = false
@@ -104,12 +114,20 @@ func (t *Tester) run(ch chan<- Progress) {
 	}()
 
 	server := t.server
-	log.Printf("speedtest: starting test against %s", server)
+	if iface != "" {
+		log.Printf("speedtest: starting test against %s via interface %s", server, iface)
+	} else {
+		log.Printf("speedtest: starting test against %s", server)
+	}
 
 	ch <- Progress{Phase: "ping", Percent: 0, Value: 0}
-	pingMs, jitterMs, err := measurePing(server, 20)
+	pingMs, jitterMs, err := measurePing(server, iface, 20)
 	if err != nil {
-		log.Printf("speedtest: ping failed: %v", err)
+		if iface != "" {
+			log.Printf("speedtest: ping via interface %s failed: %v (the interface may not have its own working default route / policy routing rule)", iface, err)
+		} else {
+			log.Printf("speedtest: ping failed: %v", err)
+		}
 		ch <- Progress{Phase: "error", Value: 0}
 		return
 	}
@@ -123,14 +141,14 @@ func (t *Tester) run(ch chan<- Progress) {
 	// connection well below the link's real aggregate capacity. Failures
 	// here are non-fatal: they're a bonus diagnostic, not the primary result.
 	ch <- Progress{Phase: "download-single", Percent: 0, Value: 0}
-	dlSingleMbps, err := measureDownload(server, 1, singleStreamDuration, "download-single", ch)
+	dlSingleMbps, err := measureDownload(server, iface, 1, singleStreamDuration, "download-single", ch)
 	if err != nil {
 		log.Printf("speedtest: single-stream download measurement failed (non-fatal): %v", err)
 		dlSingleMbps = 0
 	}
 
 	ch <- Progress{Phase: "download", Percent: 0, Value: 0}
-	dlMbps, err := measureDownload(server, downloadParallelism, downloadDuration, "download", ch)
+	dlMbps, err := measureDownload(server, iface, downloadParallelism, downloadDuration, "download", ch)
 	if err != nil {
 		log.Printf("speedtest: download failed: %v", err)
 		ch <- Progress{Phase: "error", Value: 0}
@@ -139,14 +157,14 @@ func (t *Tester) run(ch chan<- Progress) {
 	log.Printf("speedtest: download=%.1f Mbps (single-stream=%.1f Mbps)", dlMbps, dlSingleMbps)
 
 	ch <- Progress{Phase: "upload-single", Percent: 0, Value: 0}
-	ulSingleMbps, err := measureUpload(server, 1, singleStreamDuration, "upload-single", ch)
+	ulSingleMbps, err := measureUpload(server, iface, 1, singleStreamDuration, "upload-single", ch)
 	if err != nil {
 		log.Printf("speedtest: single-stream upload measurement failed (non-fatal): %v", err)
 		ulSingleMbps = 0
 	}
 
 	ch <- Progress{Phase: "upload", Percent: 0, Value: 0}
-	ulMbps, err := measureUpload(server, uploadParallelism, uploadDuration, "upload", ch)
+	ulMbps, err := measureUpload(server, iface, uploadParallelism, uploadDuration, "upload", ch)
 	if err != nil {
 		log.Printf("speedtest: upload failed: %v", err)
 		ch <- Progress{Phase: "error", Value: 0}
@@ -162,6 +180,7 @@ func (t *Tester) run(ch chan<- Progress) {
 		UploadSingleMbps:   ulSingleMbps,
 		PingMs:             pingMs,
 		JitterMs:           jitterMs,
+		Interface:          iface,
 		Timestamp:          time.Now().UnixMilli(),
 	}
 
@@ -177,10 +196,10 @@ func (t *Tester) run(ch chan<- Progress) {
 		dlMbps, ulMbps, pingMs)
 }
 
-func measurePing(server string, samples int) (avgMs, jitterMs float64, err error) {
+func measurePing(server, iface string, samples int) (avgMs, jitterMs float64, err error) {
 	client := &http.Client{
 		Timeout:   10 * time.Second,
-		Transport: httputil.WrapTransport(nil),
+		Transport: httputil.WrapTransport(dialTransport(iface)),
 	}
 
 	var pings []float64
@@ -294,8 +313,48 @@ loop:
 	return mbps, nil
 }
 
+// dialerFor returns a net.Dialer that, when iface is non-empty, binds every
+// outbound connection to that specific network interface via
+// SO_BINDTODEVICE. This forces egress traffic out that NIC. It relies on
+// the host's own routing configuration to know how to reach the internet
+// via that interface (i.e. the interface must already have a working
+// default route / policy routing rule of its own, as is required for it to
+// be usable as a WAN uplink at all under normal operation). We deliberately
+// do not add, modify, or remove any routes or policy rules ourselves — that
+// would mean silently mutating the host's network configuration, which is
+// too invasive and risky for a monitoring tool. If an interface isn't
+// independently routable, binding to it will fail with a clear "no route to
+// host"/"network unreachable" error, which surfaces to the user as a failed
+// test for that interface — a signal to fix the underlying multi-WAN
+// routing setup, not something this tool should paper over.
+func dialerFor(iface string) *net.Dialer {
+	d := &net.Dialer{Timeout: 10 * time.Second}
+	if iface == "" {
+		return d
+	}
+	d.Control = func(_, _ string, c syscall.RawConn) error {
+		var bindErr error
+		if ctrlErr := c.Control(func(fd uintptr) {
+			bindErr = unix.BindToDevice(int(fd), iface)
+		}); ctrlErr != nil {
+			return ctrlErr
+		}
+		return bindErr
+	}
+	return d
+}
+
+// dialTransport builds a plain Transport (HTTP/2 allowed) bound to iface,
+// used for latency measurement where connection multiplexing doesn't matter.
+func dialTransport(iface string) *http.Transport {
+	if iface == "" {
+		return nil
+	}
+	return &http.Transport{DialContext: dialerFor(iface).DialContext}
+}
+
 // newSpeedTransport builds a dedicated HTTP/1.1-only Transport for a single
-// speedtest worker connection.
+// speedtest worker connection, optionally bound to a specific WAN interface.
 //
 // Go's http.DefaultTransport auto-negotiates HTTP/2 over TLS, and multiple
 // http.Client values that fall back to it (nil Transport.Base) all share
@@ -308,13 +367,14 @@ loop:
 // each one gets its own independent TCP connection (and congestion
 // window), which is how genuine multi-stream throughput tests reach the
 // link's actual capacity.
-func newSpeedTransport() *http.Transport {
+func newSpeedTransport(iface string) *http.Transport {
 	return &http.Transport{
 		MaxIdleConnsPerHost: 1,
 		DisableCompression:  true,
 		// A non-nil (even empty) TLSNextProto map disables the automatic
 		// HTTP/2 upgrade, keeping this connection on HTTP/1.1.
 		TLSNextProto: map[string]func(string, *tls.Conn) http.RoundTripper{},
+		DialContext:  dialerFor(iface).DialContext,
 	}
 }
 
@@ -328,11 +388,11 @@ const (
 	uploadChunkSize      = 4 * 1024 * 1024
 )
 
-func measureDownload(server string, parallelism int, duration time.Duration, phase string, ch chan<- Progress) (float64, error) {
+func measureDownload(server, iface string, parallelism int, duration time.Duration, phase string, ch chan<- Progress) (float64, error) {
 	workerFn := func(deadline time.Time, counter *int64, mu *sync.Mutex) {
 		client := &http.Client{
 			Timeout:   duration + 5*time.Second,
-			Transport: httputil.WrapTransport(newSpeedTransport()),
+			Transport: httputil.WrapTransport(newSpeedTransport(iface)),
 		}
 		buf := make([]byte, 256*1024)
 		for time.Now().Before(deadline) {
@@ -358,11 +418,11 @@ func measureDownload(server string, parallelism int, duration time.Duration, pha
 	return measureThroughput(phase, duration, parallelism, workerFn, ch)
 }
 
-func measureUpload(server string, parallelism int, duration time.Duration, phase string, ch chan<- Progress) (float64, error) {
+func measureUpload(server, iface string, parallelism int, duration time.Duration, phase string, ch chan<- Progress) (float64, error) {
 	workerFn := func(deadline time.Time, counter *int64, mu *sync.Mutex) {
 		client := &http.Client{
 			Timeout:   duration + 5*time.Second,
-			Transport: httputil.WrapTransport(newSpeedTransport()),
+			Transport: httputil.WrapTransport(newSpeedTransport(iface)),
 		}
 		data := make([]byte, uploadChunkSize)
 		rand.Read(data)
