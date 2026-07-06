@@ -79,7 +79,7 @@
     function renderSpeedTestHistory(results) {
         var tb = document.getElementById('speedtestHistory');
         if (!results || !results.length) {
-            tb.innerHTML = '<tr><td colspan="6" class="empty-state">No tests yet &mdash; click Start Test</td></tr>';
+            tb.innerHTML = '<tr><td colspan="7" class="empty-state">No tests yet &mdash; click Start Test</td></tr>';
             return;
         }
         var h = '';
@@ -87,11 +87,13 @@
             var r = results[i];
             var d = new Date(r.timestamp);
             var dateStr = d.toLocaleDateString() + ' ' + d.toLocaleTimeString();
+            var ifaceCell = r.interface ? BM.escSvg(r.interface) : '<span style="color:var(--text-3)">auto</span>';
             var dlSingle = r.download_single_mbps ? ' <span style="color:var(--text-3);font-weight:400" title="Single-stream download">(1 stream: ' + r.download_single_mbps.toFixed(1) + ' Mbps)</span>' : '';
             var ulSingle = r.upload_single_mbps ? ' <span style="color:var(--text-3);font-weight:400" title="Single-stream upload">(1 stream: ' + r.upload_single_mbps.toFixed(1) + ' Mbps)</span>' : '';
             h += '<tr>';
             h += '<td><span class="' + BM.rankClass(i) + '">' + (i + 1) + '</span></td>';
             h += '<td style="font-size:12px;white-space:nowrap">' + dateStr + '</td>';
+            h += '<td style="font-size:12px;white-space:nowrap">' + ifaceCell + '</td>';
             h += '<td style="font-variant-numeric:tabular-nums;font-weight:600;color:var(--rx)">' + r.download_mbps.toFixed(1) + ' Mbps' + dlSingle + '</td>';
             h += '<td style="font-variant-numeric:tabular-nums;font-weight:600;color:var(--tx)">' + r.upload_mbps.toFixed(1) + ' Mbps' + ulSingle + '</td>';
             h += '<td style="font-variant-numeric:tabular-nums">' + r.ping_ms.toFixed(1) + ' ms</td>';
@@ -116,6 +118,29 @@
         }).catch(function() {});
     };
 
+    // On multi-WAN routers, populate a "test via" picker so the user can
+    // pick which uplink to measure instead of whatever the default route
+    // happens to send traffic through. Hidden entirely on single-WAN
+    // setups (the common case) to avoid cluttering the UI.
+    function loadSpeedTestInterfaces() {
+        var sel = document.getElementById('speedtestIfaceSelect');
+        if (!sel) return;
+        fetch('/api/speedtest/interfaces').then(function(r) { return r.json(); }).then(function(data) {
+            var ifaces = data.interfaces || [];
+            if (ifaces.length < 2) {
+                sel.style.display = 'none';
+                return;
+            }
+            var h = '<option value="">Auto (default route)</option>';
+            for (var i = 0; i < ifaces.length; i++) {
+                h += '<option value="' + BM.escSvg(ifaces[i].name) + '">' + BM.escSvg(ifaces[i].name) + '</option>';
+            }
+            sel.innerHTML = h;
+            sel.style.display = '';
+        }).catch(function() {});
+    }
+    loadSpeedTestInterfaces();
+
     window._runSpeedTest = function() {
         if (_stRunning) return;
         _stRunning = true;
@@ -139,7 +164,11 @@
         var currentDownloadSingle = -1;
         var currentUploadSingle = -1;
 
-        fetch('/api/speedtest/run', { method: 'POST' }).then(function(resp) {
+        var ifaceSel = document.getElementById('speedtestIfaceSelect');
+        var iface = (ifaceSel && ifaceSel.style.display !== 'none') ? ifaceSel.value : '';
+        var runUrl = '/api/speedtest/run' + (iface ? ('?iface=' + encodeURIComponent(iface)) : '');
+
+        fetch(runUrl, { method: 'POST' }).then(function(resp) {
             if (resp.status === 409) {
                 phase.textContent = 'Test already running';
                 return;
