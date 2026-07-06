@@ -118,7 +118,9 @@ func (c *Client) Send(token, environment string, staleAfter time.Duration, conte
 	var apnsBody struct {
 		Reason string `json:"reason"`
 	}
-	json.NewDecoder(resp.Body).Decode(&apnsBody)
+	if decErr := json.NewDecoder(resp.Body).Decode(&apnsBody); decErr != nil {
+		log.Printf("apns: failed to decode error body (status %d, apns-id=%s): %v", result.StatusCode, result.ApnsID, decErr)
+	}
 	result.Reason = apnsBody.Reason
 
 	if result.Dead() {

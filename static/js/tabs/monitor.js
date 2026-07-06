@@ -252,22 +252,67 @@
         }
     };
 
-    // Switches to the Traffic tab and scrolls/highlights the Top Talkers
-    // rows matching a given country code, so clicking a country on the map
-    // (or in the Active Countries list) helps find who's actually talking
-    // to it.
+    // Fetches and displays the top IPs talking to/from a given country in an
+    // inline detail panel below the map. The global Top Talkers lists only
+    // ever cover the overall top-10 IPs, which frequently don't include any
+    // IP for a given country — so we ask the backend for a country-scoped
+    // top list instead of just searching the already-rendered Traffic tables.
     window._focusCountryTraffic = function(cc) {
         if (!cc) return;
-        if (window._switchTab) window._switchTab('traffic');
-        setTimeout(function() {
-            var rows = document.querySelectorAll('#bwTable tr[data-country="' + cc + '"], #volTable tr[data-country="' + cc + '"]');
-            if (!rows.length) return;
-            rows[0].scrollIntoView({ behavior: 'smooth', block: 'center' });
-            rows.forEach(function(r) {
-                r.classList.add('country-focus-flash');
-                setTimeout(function() { r.classList.remove('country-focus-flash'); }, 2000);
+        var wrap = document.getElementById('mapCountryDetail');
+        var title = document.getElementById('mapCountryDetailTitle');
+        var list = document.getElementById('mapCountryDetailList');
+        if (!wrap || !title || !list) return;
+
+        wrap.dataset.cc = cc;
+        wrap.style.display = '';
+        title.textContent = BM.countryFlag(cc) + ' ' + cc + ' \u2014 Top Talkers';
+        list.innerHTML = '<div style="text-align:center;padding:16px;color:var(--text-2)">Loading&hellip;</div>';
+        wrap.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+
+        fetch('/api/talkers/country?cc=' + encodeURIComponent(cc))
+            .then(function(r) { return r.json(); })
+            .then(function(talkers) {
+                // Ignore stale responses if the user clicked a different country meanwhile.
+                if (wrap.dataset.cc !== cc) return;
+                if (!talkers || !talkers.length) {
+                    list.innerHTML = '<div style="text-align:center;padding:16px;color:var(--text-2)">No tracked IPs for this country in the last 24h</div>';
+                    return;
+                }
+                var mx = talkers[0].total_bytes || 1, h = '';
+                talkers.forEach(function(t, i) {
+                    var pct = mx > 0 ? (t.total_bytes / mx * 100) : 0;
+                    var displayName = BM.deviceDisplayName ? BM.deviceDisplayName(null, [t.ip], t.hostname) : (t.hostname || t.ip);
+                    var host = displayName && displayName !== t.ip
+                        ? '<span class="ip-cell ip-clickable" data-ip="' + t.ip + '">' + t.ip + '</span> <span class="hostname">' + BM.escSvg(displayName) + '</span>'
+                        : '<span class="ip-cell ip-clickable" data-ip="' + t.ip + '">' + t.ip + '</span>';
+                    var geo = t.as_org ? '<span class="hostname">AS' + (t.asn || '') + ' ' + BM.escSvg(t.as_org) + '</span>' : '';
+                    h += '<div style="display:flex;align-items:center;gap:8px;padding:4px 0;border-bottom:1px solid var(--border)">';
+                    h += '<span class="' + BM.rankClass(i) + '" style="flex:0 0 auto">' + (i + 1) + '</span>';
+                    h += '<div style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + host + ' ' + geo + '</div>';
+                    h += '<div style="flex:0 0 80px;height:6px;background:var(--bg-2);border-radius:3px;overflow:hidden"><div style="width:' + Math.max(2, pct).toFixed(1) + '%;height:100%;background:var(--accent);border-radius:3px;opacity:0.7"></div></div>';
+                    h += '<span style="flex:0 0 auto;min-width:60px;text-align:right;font-variant-numeric:tabular-nums;color:var(--text-2)">' + BM.formatBytes(t.total_bytes) + '</span>';
+                    h += '</div>';
+                });
+                list.innerHTML = h;
+                // Re-wire host-modal clicks for the newly rendered IP cells.
+                list.querySelectorAll('.ip-clickable').forEach(function(el) {
+                    el.addEventListener('click', function() {
+                        if (window._openHostModal) window._openHostModal(el.getAttribute('data-ip'), '');
+                    });
+                });
+            })
+            .catch(function(e) {
+                if (wrap.dataset.cc !== cc) return;
+                list.innerHTML = '<div style="text-align:center;padding:16px;color:var(--danger)">Failed to load: ' + e + '</div>';
             });
-        }, 60);
+    };
+
+    window._closeCountryDetail = function() {
+        var wrap = document.getElementById('mapCountryDetail');
+        if (!wrap) return;
+        wrap.style.display = 'none';
+        delete wrap.dataset.cc;
     };
 
     // ── Map zoom/pan ──
