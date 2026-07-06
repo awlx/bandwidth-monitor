@@ -87,7 +87,14 @@
             var r = results[i];
             var d = new Date(r.timestamp);
             var dateStr = d.toLocaleDateString() + ' ' + d.toLocaleTimeString();
-            var ifaceCell = r.interface ? BM.escSvg(r.interface) : '<span style="color:var(--text-3)">auto</span>';
+            var ifaceCell;
+            if (r.interface && r.interface_auto) {
+                ifaceCell = BM.escSvg(r.interface) + ' <span style="color:var(--text-3)" title="Auto-detected from the OS default route, not explicitly selected">(auto)</span>';
+            } else if (r.interface) {
+                ifaceCell = BM.escSvg(r.interface);
+            } else {
+                ifaceCell = '<span style="color:var(--text-3)">auto</span>';
+            }
             var dlSingle = r.download_single_mbps ? ' <span style="color:var(--text-3);font-weight:400" title="Single-stream download">(1 stream: ' + r.download_single_mbps.toFixed(1) + ' Mbps)</span>' : '';
             var ulSingle = r.upload_single_mbps ? ' <span style="color:var(--text-3);font-weight:400" title="Single-stream upload">(1 stream: ' + r.upload_single_mbps.toFixed(1) + ' Mbps)</span>' : '';
             h += '<tr>';

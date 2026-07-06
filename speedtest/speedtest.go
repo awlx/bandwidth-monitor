@@ -1,6 +1,7 @@
 package speedtest
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/tls"
 	"fmt"
@@ -33,11 +34,17 @@ type Result struct {
 	UploadSingleMbps   float64 `json:"upload_single_mbps,omitempty"`
 	PingMs             float64 `json:"ping_ms"`
 	JitterMs           float64 `json:"jitter_ms"`
-	// Interface is the WAN interface the test was bound to via
-	// SO_BINDTODEVICE, or empty if the test used the default route (the
-	// original, pre-multi-WAN behavior).
+	// Interface is the WAN interface used for the test: either the one
+	// explicitly requested via ?iface=, or (if none was requested) the
+	// interface auto-detected from which local address the OS's default
+	// route egressed through, for display purposes only — no binding is
+	// forced in that case. Empty if detection wasn't possible. See
+	// InterfaceAuto to tell the two cases apart.
 	Interface string `json:"interface,omitempty"`
-	Timestamp int64  `json:"timestamp"`
+	// InterfaceAuto is true when Interface was auto-detected (no ?iface=
+	// was requested) rather than explicitly selected by the user.
+	InterfaceAuto bool  `json:"interface_auto,omitempty"`
+	Timestamp     int64 `json:"timestamp"`
 }
 
 // Progress is sent over SSE while a test is running.
@@ -121,7 +128,7 @@ func (t *Tester) run(iface string, ch chan<- Progress) {
 	}
 
 	ch <- Progress{Phase: "ping", Percent: 0, Value: 0}
-	pingMs, jitterMs, err := measurePing(server, iface, 20)
+	pingMs, jitterMs, localAddr, err := measurePing(server, iface, 20)
 	if err != nil {
 		if iface != "" {
 			log.Printf("speedtest: ping via interface %s failed: %v (the interface may not have its own working default route / policy routing rule)", iface, err)
@@ -133,6 +140,17 @@ func (t *Tester) run(iface string, ch chan<- Progress) {
 	}
 	ch <- Progress{Phase: "ping", Percent: 100, Value: pingMs}
 	log.Printf("speedtest: ping=%.1fms jitter=%.1fms", pingMs, jitterMs)
+
+	// If no interface was explicitly requested, identify which one the OS's
+	// default route actually picked, purely so the result/history can show
+	// it — this does not change any dialing/binding behavior.
+	detectedIface := ""
+	if iface == "" {
+		detectedIface = detectInterfaceForIP(localAddr)
+		if detectedIface != "" {
+			log.Printf("speedtest: auto-detected egress interface: %s", detectedIface)
+		}
+	}
 
 	// Single-stream sub-tests run first and briefly, purely as a point of
 	// comparison against the full multi-stream result below — a large gap
@@ -180,8 +198,13 @@ func (t *Tester) run(iface string, ch chan<- Progress) {
 		UploadSingleMbps:   ulSingleMbps,
 		PingMs:             pingMs,
 		JitterMs:           jitterMs,
-		Interface:          iface,
 		Timestamp:          time.Now().UnixMilli(),
+	}
+	if iface != "" {
+		result.Interface = iface
+	} else if detectedIface != "" {
+		result.Interface = detectedIface
+		result.InterfaceAuto = true
 	}
 
 	t.mu.Lock()
@@ -196,10 +219,32 @@ func (t *Tester) run(iface string, ch chan<- Progress) {
 		dlMbps, ulMbps, pingMs)
 }
 
-func measurePing(server, iface string, samples int) (avgMs, jitterMs float64, err error) {
+// measurePing also reports localAddr, the source IP the OS picked for the
+// connection. Callers use it to identify which interface an "auto" (no
+// explicit iface) test actually egressed through, purely for display.
+func measurePing(server, iface string, samples int) (avgMs, jitterMs float64, localAddr net.IP, err error) {
+	transport := dialTransport(iface)
+	var addrMu sync.Mutex
+	dial := (&net.Dialer{Timeout: 10 * time.Second}).DialContext
+	if t, ok := transport.(*http.Transport); ok && t.DialContext != nil {
+		dial = t.DialContext
+	}
+	captured := func(ctx context.Context, network, addr string) (net.Conn, error) {
+		conn, e := dial(ctx, network, addr)
+		if e == nil && conn != nil {
+			if tcpAddr, ok := conn.LocalAddr().(*net.TCPAddr); ok {
+				addrMu.Lock()
+				if localAddr == nil {
+					localAddr = tcpAddr.IP
+				}
+				addrMu.Unlock()
+			}
+		}
+		return conn, e
+	}
 	client := &http.Client{
 		Timeout:   10 * time.Second,
-		Transport: httputil.WrapTransport(dialTransport(iface)),
+		Transport: httputil.WrapTransport(&http.Transport{DialContext: captured}),
 	}
 
 	var pings []float64
@@ -207,7 +252,7 @@ func measurePing(server, iface string, samples int) (avgMs, jitterMs float64, er
 		start := time.Now()
 		req, e := http.NewRequest("HEAD", server+"/downloading", nil)
 		if e != nil {
-			return 0, 0, fmt.Errorf("creating request: %w", e)
+			return 0, 0, localAddr, fmt.Errorf("creating request: %w", e)
 		}
 		resp, e := client.Do(req)
 		if e != nil {
@@ -219,7 +264,7 @@ func measurePing(server, iface string, samples int) (avgMs, jitterMs float64, er
 	}
 
 	if len(pings) < 2 {
-		return 0, 0, fmt.Errorf("not enough ping responses (%d/%d)", len(pings), samples)
+		return 0, 0, localAddr, fmt.Errorf("not enough ping responses (%d/%d)", len(pings), samples)
 	}
 
 	sort.Float64s(pings)
@@ -250,7 +295,7 @@ func measurePing(server, iface string, samples int) (avgMs, jitterMs float64, er
 		jitterMs = jitterSum / float64(count)
 	}
 
-	return avgMs, jitterMs, nil
+	return avgMs, jitterMs, localAddr, nil
 }
 
 // measureThroughput runs parallelism goroutines calling workerFn for the
@@ -313,6 +358,37 @@ loop:
 	return mbps, nil
 }
 
+// detectInterfaceForIP returns the name of the local network interface that
+// owns ip (e.g. "eth0", "internet"), or "" if none matches or ip is nil.
+// Used purely to label which interface an "auto" (no explicit ?iface=)
+// speed test happened to egress through, since the OS picked it via its own
+// default routing without us forcing anything.
+func detectInterfaceForIP(ip net.IP) string {
+	if ip == nil {
+		return ""
+	}
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return ""
+	}
+	for _, ifi := range ifaces {
+		addrs, err := ifi.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, a := range addrs {
+			ipnet, ok := a.(*net.IPNet)
+			if !ok {
+				continue
+			}
+			if ipnet.IP.Equal(ip) {
+				return ifi.Name
+			}
+		}
+	}
+	return ""
+}
+
 // dialerFor returns a net.Dialer that, when iface is non-empty, binds every
 // outbound connection to that specific network interface via
 // SO_BINDTODEVICE. This forces egress traffic out that NIC. It relies on
@@ -346,7 +422,14 @@ func dialerFor(iface string) *net.Dialer {
 
 // dialTransport builds a plain Transport (HTTP/2 allowed) bound to iface,
 // used for latency measurement where connection multiplexing doesn't matter.
-func dialTransport(iface string) *http.Transport {
+//
+// Returns http.RoundTripper (not *http.Transport) so that the iface=="" case
+// below returns a genuinely nil interface value. Returning a nil
+// *http.Transport instead would produce a non-nil http.RoundTripper
+// interface wrapping a nil pointer once passed to httputil.WrapTransport,
+// whose "base == nil" check would then miss it and call RoundTrip on a nil
+// *http.Transport, panicking with "http: nil Transport".
+func dialTransport(iface string) http.RoundTripper {
 	if iface == "" {
 		return nil
 	}
