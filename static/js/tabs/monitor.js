@@ -5,6 +5,23 @@
     // ── Country centroids ──
     var countryCentroids = {"AF":[33,65],"AL":[41,20],"DZ":[28,3],"AO":[-12,17],"AR":[-34,-64],"AM":[40,45],"AU":[-25,134],"AT":[47,14],"AZ":[41,48],"BD":[24,90],"BY":[53,28],"BE":[51,4],"BJ":[9,2],"BO":[-17,-65],"BA":[44,18],"BW":[-22,24],"BR":[-10,-55],"BG":[43,25],"BF":[12,-2],"KH":[13,105],"CM":[6,12],"CA":[56,-96],"CF":[7,21],"TD":[15,19],"CL":[-30,-71],"CN":[35,105],"CO":[4,-72],"CD":[-3,24],"CG":[-1,15],"CR":[10,-84],"CI":[8,-5],"HR":[45,16],"CU":[22,-80],"CY":[35,33],"CZ":[50,15],"DK":[56,10],"DO":[19,-70],"EC":[-2,-78],"EG":[27,30],"SV":[14,-89],"EE":[59,26],"ET":[9,40],"FI":[64,26],"FR":[46,2],"GA":[0,12],"DE":[51,9],"GH":[8,-2],"GR":[39,22],"GT":[16,-90],"GN":[11,-12],"HT":[19,-72],"HN":[15,-87],"HU":[47,20],"IS":[65,-18],"IN":[21,78],"ID":[-5,120],"IR":[32,53],"IQ":[33,44],"IE":[53,-8],"IL":[31,35],"IT":[43,12],"JM":[18,-77],"JP":[36,138],"JO":[31,37],"KZ":[48,68],"KE":[-1,38],"KW":[29,48],"KG":[41,75],"LA":[18,105],"LV":[57,25],"LB":[34,36],"LY":[27,17],"LT":[56,24],"LU":[50,6],"MG":[-19,47],"MY":[4,109],"ML":[17,-4],"MX":[23,-102],"MD":[47,29],"MN":[48,106],"ME":[43,19],"MA":[32,-5],"MZ":[-18,35],"MM":[22,96],"NA":[-22,17],"NP":[28,84],"NL":[52,5],"NZ":[-41,174],"NI":[13,-85],"NE":[18,8],"NG":[10,8],"KP":[40,127],"NO":[62,10],"OM":[21,57],"PK":[30,70],"PA":[9,-80],"PY":[-23,-58],"PE":[-10,-76],"PH":[13,122],"PL":[52,20],"PT":[39,-8],"QA":[25,51],"RO":[46,25],"RU":[62,105],"RW":[-2,30],"SA":[24,45],"SN":[14,-14],"RS":[44,21],"SG":[1,104],"SK":[49,20],"SI":[46,15],"ZA":[-29,24],"KR":[36,128],"ES":[40,-4],"LK":[8,81],"SD":[13,30],"SE":[62,16],"CH":[47,8],"SY":[35,38],"TW":[24,121],"TJ":[39,69],"TZ":[-7,35],"TH":[15,101],"TN":[34,9],"TR":[39,35],"TM":[39,60],"UA":[49,32],"AE":[24,54],"GB":[54,-2],"US":[38,-97],"UY":[-33,-56],"UZ":[41,65],"VE":[8,-66],"VN":[16,108],"YE":[16,48],"ZM":[-14,28],"ZW":[-19,30]};
 
+    // Radar-style expanding rings, used both for the origin marker and for
+    // the busiest destination countries. Rings are staggered via `begin`
+    // delays so they read as a continuous outward pulse rather than
+    // synchronized circles.
+    function radarPingHtml(cx, cy, color, count) {
+        count = count || 3;
+        var h = '';
+        for (var i = 0; i < count; i++) {
+            var delay = (i * (2.4 / count)).toFixed(2);
+            h += '<circle cx="' + cx + '" cy="' + cy + '" r="3" fill="none" stroke="' + color + '" stroke-width="1.5" opacity="0" style="pointer-events:none">';
+            h += '<animate attributeName="r" values="3;26" dur="2.4s" begin="' + delay + 's" repeatCount="indefinite"/>';
+            h += '<animate attributeName="opacity" values="0.6;0" dur="2.4s" begin="' + delay + 's" repeatCount="indefinite"/>';
+            h += '</circle>';
+        }
+        return h;
+    }
+
     // ── World Traffic Map ──
     BM.updateWorldMap = function(countries, topBW, originCountry, originLat, originLon) {
         if (!countries || !countries.length) return;
@@ -83,17 +100,32 @@
                     }
                     d += 'Z';
                     svg += '<path d="' + d + '" fill="' + fill + '" fill-opacity="' + fo + '" stroke="' + stroke + '" stroke-width="' + sw + '"';
-                    if (traffic) svg += ' class="map-tip" data-tip="' + BM.countryFlag(cc) + ' ' + (traffic.country_name || cc) + ': ' + BM.formatBytes(traffic.bytes) + ' (' + traffic.connections + ' IPs)"';
+                    if (traffic) {
+                        svg += ' filter="url(#glow)" class="map-tip country-clickable" style="cursor:pointer" data-cc="' + cc + '" data-tip="' + BM.countryFlag(cc) + ' ' + (traffic.country_name || cc) + ': ' + BM.formatBytes(traffic.bytes) + ' (' + traffic.connections + ' IPs) \u2014 click to find in Top Talkers"';
+                    }
                     svg += '/>';
                 }
             }
+        }
+
+        // Radar pings on the busiest destination countries (top 3), so the
+        // map reads as "live" even before hovering.
+        var topCCs = [];
+        for (var pingCC in activeCCs) topCCs.push([pingCC, activeCCs[pingCC].ratio]);
+        topCCs.sort(function(a, b) { return b[1] - a[1]; });
+        for (var pci = 0; pci < Math.min(3, topCCs.length); pci++) {
+            var pcc = topCCs[pci][0];
+            if (!countryCentroids[pcc]) continue;
+            var pp = proj(countryCentroids[pcc][0], countryCentroids[pcc][1]);
+            svg += radarPingHtml(pp[0], pp[1], activeColor, 2);
         }
 
         // Flow lines
         if (topBW && topBW.length) {
             var oc = originCountry && countryCentroids[originCountry] ? originCountry : 'DE';
             var center = (originLat && originLon) ? proj(originLat, originLon) : proj(countryCentroids[oc][0], countryCentroids[oc][1]);
-            svg += '<circle cx="' + center[0] + '" cy="' + center[1] + '" r="3" fill="' + flowColor + '" opacity="0.8"><animate attributeName="r" values="2;6;2" dur="2s" repeatCount="indefinite"/></circle>';
+            svg += radarPingHtml(center[0], center[1], flowColor, 3);
+            svg += '<circle cx="' + center[0] + '" cy="' + center[1] + '" r="3" fill="' + flowColor + '" filter="url(#glow)" opacity="0.9"><animate attributeName="r" values="2;6;2" dur="2s" repeatCount="indefinite"/></circle>';
 
             var rxColor = isDark ? '#34d399' : '#059669';
             var txColor = isDark ? '#fb923c' : '#ea580c';
@@ -140,6 +172,7 @@
                     var rxTip = host + asInfo + ' \u2192 \u2193 ' + BM.formatRate(rxRate);
                     svg += '<path d="' + rxPath + '" fill="none" stroke="transparent" stroke-width="8" style="cursor:pointer" class="map-tip" data-tip="' + rxTip + '"/>';
                     svg += '<path d="' + rxPath + '" fill="none" stroke="' + rxColor + '" stroke-width="' + rxSw + '" stroke-dasharray="6,4" opacity="' + rxOp + '" stroke-linecap="round" style="pointer-events:none"><animate attributeName="stroke-dashoffset" from="0" to="-20" dur="' + dur + 's" repeatCount="indefinite"/></path>';
+                    svg += '<circle r="2.2" fill="' + rxColor + '" filter="url(#glow)" style="pointer-events:none"><animateMotion dur="' + dur + 's" repeatCount="indefinite" path="' + rxPath + '"/></circle>';
                 }
 
                 if (txRate > 0) {
@@ -152,6 +185,7 @@
                     var txTip = host + asInfo + ' \u2192 \u2191 ' + BM.formatRate(txRate);
                     svg += '<path d="' + txPath + '" fill="none" stroke="transparent" stroke-width="8" style="cursor:pointer" class="map-tip" data-tip="' + txTip + '"/>';
                     svg += '<path d="' + txPath + '" fill="none" stroke="' + txColor + '" stroke-width="' + txSw + '" stroke-dasharray="6,4" opacity="' + txOp + '" stroke-linecap="round" style="pointer-events:none"><animate attributeName="stroke-dashoffset" from="0" to="-20" dur="' + dur + 's" repeatCount="indefinite"/></path>';
+                    svg += '<circle r="2.2" fill="' + txColor + '" filter="url(#glow)" style="pointer-events:none"><animateMotion dur="' + dur + 's" repeatCount="indefinite" path="' + txPath + '"/></circle>';
                 }
 
                 var totalRate = rxRate + txRate;
@@ -200,7 +234,14 @@
             container.addEventListener('mouseleave', function() {
                 tipEl.style.display = 'none';
             });
+            container.addEventListener('click', function(e) {
+                var el = e.target.closest('.country-clickable');
+                if (el && window._focusCountryTraffic) window._focusCountryTraffic(el.getAttribute('data-cc'));
+            });
         }
+
+        var heatLegend = document.getElementById('mapHeatLegend');
+        if (heatLegend) heatLegend.style.display = countries.length ? 'flex' : 'none';
 
         // Zoom/pan transform
         var svgEl = container.querySelector('svg');
@@ -220,7 +261,7 @@
             for (var i = 0; i < countries.length; i++) {
                 var c = countries[i];
                 var pct = total > 0 ? (c.bytes / total * 100) : 0;
-                th += '<div style="display:flex;align-items:center;gap:6px;padding:3px 6px;border-radius:4px;background:var(--bg-1)">';
+                th += '<div style="display:flex;align-items:center;gap:6px;padding:3px 6px;border-radius:4px;background:var(--bg-1);cursor:pointer" onclick="window._focusCountryTraffic(\'' + c.country + '\')" title="Find in Top Talkers">';
                 th += '<span style="width:20px;text-align:center">' + BM.countryFlag(c.country) + '</span>';
                 th += '<span style="font-weight:600;width:24px">' + c.country + '</span>';
                 th += '<div style="flex:1;height:6px;background:var(--bg-2);border-radius:3px;overflow:hidden"><div style="width:' + Math.max(2, pct).toFixed(1) + '%;height:100%;background:' + activeColor + ';border-radius:3px;opacity:0.7"></div></div>';
@@ -230,6 +271,24 @@
             }
             tableEl.innerHTML = th;
         }
+    };
+
+    // Switches to the Traffic tab and scrolls/highlights the Top Talkers
+    // rows matching a given country code, so clicking a country on the map
+    // (or in the Active Countries list) helps find who's actually talking
+    // to it.
+    window._focusCountryTraffic = function(cc) {
+        if (!cc) return;
+        if (window._switchTab) window._switchTab('traffic');
+        setTimeout(function() {
+            var rows = document.querySelectorAll('#bwTable tr[data-country="' + cc + '"], #volTable tr[data-country="' + cc + '"]');
+            if (!rows.length) return;
+            rows[0].scrollIntoView({ behavior: 'smooth', block: 'center' });
+            rows.forEach(function(r) {
+                r.classList.add('country-focus-flash');
+                setTimeout(function() { r.classList.remove('country-focus-flash'); }, 2000);
+            });
+        }, 60);
     };
 
     // ── Map zoom/pan ──

@@ -789,11 +789,16 @@
             <div class="card-header">
                 <div>
                     <div class="card-title">Traffic World Map</div>
-                    <div class="card-subtitle">Live traffic flows by country &mdash; drag to pan, Ctrl+scroll to zoom, double-click to reset</div>
+                    <div class="card-subtitle">Live traffic flows by country &mdash; drag to pan, Ctrl+scroll to zoom, double-click to reset, click a country to find it in Top Talkers</div>
                 </div>
             </div>
             <div id="worldMapContainer" style="width:100%;aspect-ratio:2/1;position:relative;overflow:hidden;cursor:grab">
                 <div style="text-align:center;padding:48px 16px;color:var(--text-2)">Waiting for GeoIP data&hellip;</div>
+            </div>
+            <div id="mapHeatLegend" style="display:none;align-items:center;gap:8px;padding:0 16px 12px;font-size:11px;color:var(--text-2)">
+                <span>Less traffic</span>
+                <div style="flex:0 0 140px;height:8px;border-radius:4px;background:linear-gradient(90deg,rgba(34,211,238,0.25),rgba(34,211,238,1));"></div>
+                <span>More traffic</span>
             </div>
             <div id="mapCountryTable" style="display:none;padding:0 16px 16px">
                 <div style="font-size:12px;font-weight:600;color:var(--text-2);margin-bottom:8px">Active Countries</div>
