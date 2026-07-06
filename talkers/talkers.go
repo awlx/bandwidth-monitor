@@ -287,6 +287,82 @@ func (t *Tracker) TopByVolume(n int) []TalkerStat {
 	return list
 }
 
+// TopByCountry returns the top n IPs (by 24h total bytes) whose GeoIP country
+// code matches cc. The global Top Talkers lists (TopByVolume/TopByBandwidth)
+// only ever cover the overall top-n IPs, which frequently contain nothing for
+// a given country — this powers the "click a country on the world map" UI
+// drill-down so it can find IPs regardless of their rank in the global list.
+func (t *Tracker) TopByCountry(cc string, n int) []TalkerStat {
+	if t.geoDB == nil || !t.geoDB.Available() || cc == "" {
+		return nil
+	}
+
+	// Step 1: Copy raw per-IP totals under lock (same source as TopByVolume).
+	t.mu.RLock()
+	totals := make(map[string]*TalkerStat)
+	for _, b := range t.buckets {
+		for ip, acc := range b.hosts {
+			if _, ok := totals[ip]; !ok {
+				totals[ip] = &TalkerStat{IP: ip}
+			}
+			totals[ip].TotalBytes += acc.bytes
+			totals[ip].RxBytes += acc.rxBytes
+			totals[ip].TxBytes += acc.txBytes
+			totals[ip].Packets += acc.packets
+		}
+	}
+	if t.current != nil {
+		for ip, acc := range t.current.hosts {
+			if _, ok := totals[ip]; !ok {
+				totals[ip] = &TalkerStat{IP: ip}
+			}
+			totals[ip].TotalBytes += acc.bytes
+			totals[ip].RxBytes += acc.rxBytes
+			totals[ip].TxBytes += acc.txBytes
+			totals[ip].Packets += acc.packets
+		}
+	}
+	t.mu.RUnlock()
+
+	// Step 2: GeoIP lookup outside the lock to find IPs matching cc. Every
+	// known IP has to be checked (same cost as GetGeoBreakdown) since the
+	// country isn't known ahead of a lookup; this endpoint is only called
+	// on-demand (user click), not on every SSE tick.
+	list := make([]TalkerStat, 0, 16)
+	for _, s := range totals {
+		ip := net.ParseIP(s.IP)
+		if _, isSelf := t.selfIPs[s.IP]; isSelf {
+			continue
+		}
+		if ip != nil && ip.IsLoopback() {
+			continue
+		}
+		if ip != nil && netutil.IsLocal(ip, t.localNets) {
+			continue
+		}
+		geo := t.geoDB.Lookup(s.IP)
+		if geo == nil || geo.Country != cc {
+			continue
+		}
+		s.SetGeo(geo.Country, geo.CountryName, geo.City, geo.Latitude, geo.Longitude, geo.ASN, geo.ASOrg)
+		list = append(list, *s)
+	}
+	sort.Slice(list, func(i, j int) bool {
+		return list[i].TotalBytes > list[j].TotalBytes
+	})
+	if len(list) > n {
+		list = list[:n]
+	}
+
+	// Step 3: Hostname (DNS) enrichment only for the trimmed result.
+	for i := range list {
+		if t.dns != nil {
+			list[i].Hostname = t.dns.LookupAddrAsync(list[i].IP)
+		}
+	}
+	return list
+}
+
 func (t *Tracker) TopByBandwidth(n int) []TalkerStat {
 	// Use the short rate ring (5s slots, ~30s window) for responsive rate
 	// calculation. The 1-minute buckets are still used for 24h volume.

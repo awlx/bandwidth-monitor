@@ -789,7 +789,7 @@
             <div class="card-header">
                 <div>
                     <div class="card-title">Traffic World Map</div>
-                    <div class="card-subtitle">Live traffic flows by country &mdash; drag to pan, Ctrl+scroll to zoom, double-click to reset, click a country to find it in Top Talkers</div>
+                    <div class="card-subtitle">Live traffic flows by country &mdash; drag to pan, Ctrl+scroll to zoom, double-click to reset, click a country to see its top talkers</div>
                 </div>
             </div>
             <div id="worldMapContainer" style="width:100%;aspect-ratio:2/1;position:relative;overflow:hidden;cursor:grab">
@@ -803,6 +803,13 @@
             <div id="mapCountryTable" style="display:none;padding:0 16px 16px">
                 <div style="font-size:12px;font-weight:600;color:var(--text-2);margin-bottom:8px">Active Countries</div>
                 <div id="mapCountryList" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:4px;font-size:12px"></div>
+            </div>
+            <div id="mapCountryDetail" style="display:none;padding:0 16px 16px;border-top:1px solid var(--border)">
+                <div style="display:flex;align-items:center;justify-content:space-between;margin:12px 0 8px">
+                    <div id="mapCountryDetailTitle" style="font-size:12px;font-weight:600;color:var(--text-2)"></div>
+                    <div onclick="window._closeCountryDetail()" style="cursor:pointer;color:var(--text-3);font-size:16px;line-height:1;padding:2px 6px" title="Close">&times;</div>
+                </div>
+                <div id="mapCountryDetailList" style="font-size:12px"></div>
             </div>
         </div>
 
