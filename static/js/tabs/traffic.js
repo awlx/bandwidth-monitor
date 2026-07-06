@@ -565,7 +565,7 @@
             var host = displayName && displayName !== t.ip
                 ? '<span class="ip-cell ip-clickable" data-ip="' + t.ip + '">' + t.ip + '</span><span class="hostname">' + displayName + '</span>' + geo
                 : '<span class="ip-cell ip-clickable" data-ip="' + t.ip + '">' + t.ip + '</span>' + geo;
-            h += '<tr><td><span class="' + BM.rankClass(i) + '">' + (i + 1) + '</span></td>';
+            h += '<tr' + (t.country ? ' data-country="' + t.country + '"' : '') + '><td><span class="' + BM.rankClass(i) + '">' + (i + 1) + '</span></td>';
             h += '<td>' + BM.favoriteStarHtml(t.ip) + '</td>';
             h += '<td>' + host + '</td>';
             if (hasDirection) {

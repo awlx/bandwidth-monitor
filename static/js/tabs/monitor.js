@@ -83,7 +83,9 @@
                     }
                     d += 'Z';
                     svg += '<path d="' + d + '" fill="' + fill + '" fill-opacity="' + fo + '" stroke="' + stroke + '" stroke-width="' + sw + '"';
-                    if (traffic) svg += ' class="map-tip" data-tip="' + BM.countryFlag(cc) + ' ' + (traffic.country_name || cc) + ': ' + BM.formatBytes(traffic.bytes) + ' (' + traffic.connections + ' IPs)"';
+                    if (traffic) {
+                        svg += ' filter="url(#glow)" class="map-tip country-clickable" style="cursor:pointer" data-cc="' + cc + '" data-tip="' + BM.countryFlag(cc) + ' ' + (traffic.country_name || cc) + ': ' + BM.formatBytes(traffic.bytes) + ' (' + traffic.connections + ' IPs) \u2014 click to find in Top Talkers"';
+                    }
                     svg += '/>';
                 }
             }
@@ -200,7 +202,25 @@
             container.addEventListener('mouseleave', function() {
                 tipEl.style.display = 'none';
             });
+            container.addEventListener('click', function(e) {
+                var el = e.target.closest('.country-clickable');
+                if (!el && document.elementsFromPoint) {
+                    // Invisible wide hit-strokes used for flow-line tooltips can
+                    // sit on top of a country's shape (e.g. near the origin,
+                    // where many flow arcs converge), so target.closest() alone
+                    // can miss the country underneath. Walk the full stack of
+                    // elements under the click point instead.
+                    var stack = document.elementsFromPoint(e.clientX, e.clientY);
+                    for (var i = 0; i < stack.length; i++) {
+                        if (stack[i].classList && stack[i].classList.contains('country-clickable')) { el = stack[i]; break; }
+                    }
+                }
+                if (el && window._focusCountryTraffic) window._focusCountryTraffic(el.getAttribute('data-cc'));
+            });
         }
+
+        var heatLegend = document.getElementById('mapHeatLegend');
+        if (heatLegend) heatLegend.style.display = countries.length ? 'flex' : 'none';
 
         // Zoom/pan transform
         var svgEl = container.querySelector('svg');
@@ -220,7 +240,7 @@
             for (var i = 0; i < countries.length; i++) {
                 var c = countries[i];
                 var pct = total > 0 ? (c.bytes / total * 100) : 0;
-                th += '<div style="display:flex;align-items:center;gap:6px;padding:3px 6px;border-radius:4px;background:var(--bg-1)">';
+                th += '<div style="display:flex;align-items:center;gap:6px;padding:3px 6px;border-radius:4px;background:var(--bg-1);cursor:pointer" onclick="window._focusCountryTraffic(\'' + c.country + '\')" title="Find in Top Talkers">';
                 th += '<span style="width:20px;text-align:center">' + BM.countryFlag(c.country) + '</span>';
                 th += '<span style="font-weight:600;width:24px">' + c.country + '</span>';
                 th += '<div style="flex:1;height:6px;background:var(--bg-2);border-radius:3px;overflow:hidden"><div style="width:' + Math.max(2, pct).toFixed(1) + '%;height:100%;background:' + activeColor + ';border-radius:3px;opacity:0.7"></div></div>';
@@ -230,6 +250,24 @@
             }
             tableEl.innerHTML = th;
         }
+    };
+
+    // Switches to the Traffic tab and scrolls/highlights the Top Talkers
+    // rows matching a given country code, so clicking a country on the map
+    // (or in the Active Countries list) helps find who's actually talking
+    // to it.
+    window._focusCountryTraffic = function(cc) {
+        if (!cc) return;
+        if (window._switchTab) window._switchTab('traffic');
+        setTimeout(function() {
+            var rows = document.querySelectorAll('#bwTable tr[data-country="' + cc + '"], #volTable tr[data-country="' + cc + '"]');
+            if (!rows.length) return;
+            rows[0].scrollIntoView({ behavior: 'smooth', block: 'center' });
+            rows.forEach(function(r) {
+                r.classList.add('country-focus-flash');
+                setTimeout(function() { r.classList.remove('country-focus-flash'); }, 2000);
+            });
+        }, 60);
     };
 
     // ── Map zoom/pan ──
