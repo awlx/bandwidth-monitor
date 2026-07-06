@@ -652,6 +652,9 @@
                         <div class="card-subtitle">Per-client wireless traffic &amp; signal</div>
                     </div>
                     <div style="display:flex;gap:8px;align-items:center">
+                        <label style="display:flex;align-items:center;gap:4px;font-size:12px;color:var(--text-2);cursor:pointer;white-space:nowrap">
+                            <input type="checkbox" id="wifiPinnedOnly"> Pinned only
+                        </label>
                         <input type="text" id="wifiClientSearch" class="input-control input-control--sm" placeholder="Filter clients…" style="width:180px">
                         <select id="wifiClientSort" class="select-control select-control--sm">
                             <option value="traffic">Sort: Traffic</option>
@@ -664,6 +667,7 @@
                 <table>
                     <thead><tr>
                         <th>#</th>
+                        <th></th>
                         <th>Client</th>
                         <th>SSID</th>
                         <th>AP</th>
@@ -676,7 +680,7 @@
                         <th style="width:14%"></th>
                     </tr></thead>
                     <tbody id="wifiClientTable">
-                        <tr><td colspan="11" class="empty-state">Waiting for data</td></tr>
+                        <tr><td colspan="12" class="empty-state">Waiting for data</td></tr>
                     </tbody>
                 </table>
             </div>
@@ -742,6 +746,9 @@
                     <div class="card-subtitle" id="networkClientCount">0 nodes discovered</div>
                 </div>
                 <div style="display:flex;gap:8px;align-items:center">
+                    <label style="display:flex;align-items:center;gap:4px;font-size:12px;color:var(--text-2);cursor:pointer;white-space:nowrap">
+                        <input type="checkbox" id="networkPinnedOnly" onchange="window._filterNetworkClients()"> Pinned only
+                    </label>
                     <input type="text" id="networkClientSearch" class="input-control" placeholder="Filter by name, IP, MAC…" style="width:200px" oninput="window._filterNetworkClients()">
                     <select id="networkClientSort" class="select-control select-control--sm" onchange="window._filterNetworkClients()">
                         <option value="type">Sort: Type</option>
@@ -755,6 +762,7 @@
                 <table class="wifi-client-table">
                     <thead>
                         <tr>
+                            <th></th>
                             <th>Type</th>
                             <th>Name / Hostname</th>
                             <th>IP(s)</th>
@@ -1042,6 +1050,8 @@
 
     <!-- Shared utilities -->
     <script src="js/utils.js" defer></script>
+    <script src="js/components/device-labels.js" defer></script>
+    <script src="js/components/device-favorites.js" defer></script>
     <!-- Tab modules (order: tabs before core, core calls connect) -->
     <script src="js/tabs/traffic.js" defer></script>
     <script src="js/tabs/dns.js" defer></script>
