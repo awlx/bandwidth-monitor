@@ -240,9 +240,9 @@
             for (var i = 0; i < countries.length; i++) {
                 var c = countries[i];
                 var pct = total > 0 ? (c.bytes / total * 100) : 0;
-                th += '<div style="display:flex;align-items:center;gap:6px;padding:3px 6px;border-radius:4px;background:var(--bg-1);cursor:pointer" onclick="window._focusCountryTraffic(\'' + c.country + '\')" title="Find in Top Talkers">';
+                th += '<div style="display:flex;align-items:center;gap:6px;padding:3px 6px;border-radius:4px;background:var(--bg-1);cursor:pointer" onclick="window._focusCountryTraffic(\'' + BM.escJs(c.country) + '\')" title="Find in Top Talkers">';
                 th += '<span style="width:20px;text-align:center">' + BM.countryFlag(c.country) + '</span>';
-                th += '<span style="font-weight:600;width:24px">' + c.country + '</span>';
+                th += '<span style="font-weight:600;width:24px">' + BM.escSvg(c.country) + '</span>';
                 th += '<div style="flex:1;height:6px;background:var(--bg-2);border-radius:3px;overflow:hidden"><div style="width:' + Math.max(2, pct).toFixed(1) + '%;height:100%;background:' + activeColor + ';border-radius:3px;opacity:0.7"></div></div>';
                 th += '<span style="font-variant-numeric:tabular-nums;color:var(--text-2);min-width:55px;text-align:right">' + BM.formatBytes(c.bytes) + '</span>';
                 th += '<span style="color:var(--text-3);min-width:38px;text-align:right">' + pct.toFixed(1) + '%</span>';

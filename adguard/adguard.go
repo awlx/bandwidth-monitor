@@ -6,6 +6,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"sort"
 	"strings"
 	"sync"
@@ -168,8 +169,8 @@ func (c *Client) QueryLog(clientIP string, limit int) ([]dns.QueryLogEntry, erro
 	if limit <= 0 || limit > 200 {
 		limit = 50
 	}
-	url := fmt.Sprintf("%s/control/querylog?search=%s&limit=%d", c.baseURL, clientIP, limit)
-	req, err := http.NewRequest("GET", url, nil)
+	reqURL := fmt.Sprintf("%s/control/querylog?search=%s&limit=%d", c.baseURL, url.QueryEscape(clientIP), limit)
+	req, err := http.NewRequest("GET", reqURL, nil)
 	if err != nil {
 		return nil, err
 	}
