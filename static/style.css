@@ -249,6 +249,41 @@ body {
     padding: 16px 20px;
 }
 
+/* ── System Overview stats grid ── */
+.system-stats {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+    gap: 10px;
+    padding: 0 20px 16px;
+}
+
+.system-stat {
+    background: var(--bg-2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 10px 12px;
+}
+
+.system-stat-label {
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-2);
+    margin-bottom: 4px;
+}
+
+.system-stat-value {
+    font-size: 16px;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.02em;
+    color: var(--text-0);
+}
+
+.system-stat-value.rx { color: var(--rx); }
+.system-stat-value.tx { color: var(--tx); }
+
 /* ── Chart ── */
 .chart-section { margin-bottom: 20px; }
 
