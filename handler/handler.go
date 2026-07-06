@@ -71,6 +71,26 @@ func TopTalkersVolume(t *talkers.Tracker) http.HandlerFunc {
 	}
 }
 
+// CountryTalkers returns the top IPs (by 24h volume) for a given GeoIP
+// country code. Unlike the global Top Talkers lists, this searches every
+// known IP rather than just the overall top-10, so it can power a
+// "click a country on the world map" drill-down that finds traffic the
+// global list wouldn't otherwise surface.
+func CountryTalkers(t *talkers.Tracker) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		cc := strings.ToUpper(strings.TrimSpace(r.URL.Query().Get("cc")))
+		if cc == "" {
+			http.Error(w, "cc parameter required", http.StatusBadRequest)
+			return
+		}
+		if len(cc) != 2 {
+			http.Error(w, "invalid cc", http.StatusBadRequest)
+			return
+		}
+		httputil.WriteJSON(w, t.TopByCountry(cc, 10))
+	}
+}
+
 func DNSSummary(dp dns.Provider, dnsRes *resolver.Resolver) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if dp == nil {
@@ -615,11 +635,15 @@ func (o *originResolver) doResolve(c *collector.Collector) *originGeo {
 	return nil
 }
 
+// externalIPClient is reused across calls to fetchExternalIP so we don't pay
+// for a new connection pool on every fallback lookup (this path only runs
+// when no globally-routable WAN IP was found, at most once per TTL refresh).
+var externalIPClient = &http.Client{Timeout: 3 * time.Second, Transport: httputil.WrapTransport(nil)}
+
 // fetchExternalIP queries ip.ffmuc.net to get the public IP when all
 // WAN addresses are behind CGNAT or not globally routable.
 func fetchExternalIP() string {
-	client := &http.Client{Timeout: 3 * time.Second, Transport: httputil.WrapTransport(nil)}
-	resp, err := client.Get("https://ip.ffmuc.net")
+	resp, err := externalIPClient.Get("https://ip.ffmuc.net")
 	if err != nil {
 		return ""
 	}
