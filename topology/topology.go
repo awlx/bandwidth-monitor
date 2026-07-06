@@ -331,26 +331,50 @@ func (s *Scanner) discoverWANGateway(nodeMap map[string]*Node, linkSet map[strin
 		iface := ifaceNames[n.LinkIndex]
 		id := "wan-" + mac
 
-		if _, exists := nodeMap[id]; exists {
-			continue
-		}
-
-		nodeMap[id] = &Node{
-			ID:       id,
-			MAC:      mac,
-			IPs:      []string{ip},
-			Hostname: "WAN Gateway",
-			Type:     NodeWANGW,
-			Iface:    iface,
-			Source:   "arp",
+		// discoverGateway() may have already created a node for this same
+		// device — keyed by bare MAC — from the default route (e.g. an
+		// ISP router that's both the default gateway and the ARP-visible
+		// device on the WAN interface). Reuse that node instead of adding
+		// a second one, otherwise the same physical device shows up twice
+		// in the tree under two different IDs.
+		if existing, ok := nodeMap[mac]; ok {
+			id = mac
+			existing.Type = NodeWANGW
+			if existing.Hostname == "" {
+				existing.Hostname = "WAN Gateway"
+			}
+			if existing.Iface == "" {
+				existing.Iface = iface
+			}
+			if !slices.Contains(existing.IPs, ip) {
+				existing.IPs = append(existing.IPs, ip)
+			}
+			if !strings.Contains(existing.Source, "arp") {
+				existing.Source += ",arp"
+			}
+		} else {
+			if _, exists := nodeMap[id]; exists {
+				continue
+			}
+			nodeMap[id] = &Node{
+				ID:       id,
+				MAC:      mac,
+				IPs:      []string{ip},
+				Hostname: "WAN Gateway",
+				Type:     NodeWANGW,
+				Iface:    iface,
+				Source:   "arp",
+			}
 		}
 
 		linkKey := fmt.Sprintf("%s|%s", id, selfNode)
-		linkSet[linkKey] = &Link{
-			SourceID: id,
-			TargetID: selfNode,
-			Type:     LinkWAN,
-			Label:    iface,
+		if _, exists := linkSet[linkKey]; !exists {
+			linkSet[linkKey] = &Link{
+				SourceID: id,
+				TargetID: selfNode,
+				Type:     LinkWAN,
+				Label:    iface,
+			}
 		}
 		wanIDs = append(wanIDs, id)
 	}

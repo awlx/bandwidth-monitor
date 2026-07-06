@@ -20,7 +20,13 @@
         var nodes = topo.nodes || [];
         var aps = nodes.filter(function(n) { return n.type === 'ap'; });
         var clients = nodes.filter(function(n) { return n.type === 'client'; });
-        var gw = nodes.filter(function(n) { return n.type === 'gateway'; });
+        // The gateway node's type may be 'gateway' or, when it's also the
+        // ARP-visible device on the WAN interface, 'wan_gw' (the two are
+        // merged into one node rather than shown as duplicates). Look it
+        // up by the authoritative topo.gateway ID instead of filtering by
+        // type so this stat stays correct either way.
+        var gwNode = nodes.find(function(n) { return n.id === topo.gateway; }) ||
+            nodes.find(function(n) { return n.type === 'gateway' || n.type === 'wan_gw'; });
         var sources = {};
         nodes.forEach(function(n) {
             (n.source || '').split(',').forEach(function(s) { if (s) sources[s] = true; });
@@ -31,9 +37,8 @@
         document.getElementById('netTotalClients').textContent = clients.length;
         document.getElementById('netSources').textContent = Object.keys(sources).join(', ') || '—';
 
-        if (gw.length > 0) {
-            var gwn = gw[0];
-            document.getElementById('netGateway').textContent = gwn.hostname || (gwn.ips && gwn.ips[0]) || gwn.mac || '—';
+        if (gwNode) {
+            document.getElementById('netGateway').textContent = gwNode.hostname || (gwNode.ips && gwNode.ips[0]) || gwNode.mac || '—';
         } else {
             document.getElementById('netGateway').textContent = '—';
         }
