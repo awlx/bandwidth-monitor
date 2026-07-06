@@ -38,11 +38,13 @@
         }
     }
 
-    function updateSpeedTestGauges(ping, download, upload, jitter) {
+    function updateSpeedTestGauges(ping, download, upload, jitter, downloadSingle, uploadSingle) {
         var pingEl = document.getElementById('stPingValue');
         var downEl = document.getElementById('stDownValue');
         var upEl = document.getElementById('stUpValue');
         var jitterEl = document.getElementById('stJitterValue');
+        var downSubEl = document.getElementById('stDownSingleValue');
+        var upSubEl = document.getElementById('stUpSingleValue');
 
         pingEl.textContent = ping >= 0 ? ping.toFixed(1) : '--';
         downEl.textContent = download >= 0 ? download.toFixed(1) : '--';
@@ -53,6 +55,25 @@
         drawGauge('stDownGauge', download >= 0 ? download : 0, 1000, '#3b82f6');
         drawGauge('stUpGauge', upload >= 0 ? upload : 0, 1000, '#a78bfa');
         drawGauge('stJitterGauge', jitter >= 0 ? jitter : 0, 50, '#f59e0b');
+
+        if (downSubEl) {
+            if (downloadSingle > 0 && download > 0) {
+                var dRatio = download / downloadSingle;
+                downSubEl.textContent = '1 stream: ' + downloadSingle.toFixed(1) + ' Mbps' +
+                    (dRatio >= 1.3 ? ' (' + dRatio.toFixed(1) + '\u00d7 slower than 6 streams)' : ' (about the same as 6 streams)');
+            } else {
+                downSubEl.textContent = '';
+            }
+        }
+        if (upSubEl) {
+            if (uploadSingle > 0 && upload > 0) {
+                var uRatio = upload / uploadSingle;
+                upSubEl.textContent = '1 stream: ' + uploadSingle.toFixed(1) + ' Mbps' +
+                    (uRatio >= 1.3 ? ' (' + uRatio.toFixed(1) + '\u00d7 slower than 6 streams)' : ' (about the same as 6 streams)');
+            } else {
+                upSubEl.textContent = '';
+            }
+        }
     }
 
     function renderSpeedTestHistory(results) {
@@ -66,11 +87,13 @@
             var r = results[i];
             var d = new Date(r.timestamp);
             var dateStr = d.toLocaleDateString() + ' ' + d.toLocaleTimeString();
+            var dlSingle = r.download_single_mbps ? ' <span style="color:var(--text-3);font-weight:400" title="Single-stream download">(1 stream: ' + r.download_single_mbps.toFixed(1) + ' Mbps)</span>' : '';
+            var ulSingle = r.upload_single_mbps ? ' <span style="color:var(--text-3);font-weight:400" title="Single-stream upload">(1 stream: ' + r.upload_single_mbps.toFixed(1) + ' Mbps)</span>' : '';
             h += '<tr>';
             h += '<td><span class="' + BM.rankClass(i) + '">' + (i + 1) + '</span></td>';
             h += '<td style="font-size:12px;white-space:nowrap">' + dateStr + '</td>';
-            h += '<td style="font-variant-numeric:tabular-nums;font-weight:600;color:var(--rx)">' + r.download_mbps.toFixed(1) + ' Mbps</td>';
-            h += '<td style="font-variant-numeric:tabular-nums;font-weight:600;color:var(--tx)">' + r.upload_mbps.toFixed(1) + ' Mbps</td>';
+            h += '<td style="font-variant-numeric:tabular-nums;font-weight:600;color:var(--rx)">' + r.download_mbps.toFixed(1) + ' Mbps' + dlSingle + '</td>';
+            h += '<td style="font-variant-numeric:tabular-nums;font-weight:600;color:var(--tx)">' + r.upload_mbps.toFixed(1) + ' Mbps' + ulSingle + '</td>';
             h += '<td style="font-variant-numeric:tabular-nums">' + r.ping_ms.toFixed(1) + ' ms</td>';
             h += '<td style="font-variant-numeric:tabular-nums">' + r.jitter_ms.toFixed(1) + ' ms</td>';
             h += '</tr>';
@@ -88,7 +111,7 @@
             renderSpeedTestHistory(data.results || []);
             if (data.results && data.results.length) {
                 var last = data.results[0];
-                updateSpeedTestGauges(last.ping_ms, last.download_mbps, last.upload_mbps, last.jitter_ms);
+                updateSpeedTestGauges(last.ping_ms, last.download_mbps, last.upload_mbps, last.jitter_ms, last.download_single_mbps, last.upload_single_mbps);
             }
         }).catch(function() {});
     };
@@ -105,7 +128,7 @@
         wrap.style.display = '';
         var bar = document.getElementById('speedtestProgressBar');
         var phase = document.getElementById('speedtestPhase');
-        updateSpeedTestGauges(-1, -1, -1, -1);
+        updateSpeedTestGauges(-1, -1, -1, -1, -1, -1);
         bar.style.width = '0%';
         phase.textContent = 'Connecting...';
 
@@ -113,6 +136,8 @@
         var currentDownload = -1;
         var currentUpload = -1;
         var currentJitter = -1;
+        var currentDownloadSingle = -1;
+        var currentUploadSingle = -1;
 
         fetch('/api/speedtest/run', { method: 'POST' }).then(function(resp) {
             if (resp.status === 409) {
@@ -145,30 +170,42 @@
             function handleProgress(p) {
                 if (p.phase === 'ping') {
                     phase.textContent = 'Measuring latency...';
-                    bar.style.width = (p.percent * 0.15) + '%';
+                    bar.style.width = (p.percent * 0.10) + '%';
                     bar.className = 'speedtest-progress-bar-fill ping';
                     if (p.percent >= 100 && p.value > 0) {
                         currentPing = p.value;
                     }
-                    updateSpeedTestGauges(currentPing, currentDownload, currentUpload, currentJitter);
+                    updateSpeedTestGauges(currentPing, currentDownload, currentUpload, currentJitter, currentDownloadSingle, currentUploadSingle);
+                } else if (p.phase === 'download-single') {
+                    currentDownloadSingle = p.value;
+                    phase.textContent = 'Testing download (1 stream)... ' + p.value.toFixed(1) + ' Mbps';
+                    bar.style.width = (10 + p.percent * 0.10) + '%';
+                    bar.className = 'speedtest-progress-bar-fill download';
+                    updateSpeedTestGauges(currentPing, currentDownload, currentUpload, currentJitter, currentDownloadSingle, currentUploadSingle);
                 } else if (p.phase === 'download') {
                     currentDownload = p.value;
-                    phase.textContent = 'Testing download... ' + p.value.toFixed(1) + ' Mbps';
-                    bar.style.width = (15 + p.percent * 0.40) + '%';
+                    phase.textContent = 'Testing download (6 streams)... ' + p.value.toFixed(1) + ' Mbps';
+                    bar.style.width = (20 + p.percent * 0.40) + '%';
                     bar.className = 'speedtest-progress-bar-fill download';
-                    updateSpeedTestGauges(currentPing, currentDownload, currentUpload, currentJitter);
+                    updateSpeedTestGauges(currentPing, currentDownload, currentUpload, currentJitter, currentDownloadSingle, currentUploadSingle);
+                } else if (p.phase === 'upload-single') {
+                    currentUploadSingle = p.value;
+                    phase.textContent = 'Testing upload (1 stream)... ' + p.value.toFixed(1) + ' Mbps';
+                    bar.style.width = (60 + p.percent * 0.10) + '%';
+                    bar.className = 'speedtest-progress-bar-fill upload';
+                    updateSpeedTestGauges(currentPing, currentDownload, currentUpload, currentJitter, currentDownloadSingle, currentUploadSingle);
                 } else if (p.phase === 'upload') {
                     currentUpload = p.value;
-                    phase.textContent = 'Testing upload... ' + p.value.toFixed(1) + ' Mbps';
-                    bar.style.width = (55 + p.percent * 0.40) + '%';
+                    phase.textContent = 'Testing upload (6 streams)... ' + p.value.toFixed(1) + ' Mbps';
+                    bar.style.width = (70 + p.percent * 0.30) + '%';
                     bar.className = 'speedtest-progress-bar-fill upload';
-                    updateSpeedTestGauges(currentPing, currentDownload, currentUpload, currentJitter);
+                    updateSpeedTestGauges(currentPing, currentDownload, currentUpload, currentJitter, currentDownloadSingle, currentUploadSingle);
                 } else if (p.phase === 'done' && p.result) {
                     phase.textContent = 'Complete!';
                     bar.style.width = '100%';
                     bar.className = 'speedtest-progress-bar-fill done';
                     var r = p.result;
-                    updateSpeedTestGauges(r.ping_ms, r.download_mbps, r.upload_mbps, r.jitter_ms);
+                    updateSpeedTestGauges(r.ping_ms, r.download_mbps, r.upload_mbps, r.jitter_ms, r.download_single_mbps, r.upload_single_mbps);
                     BM.loadSpeedTestHistory();
                     finishTest();
                 } else if (p.phase === 'error') {

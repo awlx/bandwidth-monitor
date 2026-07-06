@@ -852,20 +852,22 @@
                 <div class="speedtest-gauge-unit">ms</div>
             </div>
             <div class="speedtest-gauge-card">
-                <div class="speedtest-gauge-label">DOWNLOAD</div>
+                <div class="speedtest-gauge-label" title="Aggregate throughput using 6 parallel connections, like a real download would use">DOWNLOAD <span class="speedtest-gauge-label-hint">(6 streams)</span></div>
                 <div class="speedtest-gauge-wrap">
                     <canvas id="stDownGauge" width="160" height="100"></canvas>
                 </div>
                 <div class="speedtest-gauge-value" id="stDownValue">--</div>
                 <div class="speedtest-gauge-unit">Mbps</div>
+                <div class="speedtest-gauge-sub" id="stDownSingleValue" title="Throughput of a single TCP connection — a large gap vs. the 6-stream number above usually means per-connection shaping/limits, not the link itself"></div>
             </div>
             <div class="speedtest-gauge-card">
-                <div class="speedtest-gauge-label">UPLOAD</div>
+                <div class="speedtest-gauge-label" title="Aggregate throughput using 6 parallel connections, like a real upload would use">UPLOAD <span class="speedtest-gauge-label-hint">(6 streams)</span></div>
                 <div class="speedtest-gauge-wrap">
                     <canvas id="stUpGauge" width="160" height="100"></canvas>
                 </div>
                 <div class="speedtest-gauge-value" id="stUpValue">--</div>
                 <div class="speedtest-gauge-unit">Mbps</div>
+                <div class="speedtest-gauge-sub" id="stUpSingleValue" title="Throughput of a single TCP connection — a large gap vs. the 6-stream number above usually means per-connection shaping/limits, not the link itself"></div>
             </div>
             <div class="speedtest-gauge-card">
                 <div class="speedtest-gauge-label">JITTER</div>

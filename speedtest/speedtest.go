@@ -2,6 +2,7 @@ package speedtest
 
 import (
 	"crypto/rand"
+	"crypto/tls"
 	"fmt"
 	"io"
 	"log"
@@ -18,9 +19,17 @@ type Result struct {
 	Server       string  `json:"server"`
 	DownloadMbps float64 `json:"download_mbps"`
 	UploadMbps   float64 `json:"upload_mbps"`
-	PingMs       float64 `json:"ping_ms"`
-	JitterMs     float64 `json:"jitter_ms"`
-	Timestamp    int64   `json:"timestamp"`
+	// DownloadSingleMbps/UploadSingleMbps are measured with a single TCP
+	// connection (parallelism=1), run right before the full multi-stream
+	// test. Comparing the two shows whether the link's aggregate capacity
+	// is being limited by a per-connection cap (ISP per-flow shaping,
+	// single-stream TCP window/RTT limits, etc) rather than the link
+	// itself. Omitted from JSON if a value couldn't be measured.
+	DownloadSingleMbps float64 `json:"download_single_mbps,omitempty"`
+	UploadSingleMbps   float64 `json:"upload_single_mbps,omitempty"`
+	PingMs             float64 `json:"ping_ms"`
+	JitterMs           float64 `json:"jitter_ms"`
+	Timestamp          int64   `json:"timestamp"`
 }
 
 // Progress is sent over SSE while a test is running.
@@ -107,31 +116,53 @@ func (t *Tester) run(ch chan<- Progress) {
 	ch <- Progress{Phase: "ping", Percent: 100, Value: pingMs}
 	log.Printf("speedtest: ping=%.1fms jitter=%.1fms", pingMs, jitterMs)
 
+	// Single-stream sub-tests run first and briefly, purely as a point of
+	// comparison against the full multi-stream result below — a large gap
+	// between the two usually means something (ISP per-flow shaping, a
+	// slow-start-limited high-RTT path, etc) is capping a single TCP
+	// connection well below the link's real aggregate capacity. Failures
+	// here are non-fatal: they're a bonus diagnostic, not the primary result.
+	ch <- Progress{Phase: "download-single", Percent: 0, Value: 0}
+	dlSingleMbps, err := measureDownload(server, 1, singleStreamDuration, "download-single", ch)
+	if err != nil {
+		log.Printf("speedtest: single-stream download measurement failed (non-fatal): %v", err)
+		dlSingleMbps = 0
+	}
+
 	ch <- Progress{Phase: "download", Percent: 0, Value: 0}
-	dlMbps, err := measureDownload(server, ch)
+	dlMbps, err := measureDownload(server, downloadParallelism, downloadDuration, "download", ch)
 	if err != nil {
 		log.Printf("speedtest: download failed: %v", err)
 		ch <- Progress{Phase: "error", Value: 0}
 		return
 	}
-	log.Printf("speedtest: download=%.1f Mbps", dlMbps)
+	log.Printf("speedtest: download=%.1f Mbps (single-stream=%.1f Mbps)", dlMbps, dlSingleMbps)
+
+	ch <- Progress{Phase: "upload-single", Percent: 0, Value: 0}
+	ulSingleMbps, err := measureUpload(server, 1, singleStreamDuration, "upload-single", ch)
+	if err != nil {
+		log.Printf("speedtest: single-stream upload measurement failed (non-fatal): %v", err)
+		ulSingleMbps = 0
+	}
 
 	ch <- Progress{Phase: "upload", Percent: 0, Value: 0}
-	ulMbps, err := measureUpload(server, ch)
+	ulMbps, err := measureUpload(server, uploadParallelism, uploadDuration, "upload", ch)
 	if err != nil {
 		log.Printf("speedtest: upload failed: %v", err)
 		ch <- Progress{Phase: "error", Value: 0}
 		return
 	}
-	log.Printf("speedtest: upload=%.1f Mbps", ulMbps)
+	log.Printf("speedtest: upload=%.1f Mbps (single-stream=%.1f Mbps)", ulMbps, ulSingleMbps)
 
 	result := Result{
-		Server:       server,
-		DownloadMbps: dlMbps,
-		UploadMbps:   ulMbps,
-		PingMs:       pingMs,
-		JitterMs:     jitterMs,
-		Timestamp:    time.Now().UnixMilli(),
+		Server:             server,
+		DownloadMbps:       dlMbps,
+		UploadMbps:         ulMbps,
+		DownloadSingleMbps: dlSingleMbps,
+		UploadSingleMbps:   ulSingleMbps,
+		PingMs:             pingMs,
+		JitterMs:           jitterMs,
+		Timestamp:          time.Now().UnixMilli(),
 	}
 
 	t.mu.Lock()
@@ -263,16 +294,45 @@ loop:
 	return mbps, nil
 }
 
-func measureDownload(server string, ch chan<- Progress) (float64, error) {
-	const (
-		duration    = 15 * time.Second
-		parallelism = 6
-	)
+// newSpeedTransport builds a dedicated HTTP/1.1-only Transport for a single
+// speedtest worker connection.
+//
+// Go's http.DefaultTransport auto-negotiates HTTP/2 over TLS, and multiple
+// http.Client values that fall back to it (nil Transport.Base) all share
+// that one global Transport/connection pool. For an HTTP/2 origin, that
+// means every "parallel" worker ends up multiplexed over a single TCP
+// connection with a single congestion-control window — throughput is then
+// capped at whatever one TCP stream can sustain, which is far below the
+// aggregate a real multi-connection speed test needs to saturate a fast
+// link. Forcing HTTP/1.1 with a private Transport per worker guarantees
+// each one gets its own independent TCP connection (and congestion
+// window), which is how genuine multi-stream throughput tests reach the
+// link's actual capacity.
+func newSpeedTransport() *http.Transport {
+	return &http.Transport{
+		MaxIdleConnsPerHost: 1,
+		DisableCompression:  true,
+		// A non-nil (even empty) TLSNextProto map disables the automatic
+		// HTTP/2 upgrade, keeping this connection on HTTP/1.1.
+		TLSNextProto: map[string]func(string, *tls.Conn) http.RoundTripper{},
+	}
+}
 
+// Speed test timing/parallelism knobs.
+const (
+	downloadDuration     = 15 * time.Second
+	downloadParallelism  = 6
+	uploadDuration       = 15 * time.Second
+	uploadParallelism    = 6
+	singleStreamDuration = 4 * time.Second
+	uploadChunkSize      = 4 * 1024 * 1024
+)
+
+func measureDownload(server string, parallelism int, duration time.Duration, phase string, ch chan<- Progress) (float64, error) {
 	workerFn := func(deadline time.Time, counter *int64, mu *sync.Mutex) {
 		client := &http.Client{
 			Timeout:   duration + 5*time.Second,
-			Transport: httputil.WrapTransport(nil),
+			Transport: httputil.WrapTransport(newSpeedTransport()),
 		}
 		buf := make([]byte, 256*1024)
 		for time.Now().Before(deadline) {
@@ -295,22 +355,16 @@ func measureDownload(server string, ch chan<- Progress) (float64, error) {
 		}
 	}
 
-	return measureThroughput("download", duration, parallelism, workerFn, ch)
+	return measureThroughput(phase, duration, parallelism, workerFn, ch)
 }
 
-func measureUpload(server string, ch chan<- Progress) (float64, error) {
-	const (
-		duration    = 15 * time.Second
-		parallelism = 6
-		chunkSize   = 4 * 1024 * 1024
-	)
-
+func measureUpload(server string, parallelism int, duration time.Duration, phase string, ch chan<- Progress) (float64, error) {
 	workerFn := func(deadline time.Time, counter *int64, mu *sync.Mutex) {
 		client := &http.Client{
 			Timeout:   duration + 5*time.Second,
-			Transport: httputil.WrapTransport(nil),
+			Transport: httputil.WrapTransport(newSpeedTransport()),
 		}
-		data := make([]byte, chunkSize)
+		data := make([]byte, uploadChunkSize)
 		rand.Read(data)
 
 		for time.Now().Before(deadline) {
@@ -323,7 +377,7 @@ func measureUpload(server string, ch chan<- Progress) (float64, error) {
 			if e != nil {
 				return
 			}
-			req.ContentLength = int64(chunkSize)
+			req.ContentLength = int64(uploadChunkSize)
 			req.Header.Set("Content-Type", "application/octet-stream")
 
 			resp, e := client.Do(req)
@@ -335,7 +389,7 @@ func measureUpload(server string, ch chan<- Progress) (float64, error) {
 		}
 	}
 
-	return measureThroughput("upload", duration, parallelism, workerFn, ch)
+	return measureThroughput(phase, duration, parallelism, workerFn, ch)
 }
 
 type countingReader struct {
