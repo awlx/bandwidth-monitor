@@ -460,7 +460,9 @@ func SpeedTestResults(st *speedtest.Tester) http.HandlerFunc {
 }
 
 // DebugTraceroute runs a native ICMP traceroute and streams progress as SSE.
-func DebugTraceroute(dns *resolver.Resolver) http.HandlerFunc {
+// An optional "iface" query param binds the traceroute to a specific WAN
+// interface (same validation/behavior as SpeedTestRun's iface param).
+func DebugTraceroute(dns *resolver.Resolver, c *collector.Collector) http.HandlerFunc {
 	var sf httputil.SingleFlight
 
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -478,6 +480,12 @@ func DebugTraceroute(dns *resolver.Resolver) http.HandlerFunc {
 		// Validate target: only allow hostnames and IPs, max length
 		if len(target) > 253 {
 			http.Error(w, "target too long", http.StatusBadRequest)
+			return
+		}
+
+		iface := r.URL.Query().Get("iface")
+		if iface != "" && !isKnownWANInterface(c, iface) {
+			http.Error(w, "unknown WAN interface", http.StatusBadRequest)
 			return
 		}
 
@@ -503,13 +511,15 @@ func DebugTraceroute(dns *resolver.Resolver) http.HandlerFunc {
 			}
 		}
 
-		ch := debug.RunTraceroute(target, count, maxTTL, dns)
+		ch := debug.RunTraceroute(target, count, maxTTL, dns, iface)
 		httputil.StreamChannel(w, ch)
 	}
 }
 
-// DebugMTU performs a path MTU discovery to a target and streams progress as SSE.
-func DebugMTU() http.HandlerFunc {
+// DebugMTU performs a path MTU discovery to a target and streams progress as
+// SSE. An optional "iface" query param binds the test to a specific WAN
+// interface (same validation/behavior as SpeedTestRun's iface param).
+func DebugMTU(c *collector.Collector) http.HandlerFunc {
 	var sf httputil.SingleFlight
 
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -529,13 +539,19 @@ func DebugMTU() http.HandlerFunc {
 			return
 		}
 
+		iface := r.URL.Query().Get("iface")
+		if iface != "" && !isKnownWANInterface(c, iface) {
+			http.Error(w, "unknown WAN interface", http.StatusBadRequest)
+			return
+		}
+
 		// Rate limit: only one MTU test at a time
 		if !sf.TryAcquire(w, "MTU test") {
 			return
 		}
 		defer sf.Release()
 
-		ch := debug.RunMTUDiscovery(target)
+		ch := debug.RunMTUDiscovery(target, iface)
 		httputil.StreamChannel(w, ch)
 	}
 }
@@ -579,6 +595,119 @@ func DebugDNS() http.HandlerFunc {
 
 		httputil.WriteJSON(w, result)
 	}
+}
+
+// DebugPublicIP reports the public (external) IP address as seen from a
+// specific WAN interface (or the default route if "iface" is omitted). This
+// is the multi-WAN equivalent of the CGNAT fallback lookup used elsewhere
+// (fetchExternalIP), exposed as a first-class debug tool so users can
+// confirm which public IP each uplink actually egresses with — handy for
+// spotting misconfigured policy routing (e.g. a WAN silently going out the
+// wrong interface).
+func DebugPublicIP(c *collector.Collector) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		iface := r.URL.Query().Get("iface")
+		if iface != "" && !isKnownWANInterface(c, iface) {
+			http.Error(w, "unknown WAN interface", http.StatusBadRequest)
+			return
+		}
+
+		client := &http.Client{
+			Timeout:   5 * time.Second,
+			Transport: httputil.WrapTransport(&http.Transport{DialContext: netutil.DialerForInterface(iface).DialContext}),
+		}
+
+		resp, err := client.Get("https://ip.ffmuc.net")
+		if err != nil {
+			httputil.WriteJSON(w, map[string]interface{}{"error": sanitizeDialError(err, iface)})
+			return
+		}
+		defer resp.Body.Close()
+		body, err := io.ReadAll(io.LimitReader(resp.Body, 256))
+		if err != nil {
+			httputil.WriteJSON(w, map[string]interface{}{"error": "failed to read response"})
+			return
+		}
+		ip := strings.TrimSpace(string(body))
+		if net.ParseIP(ip) == nil {
+			httputil.WriteJSON(w, map[string]interface{}{"error": "unexpected response from IP lookup service"})
+			return
+		}
+
+		resp2 := map[string]interface{}{"ip": ip}
+		if iface != "" {
+			resp2["interface"] = iface
+		}
+		httputil.WriteJSON(w, resp2)
+	}
+}
+
+// DebugTCPCheck attempts a TCP connection to a "target" of the form
+// host:port, optionally bound to a specific WAN interface via "iface", and
+// reports whether the connection succeeded plus how long it took. Useful
+// for checking that a specific WAN can actually reach a given
+// host/port (e.g. testing a port-forward or verifying a specific uplink
+// isn't blocking a given port).
+func DebugTCPCheck(c *collector.Collector) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		target := r.URL.Query().Get("target")
+		if target == "" {
+			http.Error(w, "target parameter required", http.StatusBadRequest)
+			return
+		}
+		if len(target) > 253 {
+			http.Error(w, "target too long", http.StatusBadRequest)
+			return
+		}
+		host, port, err := net.SplitHostPort(target)
+		if err != nil || host == "" || port == "" {
+			http.Error(w, "target must be host:port", http.StatusBadRequest)
+			return
+		}
+		if p, err := strconv.Atoi(port); err != nil || p < 1 || p > 65535 {
+			http.Error(w, "invalid port", http.StatusBadRequest)
+			return
+		}
+
+		iface := r.URL.Query().Get("iface")
+		if iface != "" && !isKnownWANInterface(c, iface) {
+			http.Error(w, "unknown WAN interface", http.StatusBadRequest)
+			return
+		}
+
+		dialer := netutil.DialerForInterface(iface)
+		start := time.Now()
+		conn, err := dialer.DialContext(r.Context(), "tcp", target)
+		elapsed := time.Since(start)
+
+		result := map[string]interface{}{
+			"target":     target,
+			"elapsed_ms": float64(elapsed.Microseconds()) / 1000.0,
+		}
+		if iface != "" {
+			result["interface"] = iface
+		}
+		if err != nil {
+			result["success"] = false
+			result["error"] = sanitizeDialError(err, iface)
+		} else {
+			conn.Close()
+			result["success"] = true
+		}
+		httputil.WriteJSON(w, result)
+	}
+}
+
+// sanitizeDialError produces a user-facing error message for a failed dial,
+// adding a hint when an interface-bound dial fails in a way that suggests
+// the interface itself may lack a working route (rather than the target
+// simply being unreachable).
+func sanitizeDialError(err error, iface string) string {
+	msg := err.Error()
+	if iface != "" {
+		return fmt.Sprintf("connection failed via interface %s (check it has its own working route/policy routing): %s", iface, msg)
+	}
+	return fmt.Sprintf("connection failed: %s", msg)
 }
 
 // originResolver determines the WAN's geographic country code for the map
