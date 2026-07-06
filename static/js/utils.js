@@ -49,6 +49,23 @@
         return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
     };
 
+    /* Escapes a string for safe embedding as a single-quoted JS string
+     * literal inside an inline onclick="..." HTML attribute, e.g.
+     * onclick="fn('" + BM.escJs(name) + "')" . Escapes backslash/quote for
+     * the JS string context, then HTML-escapes so the value can't break out
+     * of the (double-quoted) attribute itself. */
+    BM.escJs = function(s) {
+        return String(s == null ? '' : s)
+            .replace(/\\/g, '\\\\')
+            .replace(/'/g, "\\'")
+            .replace(/\n/g, '\\n')
+            .replace(/\r/g, '')
+            .replace(/&/g, '&amp;')
+            .replace(/"/g, '&quot;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;');
+    };
+
     /* Reusable SSE-style stream reader for POST endpoints that return
      * Server-Sent Events (e.g. speed test, traceroute, MTU discovery).
      * opts: { url, method, onMessage(parsed), onDone(), onError(err) } */

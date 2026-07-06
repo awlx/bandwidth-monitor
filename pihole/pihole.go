@@ -125,9 +125,13 @@ func (c *Client) Run() { c.Runner.Run(c.interval, c.poll) }
 
 // authenticate obtains (or reuses) a session ID from the Pi-hole API.
 func (c *Client) authenticate() (string, error) {
+	c.mu.RLock()
 	if c.sid != "" && time.Now().Before(c.sidExpiry.Add(-30*time.Second)) {
-		return c.sid, nil
+		sid := c.sid
+		c.mu.RUnlock()
+		return sid, nil
 	}
+	c.mu.RUnlock()
 
 	body, _ := json.Marshal(authReq{Password: c.password})
 	resp, err := c.httpClient.Post(c.baseURL+"/api/auth", "application/json", bytes.NewReader(body))
@@ -149,9 +153,12 @@ func (c *Client) authenticate() (string, error) {
 		return "", fmt.Errorf("auth: session not valid (wrong password?)")
 	}
 
+	c.mu.Lock()
 	c.sid = ar.Session.SID
 	c.sidExpiry = time.Now().Add(time.Duration(ar.Session.Validity) * time.Second)
-	return c.sid, nil
+	sid := c.sid
+	c.mu.Unlock()
+	return sid, nil
 }
 
 func (c *Client) apiGet(path string, target interface{}) error {
@@ -175,7 +182,9 @@ func (c *Client) apiGet(path string, target interface{}) error {
 
 	// If we get 401, invalidate the SID and retry once
 	if resp.StatusCode == http.StatusUnauthorized {
+		c.mu.Lock()
 		c.sid = ""
+		c.mu.Unlock()
 		sid, err = c.authenticate()
 		if err != nil {
 			return fmt.Errorf("re-auth: %w", err)

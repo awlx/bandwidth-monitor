@@ -4,7 +4,11 @@
 
     // ── Theme management ──
     (function initTheme() {
-        var saved = localStorage.getItem('bw-theme') || 'auto';
+        function getSavedTheme() {
+            try { return localStorage.getItem('bw-theme') || 'auto'; }
+            catch (e) { return 'auto'; }
+        }
+        var saved = getSavedTheme();
         document.documentElement.setAttribute('data-theme', saved);
         var toggle = document.getElementById('themeToggle');
         if (toggle) {
@@ -17,14 +21,14 @@
                 if (!btn) return;
                 var val = btn.getAttribute('data-theme-val');
                 document.documentElement.setAttribute('data-theme', val);
-                localStorage.setItem('bw-theme', val);
+                try { localStorage.setItem('bw-theme', val); } catch (e) { /* localStorage unavailable (private browsing, disabled, or full) */ }
                 btns.forEach(function(b) { b.classList.toggle('active', b.getAttribute('data-theme-val') === val); });
                 if (BM._updateChartsForTheme) BM._updateChartsForTheme();
             });
         }
         if (window.matchMedia) {
             window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', function() {
-                if ((localStorage.getItem('bw-theme') || 'auto') === 'auto' && BM._updateChartsForTheme) BM._updateChartsForTheme();
+                if (getSavedTheme() === 'auto' && BM._updateChartsForTheme) BM._updateChartsForTheme();
             });
         }
     })();

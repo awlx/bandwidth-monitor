@@ -19,11 +19,18 @@
         fetch('/api/host?ip=' + encodeURIComponent(ip))
             .then(function(r) { return r.json(); })
             .then(function(d) {
+                // Guard against a stale response: if the user opened a
+                // different host before this fetch resolved, don't clobber
+                // the modal with the wrong host's data.
+                if (modal.dataset.ip !== ip) return;
                 d._mac = mac || '';
                 renderHostModal(d, title, subtitle, body);
                 loadHostDNSLog(ip, body);
             })
-            .catch(function(e) { body.innerHTML = '<div style="text-align:center;padding:32px;color:var(--danger)">Failed to load: ' + e + '</div>'; });
+            .catch(function(e) {
+                if (modal.dataset.ip !== ip) return;
+                body.innerHTML = '<div style="text-align:center;padding:32px;color:var(--danger)">Failed to load: ' + e + '</div>';
+            });
     };
 
     window._renameHostDevice = function() {
@@ -157,9 +164,11 @@
     function loadHostDNSLog(ip, bodyEl) {
         var section = bodyEl.querySelector('#hostDNSSection');
         if (!section) return;
+        var modal = document.getElementById('hostModal');
         fetch('/api/host/dns?ip=' + encodeURIComponent(ip))
             .then(function(r) { return r.json(); })
             .then(function(d) {
+                if (modal.dataset.ip !== ip) return;
                 if (!d || !d.available || !d.queries || !d.queries.length) return;
                 var h = '<div style="font-size:14px;font-weight:600;margin-bottom:10px">Recent DNS Queries <span style="font-weight:400;color:var(--text-2);font-size:12px">(' + d.queries.length + ')</span></div>';
                 h += '<div style="overflow-x:auto;max-height:250px;overflow-y:auto;border:1px solid var(--border);border-radius:8px">';

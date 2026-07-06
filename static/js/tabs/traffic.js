@@ -174,7 +174,7 @@
         var h = '<div class="iface-tab' + (selectedHistoryIface === null ? ' active' : '') + '" onclick="window._shi(null)">All</div>';
         for (var i = 0; i < names.length; i++) {
             var n = names[i];
-            h += '<div class="iface-tab' + (selectedHistoryIface === n ? ' active' : '') + '" onclick="window._shi(\'' + n + '\')">' + n + '</div>';
+            h += '<div class="iface-tab' + (selectedHistoryIface === n ? ' active' : '') + '" onclick="window._shi(\'' + BM.escJs(n) + '\')">' + BM.escSvg(n) + '</div>';
         }
         el.innerHTML = h;
     }
@@ -384,7 +384,7 @@
         var h = '<div class="iface-tab' + (selectedIface === null ? ' active' : '') + '" onclick="window._si(null)">All</div>';
         // Sorted so the tab order is the same on every load and matches the 24h row.
         Array.from(BM.knownIfaces).sort().forEach(function(n) {
-            h += '<div class="iface-tab' + (selectedIface === n ? ' active' : '') + '" onclick="window._si(\'' + n + '\')">' + n + '</div>';
+            h += '<div class="iface-tab' + (selectedIface === n ? ' active' : '') + '" onclick="window._si(\'' + BM.escJs(n) + '\')">' + BM.escSvg(n) + '</div>';
         });
         el.innerHTML = h;
     };
@@ -545,7 +545,7 @@
 
     BM.renderTalkers = function(tid, talkers, vk, fmt, cls) {
         var tb = document.getElementById(tid);
-        if (!talkers || !talkers.length) { tb.innerHTML = '<tr><td colspan="6" class="empty-state">No data &mdash; requires root / CAP_NET_RAW</td></tr>'; return; }
+        if (!talkers || !talkers.length) { tb.innerHTML = '<tr><td colspan="7" class="empty-state">No data &mdash; requires root / CAP_NET_RAW</td></tr>'; return; }
 
         var hasDirection = false;
         for (var di = 0; di < talkers.length; di++) {
@@ -559,13 +559,13 @@
             var flag = t.country ? BM.countryFlag(t.country) + ' ' : '';
             var geo = '';
             var geoName = (t.city && t.country_name) ? t.city + ', ' + t.country_name : (t.country_name || '');
-            if (t.as_org) geo = '<span class="hostname">' + flag + geoName + ' &middot; AS' + (t.asn || '') + ' ' + t.as_org + '</span>';
-            else if (geoName) geo = '<span class="hostname">' + flag + geoName + '</span>';
+            if (t.as_org) geo = '<span class="hostname">' + flag + BM.escSvg(geoName) + ' &middot; AS' + (t.asn || '') + ' ' + BM.escSvg(t.as_org) + '</span>';
+            else if (geoName) geo = '<span class="hostname">' + flag + BM.escSvg(geoName) + '</span>';
             var displayName = BM.deviceDisplayName(null, [t.ip], t.hostname);
             var host = displayName && displayName !== t.ip
-                ? '<span class="ip-cell ip-clickable" data-ip="' + t.ip + '">' + t.ip + '</span><span class="hostname">' + displayName + '</span>' + geo
+                ? '<span class="ip-cell ip-clickable" data-ip="' + t.ip + '">' + t.ip + '</span><span class="hostname">' + BM.escSvg(displayName) + '</span>' + geo
                 : '<span class="ip-cell ip-clickable" data-ip="' + t.ip + '">' + t.ip + '</span>' + geo;
-            h += '<tr' + (t.country ? ' data-country="' + t.country + '"' : '') + '><td><span class="' + BM.rankClass(i) + '">' + (i + 1) + '</span></td>';
+            h += '<tr' + (t.country ? ' data-country="' + BM.escSvg(t.country) + '"' : '') + '><td><span class="' + BM.rankClass(i) + '">' + (i + 1) + '</span></td>';
             h += '<td>' + BM.favoriteStarHtml(t.ip) + '</td>';
             h += '<td>' + host + '</td>';
             if (hasDirection) {

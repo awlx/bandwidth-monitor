@@ -225,7 +225,7 @@ func HostDNSLog(dnsProvider dns.Provider) http.HandlerFunc {
 			http.Error(w, "ip parameter required", http.StatusBadRequest)
 			return
 		}
-		if len(ip) > 45 {
+		if len(ip) > 45 || net.ParseIP(ip) == nil {
 			http.Error(w, "invalid ip", http.StatusBadRequest)
 			return
 		}
@@ -250,6 +250,9 @@ func HostDNSLog(dnsProvider dns.Provider) http.HandlerFunc {
 			log.Printf("host dns log: %v", err)
 			httputil.WriteJSON(w, response{Available: false})
 			return
+		}
+		if entries == nil {
+			entries = []dns.QueryLogEntry{}
 		}
 		httputil.WriteJSON(w, response{Available: true, Queries: entries})
 	}
