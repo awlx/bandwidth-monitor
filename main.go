@@ -56,6 +56,7 @@ func main() {
 	tlsKeyFile := env("TLS_KEY_FILE", "")
 	promiscuous := env("PROMISCUOUS", "true")
 	promiscuousBool, _ := strconv.ParseBool(promiscuous)
+	debugHTTPLog, _ := strconv.ParseBool(env("DEBUG_HTTP_LOG", "false"))
 
 	if listenProto != "http" && listenProto != "https" {
 		log.Fatalf("LISTEN_PROTOCOL: invalid value %q (expected http or https)", listenProto)
@@ -379,9 +380,16 @@ func main() {
 	if listenProto == "https" {
 		log.Printf("server: TLS enabled cert=%s key=%s", tlsCertFile, tlsKeyFile)
 	}
+	var handler http.Handler = mux
+	if debugHTTPLog {
+		handler = withRequestLog(handler)
+		log.Printf("server: DEBUG_HTTP_LOG enabled — logging every request to stdout")
+	}
+	handler = withSignature(handler)
+
 	srv := &http.Server{
 		Addr:              listenAddr,
-		Handler:           withSignature(mux),
+		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       120 * time.Second,
 	}
@@ -466,5 +474,17 @@ func withSignature(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Bandwidth-Monitor", version.String())
 		h.ServeHTTP(w, r)
+	})
+}
+
+// withRequestLog wraps an http.Handler to log method, path+query, and remote
+// addr for every request to stdout. Opt-in via DEBUG_HTTP_LOG — useful for
+// watching what clients actually request (e.g. confirming a browser client
+// is sending the expected ?since=/?iface= params), but noisy for normal use.
+func withRequestLog(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		h.ServeHTTP(w, r)
+		log.Printf("http: %s %s %s %s", r.Method, r.URL.RequestURI(), r.RemoteAddr, time.Since(start))
 	})
 }
