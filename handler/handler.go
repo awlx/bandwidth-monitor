@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"compress/gzip"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -851,7 +852,14 @@ func fetchExternalIP() string {
 }
 
 // buildPayload assembles the JSON payload sent over the SSE stream.
-func buildPayload(c *collector.Collector, t *talkers.Tracker, dp dns.Provider, wp wifi.Provider, ct *conntrack.Tracker, lm *latency.Monitor, ts *topology.Scanner, dnsRes *resolver.Resolver, origin *originResolver) map[string]interface{} {
+//
+// The full conntrack table and topology graph are deliberately excluded: a
+// busy router's NAT table (up to 200 IPv4 + 200 IPv6 entries, each with
+// hostname/geo/ASN enrichment) resent whole every second is the dominant
+// cost of this stream, regardless of whether the NAT or Network tab is even
+// open. Both have dedicated endpoints (/api/conntrack, /api/topology) that
+// the respective tabs poll directly, only while visible.
+func buildPayload(c *collector.Collector, t *talkers.Tracker, dp dns.Provider, wp wifi.Provider, lm *latency.Monitor, ts *topology.Scanner, dnsRes *resolver.Resolver, origin *originResolver) map[string]interface{} {
 	geo := t.GetGeoBreakdown()
 	var ov *topology.Overview
 	if ts != nil {
@@ -912,16 +920,8 @@ func buildPayload(c *collector.Collector, t *talkers.Tracker, dp dns.Provider, w
 	if wp != nil {
 		payload["wifi"] = wp.GetSummary()
 	}
-	if ct != nil {
-		if s := ct.GetSummary(); s != nil {
-			payload["conntrack"] = s
-		}
-	}
 	if lm != nil {
 		payload["latency"] = lm.GetStatus()
-	}
-	if ov != nil {
-		payload["topology"] = ov
 	}
 	return payload
 }
@@ -934,7 +934,7 @@ func buildPayload(c *collector.Collector, t *talkers.Tracker, dp dns.Provider, w
 // backed up (e.g. hibernating laptop, congested link), only the most recent
 // payload is kept — preventing kernel send-buffer buildup (same backpressure
 // logic that PR #18 added to the old WebSocket handler).
-func SSE(c *collector.Collector, t *talkers.Tracker, dp dns.Provider, wp wifi.Provider, ct *conntrack.Tracker, lm *latency.Monitor, ts *topology.Scanner, dnsRes *resolver.Resolver, geoDB *geoip.DB) http.HandlerFunc {
+func SSE(c *collector.Collector, t *talkers.Tracker, dp dns.Provider, wp wifi.Provider, lm *latency.Monitor, ts *topology.Scanner, dnsRes *resolver.Resolver, geoDB *geoip.DB) http.HandlerFunc {
 	origin := newOriginResolver(geoDB)
 	return func(w http.ResponseWriter, r *http.Request) {
 		flusher, ok := w.(http.Flusher)
@@ -948,6 +948,21 @@ func SSE(c *collector.Collector, t *talkers.Tracker, dp dns.Provider, wp wifi.Pr
 		w.Header().Set("Connection", "keep-alive")
 		w.Header().Set("X-Accel-Buffering", "no")
 
+		// The bulk of the payload (talkers, sparklines, DNS/WiFi summaries) is
+		// repetitive JSON — field names and similar-valued numbers — that
+		// compresses well. EventSource-driving browsers always advertise
+		// Accept-Encoding: gzip, so this applies to virtually every real
+		// client without any version negotiation.
+		var out io.Writer = w
+		flush := flusher.Flush
+		if strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
+			w.Header().Set("Content-Encoding", "gzip")
+			gz := gzip.NewWriter(w)
+			defer gz.Close()
+			out = gz
+			flush = func() { gz.Flush(); flusher.Flush() }
+		}
+
 		// Non-blocking write channel: the ticker produces payloads and a
 		// dedicated writer goroutine drains them.  If the client is backed
 		// up, only the most recent payload is kept.
@@ -958,15 +973,15 @@ func SSE(c *collector.Collector, t *talkers.Tracker, dp dns.Provider, wp wifi.Pr
 		go func() {
 			defer close(writerDone)
 			for data := range sendCh {
-				if _, err := fmt.Fprintf(w, "data: %s\n\n", data); err != nil {
+				if _, err := fmt.Fprintf(out, "data: %s\n\n", data); err != nil {
 					return
 				}
-				flusher.Flush()
+				flush()
 			}
 		}()
 
 		// Send initial payload immediately.
-		data, err := json.Marshal(buildPayload(c, t, dp, wp, ct, lm, ts, dnsRes, origin))
+		data, err := json.Marshal(buildPayload(c, t, dp, wp, lm, ts, dnsRes, origin))
 		if err != nil {
 			close(sendCh)
 			return
@@ -985,7 +1000,7 @@ func SSE(c *collector.Collector, t *talkers.Tracker, dp dns.Provider, wp wifi.Pr
 			case <-writerDone:
 				return
 			case <-ticker.C:
-				data, err := json.Marshal(buildPayload(c, t, dp, wp, ct, lm, ts, dnsRes, origin))
+				data, err := json.Marshal(buildPayload(c, t, dp, wp, lm, ts, dnsRes, origin))
 				if err != nil {
 					continue
 				}

@@ -336,6 +336,7 @@ cp env.example /opt/bandwidth-monitor/.env
 | `TLS_CERT_FILE` | *(empty)* | TLS certificate path (required when `LISTEN_PROTOCOL=https`) |
 | `TLS_KEY_FILE` | *(empty)* | TLS private key path (required when `LISTEN_PROTOCOL=https`) |
 | `PROMISCUOUS` | `true` | Enable promiscuous mode for packet capture (`true`/`false`) |
+| `DEBUG_HTTP_LOG` | `false` | Log every HTTP request (method, path+query, remote addr, status, response size in bytes, duration) to stdout. Opt-in and noisy — useful for debugging client request patterns (e.g. verifying `?since=`/`?iface=` params and the resulting response size) |
 | `INTERFACES` | *(all)* | Comma-separated list of interfaces to monitor and display (e.g. `eth0,ppp0,wg0`). Controls both the web UI and packet capture. If not set, all interfaces are used. |
 | `GEO_CITY` | `GeoLite2-City.mmdb` | Path to GeoLite2 City MMDB (includes country, city, coordinates for map). ~57 MB. For devices with limited flash (e.g. OpenWrt routers), use `GeoLite2-Country.mmdb` (~6 MB) instead — set `GEO_CITY=GeoLite2-Country.mmdb`. Country data still works, just without city-level map precision. |
 | `GEO_ASN` | `GeoLite2-ASN.mmdb` | Path to GeoLite2 ASN MMDB (~11 MB) |
@@ -708,7 +709,7 @@ Makefile                  → build, install, GeoIP download targets
 | `/api/debug/traceroute` | POST | ICMP traceroute with SSE progress; params: `target`, `count` (probes/hop), `maxttl` |
 | `/api/debug/dns` | GET | DNS check against 14 servers + resolver leak test; params: `domain`, `type` |
 | `/api/summary` | GET | Compact summary for menu bar clients |
-| `/api/events` | GET | SSE stream — pushes all data every second (Server-Sent Events) |
+| `/api/events` | GET | SSE stream — pushes interface rates, talkers, DNS/WiFi/latency summaries every second (Server-Sent Events, gzip-compressed when the client accepts it). Conntrack and topology are deliberately excluded — poll `/api/conntrack`/`/api/topology` directly instead |
 | `/api/liveactivity/register` | POST | Register an iOS Live Activity push token (only available when `APNS_KEY_FILE` is set) |
 
 ---

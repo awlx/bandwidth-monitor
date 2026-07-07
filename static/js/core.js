@@ -111,6 +111,12 @@
             _stHistoryLoaded = true;
             if (BM.loadSpeedTestHistory) BM.loadSpeedTestHistory();
         }
+        // NAT/Network poll their own REST endpoints instead of riding the 1s
+        // SSE tick (see nat.js/network.js) — only while their tab is visible.
+        if (BM._stopNATPolling) BM._stopNATPolling();
+        if (BM._stopNetworkPolling) BM._stopNetworkPolling();
+        if (tab === 'nat' && BM._startNATPolling) BM._startNATPolling();
+        if (tab === 'network' && BM._startNetworkPolling) BM._startNetworkPolling();
         if (BM._lastPayload) _renderTab(tab, BM._lastPayload, true);
     };
 
@@ -143,9 +149,9 @@
         } else if (tab === 'wifi') {
             if (BM.updateWiFi) BM.updateWiFi(d.wifi || null);
         } else if (tab === 'network') {
-            if (BM.updateNetwork) BM.updateNetwork(d.topology || null, d.topology_bandwidth || d.top_bandwidth || []);
-        } else if (tab === 'nat') {
-            if (BM.updateNAT) BM.updateNAT(d.conntrack || null);
+            // Topology graph itself comes from network.js's own poll of
+            // /api/topology; only the live per-node bandwidth rides the tick.
+            if (BM._updateNetworkBandwidth) BM._updateNetworkBandwidth(d.topology_bandwidth || d.top_bandwidth || []);
         }
     }
     BM._renderTab = _renderTab;

@@ -51,6 +51,37 @@
         window._filterNetworkClients();
     };
 
+    // The topology graph used to ride along on the 1s SSE tick, but a busy
+    // LAN's full node/link list resent every second — whether or not this tab
+    // is even open — was needless waste; the scanner itself only refreshes
+    // every 30s server-side. Poll /api/topology directly instead, only while
+    // this tab is visible. Per-node live bandwidth (which does need to feel
+    // live) keeps arriving every second via the SSE tick through
+    // BM._updateNetworkBandwidth, re-rendering the graph with the topology
+    // already cached from the last poll.
+    var _topoPollInterval = null;
+
+    function _fetchTopology() {
+        return fetch('/api/topology').then(function(r) { return r.json(); }).then(function(data) {
+            if (data) BM.updateNetwork(data, _lastBandwidth);
+        }).catch(function(e) { console.error('topology load:', e); });
+    }
+
+    BM._startNetworkPolling = function() {
+        if (_topoPollInterval) return;
+        _fetchTopology();
+        _topoPollInterval = setInterval(_fetchTopology, 15000);
+    };
+
+    BM._stopNetworkPolling = function() {
+        if (_topoPollInterval) { clearInterval(_topoPollInterval); _topoPollInterval = null; }
+    };
+
+    BM._updateNetworkBandwidth = function(bandwidth) {
+        _lastBandwidth = bandwidth || [];
+        if (_lastTopology) renderNetworkTopology(_lastTopology, _lastBandwidth);
+    };
+
     // ── Client table rendering ──
 
     window._filterNetworkClients = function() {
