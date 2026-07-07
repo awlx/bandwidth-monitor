@@ -142,7 +142,7 @@
                 <div class="card-header">
                     <div>
                         <div class="card-title">Autonomous Systems</div>
-                        <div class="card-subtitle">By volume (24h)</div>
+                        <div class="card-subtitle">By volume (24h) &mdash; click a row to see which machines talk to it</div>
                     </div>
                 </div>
                 <div class="breakdown-chart-body">
@@ -160,6 +160,13 @@
                             <tr><td colspan="5" class="empty-state">Waiting for GeoIP data</td></tr>
                         </tbody>
                     </table>
+                </div>
+                <div id="asnMachinesDetail" style="display:none;padding:12px 16px 16px;border-top:1px solid var(--border)">
+                    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+                        <div id="asnMachinesDetailTitle" style="font-size:12px;font-weight:600;color:var(--text-2)"></div>
+                        <div onclick="window._closeASNMachinesDetail()" style="cursor:pointer;color:var(--text-3);font-size:16px;line-height:1;padding:2px 6px" title="Close">&times;</div>
+                    </div>
+                    <div id="asnMachinesDetailList" style="font-size:12px"></div>
                 </div>
             </div>
         </div>
