@@ -477,14 +477,51 @@ func withSignature(h http.Handler) http.Handler {
 	})
 }
 
-// withRequestLog wraps an http.Handler to log method, path+query, and remote
-// addr for every request to stdout. Opt-in via DEBUG_HTTP_LOG — useful for
-// watching what clients actually request (e.g. confirming a browser client
-// is sending the expected ?since=/?iface= params), but noisy for normal use.
+// responseLogger wraps http.ResponseWriter to capture the status code and
+// bytes written, for withRequestLog. It implements http.Flusher (delegating
+// to the underlying ResponseWriter) so the SSE handler's type-assertion for
+// flush support keeps working when logging is enabled.
+type responseLogger struct {
+	http.ResponseWriter
+	status int
+	bytes  int
+}
+
+func (rl *responseLogger) WriteHeader(status int) {
+	rl.status = status
+	rl.ResponseWriter.WriteHeader(status)
+}
+
+func (rl *responseLogger) Write(b []byte) (int, error) {
+	if rl.status == 0 {
+		rl.status = http.StatusOK
+	}
+	n, err := rl.ResponseWriter.Write(b)
+	rl.bytes += n
+	return n, err
+}
+
+func (rl *responseLogger) Flush() {
+	if f, ok := rl.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+// withRequestLog wraps an http.Handler to log method, path+query, remote
+// addr, status, response size, and duration for every request to stdout.
+// Opt-in via DEBUG_HTTP_LOG — useful for watching what clients actually
+// request and how much data each response actually costs (e.g. confirming a
+// browser client is sending ?since=/?iface= and getting a small response
+// back, not the full history dump), but noisy for normal use.
 func withRequestLog(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
-		h.ServeHTTP(w, r)
-		log.Printf("http: %s %s %s %s", r.Method, r.URL.RequestURI(), r.RemoteAddr, time.Since(start))
+		rl := &responseLogger{ResponseWriter: w}
+		h.ServeHTTP(rl, r)
+		status := rl.status
+		if status == 0 {
+			status = http.StatusOK
+		}
+		log.Printf("http: %s %s %s %d %dB %s", r.Method, r.URL.RequestURI(), r.RemoteAddr, status, rl.bytes, time.Since(start))
 	})
 }
