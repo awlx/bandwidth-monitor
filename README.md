@@ -709,7 +709,7 @@ Makefile                  → build, install, GeoIP download targets
 | `/api/debug/traceroute` | POST | ICMP traceroute with SSE progress; params: `target`, `count` (probes/hop), `maxttl` |
 | `/api/debug/dns` | GET | DNS check against 14 servers + resolver leak test; params: `domain`, `type` |
 | `/api/summary` | GET | Compact summary for menu bar clients |
-| `/api/events` | GET | SSE stream — pushes all data every second (Server-Sent Events) |
+| `/api/events` | GET | SSE stream — pushes interface rates, talkers, DNS/WiFi/latency summaries every second (Server-Sent Events, gzip-compressed when the client accepts it). Conntrack and topology are deliberately excluded — poll `/api/conntrack`/`/api/topology` directly instead |
 | `/api/liveactivity/register` | POST | Register an iOS Live Activity push token (only available when `APNS_KEY_FILE` is set) |
 
 ---

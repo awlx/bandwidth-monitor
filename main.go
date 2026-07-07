@@ -339,7 +339,7 @@ func main() {
 	mux.HandleFunc("/api/debug/tcpcheck", handler.DebugTCPCheck(statsCollector))
 	mux.HandleFunc("/api/summary", handler.MenuBarSummary(statsCollector, talkerTracker, dnsProvider, wifiProvider, conntrackTracker))
 	mux.HandleFunc("/api/topology", handler.TopologySummary(topoScanner))
-	mux.HandleFunc("/api/events", handler.SSE(statsCollector, talkerTracker, dnsProvider, wifiProvider, conntrackTracker, latencyMonitor, topoScanner, dnsResolver, geoDB))
+	mux.HandleFunc("/api/events", handler.SSE(statsCollector, talkerTracker, dnsProvider, wifiProvider, latencyMonitor, topoScanner, dnsResolver, geoDB))
 	if liveActivityMgr != nil {
 		mux.HandleFunc("/api/liveactivity/register", handler.LiveActivityRegister(liveActivityMgr))
 	}

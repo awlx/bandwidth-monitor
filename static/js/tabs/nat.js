@@ -248,6 +248,29 @@
         tb.innerHTML = h;
     }
 
+    // The NAT table used to ride along on the 1s SSE tick, but the full
+    // conntrack table (up to 200 IPv4 + 200 IPv6 entries with hostname/geo/ASN
+    // enrichment) resent every second — whether or not this tab is even open —
+    // was the dominant cost of that stream. Poll /api/conntrack directly
+    // instead, only while this tab is visible.
+    var _natPollInterval = null;
+
+    function _fetchConntrack() {
+        return fetch('/api/conntrack').then(function(r) { return r.json(); }).then(function(data) {
+            if (data) BM.updateNAT(data);
+        }).catch(function(e) { console.error('conntrack load:', e); });
+    }
+
+    BM._startNATPolling = function() {
+        if (_natPollInterval) return;
+        _fetchConntrack();
+        _natPollInterval = setInterval(_fetchConntrack, 5000);
+    };
+
+    BM._stopNATPolling = function() {
+        if (_natPollInterval) { clearInterval(_natPollInterval); _natPollInterval = null; }
+    };
+
     // Wire search/filter on NAT entry table to re-render (with debounce on search)
     var _natSearchTimer = null;
     (function() {
