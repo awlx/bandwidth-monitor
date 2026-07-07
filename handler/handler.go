@@ -91,6 +91,25 @@ func CountryTalkers(t *talkers.Tracker) http.HandlerFunc {
 	}
 }
 
+// ASNTalkers returns the local machines (by 24h volume) that have talked to
+// a given ASN, powering the "which of my machines talk to this provider"
+// drill-down on the ASN breakdown card.
+func ASNTalkers(t *talkers.Tracker) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		asnStr := strings.TrimSpace(r.URL.Query().Get("asn"))
+		if asnStr == "" {
+			http.Error(w, "asn parameter required", http.StatusBadRequest)
+			return
+		}
+		asn, err := strconv.ParseUint(asnStr, 10, 32)
+		if err != nil || asn == 0 {
+			http.Error(w, "invalid asn", http.StatusBadRequest)
+			return
+		}
+		httputil.WriteJSON(w, t.TopMachinesForASN(uint(asn), 25))
+	}
+}
+
 func DNSSummary(dp dns.Provider, dnsRes *resolver.Resolver) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if dp == nil {

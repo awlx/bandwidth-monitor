@@ -23,6 +23,10 @@ const (
 	maxAge                          = 24 * time.Hour
 	maxHostsPerBucket               = 10000 // cap to bound memory on busy routers
 
+	// Pair tracking (local host -> remote host) for ASN/provider drill-downs.
+	maxPairsPerBucket      = 20000 // total distinct (local,remote) pairs per bucket
+	maxRemotesPerLocalHost = 500   // distinct remotes tracked per local host per bucket
+
 	// Rate ring: short circular buffer for responsive rate calculation.
 	// 6 slots × 5s = 30s window. Rates are computed over the filled
 	// portion of the ring, so peaks show within 5–10s instead of 60–120s.
@@ -59,6 +63,13 @@ type bucket struct {
 	hosts      map[string]*hostAccum
 	protoBytes map[string]uint64
 	ipVerBytes map[string]uint64
+
+	// pairs tracks per-(local host, remote host) byte/packet totals, keyed
+	// by local IP -> remote IP. This powers "which of my machines talk to
+	// ASN/provider X" drill-downs, which need local-host attribution that
+	// the flat `hosts` totals above cannot provide (hosts only tracks each
+	// IP's own totals, not who it talked to).
+	pairs map[string]map[string]*hostAccum
 }
 
 // rateSlot is one slot in the short rate ring buffer.
@@ -208,6 +219,7 @@ func (t *Tracker) Run() {
 		hosts:      make(map[string]*hostAccum),
 		protoBytes: make(map[string]uint64),
 		ipVerBytes: make(map[string]uint64),
+		pairs:      make(map[string]map[string]*hostAccum),
 	}
 
 	go t.rotateBuckets()
@@ -673,6 +685,8 @@ func (t *Tracker) accountDirection(p *parsedPkt, current *bucket, rSlot *rateSlo
 				h.txBytes += p.wireLen
 			}
 		}
+		// local (src) -> remote (dst): upload from the local host's perspective.
+		t.recordPair(current, p.srcStr, p.dstStr, p.wireLen, 0, p.wireLen)
 	} else if !p.srcLocal && p.dstLocal {
 		if h, ok := current.hosts[p.dstStr]; ok {
 			h.rxBytes += p.wireLen
@@ -685,6 +699,8 @@ func (t *Tracker) accountDirection(p *parsedPkt, current *bucket, rSlot *rateSlo
 		if h, ok := current.hosts[p.srcStr]; ok {
 			h.rxBytes += p.wireLen
 		}
+		// remote (src) -> local (dst): download from the local host's perspective.
+		t.recordPair(current, p.dstStr, p.srcStr, p.wireLen, p.wireLen, 0)
 		if rSlot != nil {
 			if h, ok := rSlot.hosts[p.srcStr]; ok {
 				h.rxBytes += p.wireLen
@@ -732,6 +748,45 @@ func (t *Tracker) accountDirection(p *parsedPkt, current *bucket, rSlot *rateSlo
 	}
 }
 
+// recordPair updates the (local host, remote host) pair accumulator used by
+// ASN/provider drill-downs (e.g. "which of my machines talk to AS15169?").
+// Bounded by maxPairsPerBucket and maxRemotesPerLocalHost so a port-scanner
+// or similar high-fanout traffic pattern can't cause unbounded growth.
+//
+// The router's own interface IPs (selfIPs) are excluded from the "local"
+// side: the router itself isn't a LAN client, and its own traffic (DNS
+// resolution, NTP, package updates, this app's own latency/speedtest
+// probes, etc.) would otherwise show up as a single "machine" talking to
+// nearly every ASN, drowning out actual client attribution. This mirrors
+// the selfIPs exclusion already applied in TopByVolume/TopByBandwidth/
+// TopByCountry/GetGeoBreakdown.
+// Must be called with t.mu held.
+func (t *Tracker) recordPair(current *bucket, localIP, remoteIP string, wireLen, rx, tx uint64) {
+	if _, isSelf := t.selfIPs[localIP]; isSelf {
+		return
+	}
+	remotes, ok := current.pairs[localIP]
+	if !ok {
+		if len(current.pairs) >= maxPairsPerBucket {
+			return
+		}
+		remotes = make(map[string]*hostAccum)
+		current.pairs[localIP] = remotes
+	}
+	acc, ok := remotes[remoteIP]
+	if !ok {
+		if len(remotes) >= maxRemotesPerLocalHost {
+			return
+		}
+		acc = &hostAccum{}
+		remotes[remoteIP] = acc
+	}
+	acc.bytes += wireLen
+	acc.rxBytes += rx
+	acc.txBytes += tx
+	acc.packets++
+}
+
 func (t *Tracker) rotateBuckets() {
 	ticker := time.NewTicker(bucketSize)
 	defer ticker.Stop()
@@ -763,6 +818,7 @@ func (t *Tracker) rotateBuckets() {
 				hosts:      make(map[string]*hostAccum),
 				protoBytes: make(map[string]uint64),
 				ipVerBytes: make(map[string]uint64),
+				pairs:      make(map[string]map[string]*hostAccum),
 			}
 			t.mu.Unlock()
 		case <-t.stopCh:
@@ -1016,6 +1072,153 @@ func (t *Tracker) GetGeoBreakdown() *GeoBreakdown {
 		ASNs:      asnResult,
 	}
 }
+
+// ASNRemoteStat holds a single remote IP's 24h traffic contribution within
+// an ASN, nested under a MachineASNStat so the UI can show exact local<->
+// remote IP pairs instead of just a per-machine sum.
+type ASNRemoteStat struct {
+	IP         string `json:"ip"`
+	Hostname   string `json:"hostname,omitempty"`
+	TotalBytes uint64 `json:"total_bytes"`
+	RxBytes    uint64 `json:"rx_bytes"`
+	TxBytes    uint64 `json:"tx_bytes"`
+	Packets    uint64 `json:"packets"`
+}
+
+// MachineASNStat holds a local host's aggregated 24h traffic to a specific
+// ASN/provider, powering the "which of my machines talk to AS X" drill-down.
+type MachineASNStat struct {
+	IP          string          `json:"ip"`
+	Hostname    string          `json:"hostname,omitempty"`
+	TotalBytes  uint64          `json:"total_bytes"`
+	RxBytes     uint64          `json:"rx_bytes"`
+	TxBytes     uint64          `json:"tx_bytes"`
+	Packets     uint64          `json:"packets"`
+	Connections int             `json:"connections"` // distinct remote IPs within the ASN
+	Remotes     []ASNRemoteStat `json:"remotes"`      // per-remote-IP breakdown, sorted by bytes desc
+}
+
+// maxRemotesInResponse caps how many remote IPs are returned per local host
+// in the ASN drill-down, so a host with hundreds of short-lived connections
+// (e.g. to a CDN) doesn't bloat the response.
+const maxRemotesInResponse = 50
+
+// TopMachinesForASN returns the local hosts (by 24h total bytes) that have
+// talked to the given ASN, along with each host's traffic totals toward it
+// and a per-remote-IP breakdown. Unlike GetGeoBreakdown (which only totals
+// bytes per-ASN with no local-host attribution), this walks the local->remote
+// pair accumulators built by recordPair so it can answer "who on my network
+// talks to this provider, and which specific remote IPs".
+func (t *Tracker) TopMachinesForASN(asn uint, n int) []MachineASNStat {
+	if t.geoDB == nil || !t.geoDB.Available() || asn == 0 {
+		return nil
+	}
+
+	// Step 1: merge the per-bucket (local -> remote) pair totals under lock.
+	t.mu.RLock()
+	agg := make(map[string]map[string]*hostAccum)
+	merge := func(pairs map[string]map[string]*hostAccum) {
+		for local, remotes := range pairs {
+			lm, ok := agg[local]
+			if !ok {
+				lm = make(map[string]*hostAccum, len(remotes))
+				agg[local] = lm
+			}
+			for remote, acc := range remotes {
+				a, ok := lm[remote]
+				if !ok {
+					a = &hostAccum{}
+					lm[remote] = a
+				}
+				a.bytes += acc.bytes
+				a.rxBytes += acc.rxBytes
+				a.txBytes += acc.txBytes
+				a.packets += acc.packets
+			}
+		}
+	}
+	for _, b := range t.buckets {
+		merge(b.pairs)
+	}
+	if t.current != nil {
+		merge(t.current.pairs)
+	}
+	t.mu.RUnlock()
+
+	// Step 2: GeoIP lookups outside the lock — filter remotes to the wanted
+	// ASN, keeping the per-remote breakdown (not just a sum) per local host.
+	type acc struct {
+		bytes, rx, tx, packets uint64
+		remotes                map[string]*hostAccum
+	}
+	byHost := make(map[string]*acc)
+	for local, remotes := range agg {
+		for remote, a := range remotes {
+			geo := t.geoDB.Lookup(remote)
+			if geo == nil || geo.ASN != asn {
+				continue
+			}
+			h, ok := byHost[local]
+			if !ok {
+				h = &acc{remotes: make(map[string]*hostAccum)}
+				byHost[local] = h
+			}
+			h.bytes += a.bytes
+			h.rx += a.rxBytes
+			h.tx += a.txBytes
+			h.packets += a.packets
+			h.remotes[remote] = a
+		}
+	}
+
+	list := make([]MachineASNStat, 0, len(byHost))
+	for ip, h := range byHost {
+		remotes := make([]ASNRemoteStat, 0, len(h.remotes))
+		for remoteIP, a := range h.remotes {
+			remotes = append(remotes, ASNRemoteStat{
+				IP:         remoteIP,
+				TotalBytes: a.bytes,
+				RxBytes:    a.rxBytes,
+				TxBytes:    a.txBytes,
+				Packets:    a.packets,
+			})
+		}
+		sort.Slice(remotes, func(i, j int) bool {
+			return remotes[i].TotalBytes > remotes[j].TotalBytes
+		})
+		if len(remotes) > maxRemotesInResponse {
+			remotes = remotes[:maxRemotesInResponse]
+		}
+		list = append(list, MachineASNStat{
+			IP:          ip,
+			TotalBytes:  h.bytes,
+			RxBytes:     h.rx,
+			TxBytes:     h.tx,
+			Packets:     h.packets,
+			Connections: len(h.remotes),
+			Remotes:     remotes,
+		})
+	}
+	sort.Slice(list, func(i, j int) bool {
+		return list[i].TotalBytes > list[j].TotalBytes
+	})
+	if len(list) > n {
+		list = list[:n]
+	}
+
+	// Step 3: Hostname (DNS) enrichment only for the trimmed result — both
+	// for the local host itself and for each of its listed remote IPs.
+	for i := range list {
+		if t.dns != nil {
+			list[i].Hostname = t.dns.LookupAddrAsync(list[i].IP)
+			for j := range list[i].Remotes {
+				list[i].Remotes[j].Hostname = t.dns.LookupAddrAsync(list[i].Remotes[j].IP)
+			}
+		}
+	}
+	return list
+}
+
 
 // BucketPoint is a single 1-minute data point for a host.
 type BucketPoint struct {

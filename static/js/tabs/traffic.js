@@ -703,14 +703,16 @@
     // Export for other tabs (dns, wifi, nat)
     BM._fillDoughnut = fillDoughnut;
 
-    function fillDetailTable(tbId, items, labelFn, valueFn, fmtFn, cls) {
+    function fillDetailTable(tbId, items, labelFn, valueFn, fmtFn, cls, countFn) {
         var tb = document.getElementById(tbId);
-        if (!items || !items.length) { tb.innerHTML = '<tr><td colspan="4" class="empty-state">No data</td></tr>'; return; }
+        var cols = countFn ? 5 : 4;
+        if (!items || !items.length) { tb.innerHTML = '<tr><td colspan="' + cols + '" class="empty-state">No data</td></tr>'; return; }
         var mx = valueFn(items[0]) || 1, h = '';
         for (var i = 0; i < items.length; i++) {
             var pct = mx > 0 ? ((valueFn(items[i]) / mx) * 100).toFixed(1) : '0';
             h += '<tr><td><span class="' + BM.rankClass(i) + '">' + (i + 1) + '</span></td>';
             h += '<td><span class="ip-cell">' + labelFn(items[i]) + '</span></td>';
+            if (countFn) h += '<td style="white-space:nowrap;font-variant-numeric:tabular-nums">' + countFn(items[i]) + '</td>';
             h += '<td style="white-space:nowrap;font-variant-numeric:tabular-nums">' + fmtFn(valueFn(items[i])) + '</td>';
             h += '<td class="bar-cell"><div class="bar-bg"></div><div class="bar-fill ' + cls + '" style="width:' + pct + '%"></div></td></tr>';
         }
@@ -756,7 +758,8 @@
         fillDetailTable('countryTable', countries,
             function(c) { return BM.countryFlag(c.country) + ' <span style="font-weight:500">' + (c.country_name || c.country) + '</span> <span class="hostname" style="display:inline">' + c.country + '</span>'; },
             function(c) { return c.bytes; },
-            function(v) { return BM.formatBytes(v); }, 'bw'
+            function(v) { return BM.formatBytes(v); }, 'bw',
+            function(c) { return c.connections; }
         );
     };
 
@@ -792,9 +795,119 @@
         fillDetailTable('asnTable', asns,
             function(a) { return '<span style="font-weight:500">' + (a.as_org || 'Unknown') + '</span> <span class="hostname" style="display:inline">AS' + a.asn + '</span>'; },
             function(a) { return a.bytes; },
-            function(v) { return BM.formatBytes(v); }, 'vol'
+            function(v) { return BM.formatBytes(v); }, 'vol',
+            function(a) { return a.connections; }
         );
+        var tb = document.getElementById('asnTable');
+        if (tb) {
+            var rows = tb.querySelectorAll('tr');
+            for (var i = 0; i < rows.length && i < asns.length; i++) {
+                rows[i].style.cursor = 'pointer';
+                rows[i].title = 'Show machines talking to AS' + asns[i].asn;
+                (function(asn) {
+                    rows[i].addEventListener('click', function() { window._focusASNMachines(asn); });
+                })(asns[i]);
+            }
+        }
     };
+
+    // Fetches and displays the local machines talking to a given ASN in an
+    // inline detail panel below the ASN table. The GetGeoBreakdown/ASN totals
+    // only aggregate bytes per-ASN with no local-host attribution, so this
+    // asks the backend for an ASN-scoped, per-machine breakdown instead.
+    window._focusASNMachines = function(asn) {
+        if (!asn || !asn.asn) return;
+        var wrap = document.getElementById('asnMachinesDetail');
+        var title = document.getElementById('asnMachinesDetailTitle');
+        var list = document.getElementById('asnMachinesDetailList');
+        if (!wrap || !title || !list) return;
+
+        wrap.dataset.asn = asn.asn;
+        wrap.style.display = '';
+        title.textContent = (asn.as_org || ('AS' + asn.asn)) + ' (AS' + asn.asn + ') \u2014 Machines';
+        list.innerHTML = '<div style="text-align:center;padding:16px;color:var(--text-2)">Loading&hellip;</div>';
+        wrap.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+
+        fetch('/api/talkers/asn?asn=' + encodeURIComponent(asn.asn))
+            .then(function(r) { return r.json(); })
+            .then(function(machines) {
+                // Ignore stale responses if the user clicked a different ASN meanwhile.
+                if (String(wrap.dataset.asn) !== String(asn.asn)) return;
+                if (!machines || !machines.length) {
+                    list.innerHTML = '<div style="text-align:center;padding:16px;color:var(--text-2)">No local machines tracked for this ASN in the last 24h</div>';
+                    return;
+                }
+                var mx = machines[0].total_bytes || 1, h = '';
+                machines.forEach(function(m, i) {
+                    var pct = mx > 0 ? (m.total_bytes / mx * 100) : 0;
+                    var displayName = BM.deviceDisplayName ? BM.deviceDisplayName(null, [m.ip], m.hostname) : (m.hostname || m.ip);
+                    var host = displayName && displayName !== m.ip
+                        ? '<span class="ip-cell ip-clickable" data-ip="' + m.ip + '">' + m.ip + '</span> <span class="hostname">' + BM.escSvg(displayName) + '</span>'
+                        : '<span class="ip-cell ip-clickable" data-ip="' + m.ip + '">' + m.ip + '</span>';
+                    var conns = m.connections + ' remote IP' + (m.connections === 1 ? '' : 's');
+                    var hasRemotes = m.remotes && m.remotes.length > 0;
+                    h += '<div class="asn-machine-block" style="border-bottom:1px solid var(--border)">';
+                    h += '<div class="asn-machine-row" data-idx="' + i + '" style="display:flex;align-items:center;gap:8px;padding:4px 0' + (hasRemotes ? ';cursor:pointer' : '') + '">';
+                    h += '<span class="' + BM.rankClass(i) + '" style="flex:0 0 auto">' + (i + 1) + '</span>';
+                    if (hasRemotes) h += '<svg class="asn-caret" data-idx="' + i + '" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px;flex:0 0 auto;color:var(--text-3);transition:transform .15s"><polyline points="9 6 15 12 9 18"/></svg>';
+                    h += '<div style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + host + ' <span class="hostname">' + conns + '</span></div>';
+                    h += '<div style="flex:0 0 80px;height:6px;background:var(--bg-2);border-radius:3px;overflow:hidden"><div style="width:' + Math.max(2, pct).toFixed(1) + '%;height:100%;background:var(--accent);border-radius:3px;opacity:0.7"></div></div>';
+                    h += '<span style="flex:0 0 auto;min-width:60px;text-align:right;font-variant-numeric:tabular-nums;color:var(--text-2)">' + BM.formatBytes(m.total_bytes) + '</span>';
+                    h += '</div>';
+                    if (hasRemotes) {
+                        var rmx = m.remotes[0].total_bytes || 1;
+                        h += '<div class="asn-remotes" data-idx="' + i + '" style="display:none;padding:0 0 6px 34px">';
+                        m.remotes.forEach(function(rm) {
+                            var rpct = rmx > 0 ? (rm.total_bytes / rmx * 100) : 0;
+                            var rDisplay = rm.hostname && rm.hostname !== rm.ip
+                                ? '<span class="ip-cell ip-clickable" data-ip="' + rm.ip + '">' + rm.ip + '</span> <span class="hostname">' + BM.escSvg(rm.hostname) + '</span>'
+                                : '<span class="ip-cell ip-clickable" data-ip="' + rm.ip + '">' + rm.ip + '</span>';
+                            h += '<div style="display:flex;align-items:center;gap:8px;padding:2px 0;font-size:11px">';
+                            h += '<div style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text-2)">' + rDisplay + '</div>';
+                            h += '<div style="flex:0 0 60px;height:4px;background:var(--bg-2);border-radius:2px;overflow:hidden"><div style="width:' + Math.max(2, rpct).toFixed(1) + '%;height:100%;background:var(--text-3);border-radius:2px;opacity:0.6"></div></div>';
+                            h += '<span style="flex:0 0 auto;min-width:50px;text-align:right;font-variant-numeric:tabular-nums;color:var(--text-3)">' + BM.formatBytes(rm.total_bytes) + '</span>';
+                            h += '</div>';
+                        });
+                        h += '</div>';
+                    }
+                    h += '</div>';
+                });
+                list.innerHTML = h;
+                // Re-wire host-modal clicks for the newly rendered IP cells.
+                // stopPropagation so clicking an IP doesn't also toggle the
+                // parent machine row's remote-IP expander.
+                list.querySelectorAll('.ip-clickable').forEach(function(el) {
+                    el.addEventListener('click', function(e) {
+                        e.stopPropagation();
+                        if (window._openHostModal) window._openHostModal(el.getAttribute('data-ip'), '');
+                    });
+                });
+                // Wire up expand/collapse of the per-remote-IP breakdown.
+                list.querySelectorAll('.asn-machine-row').forEach(function(row) {
+                    row.addEventListener('click', function() {
+                        var idx = row.getAttribute('data-idx');
+                        var remotesEl = list.querySelector('.asn-remotes[data-idx="' + idx + '"]');
+                        var caret = list.querySelector('.asn-caret[data-idx="' + idx + '"]');
+                        if (!remotesEl) return;
+                        var isOpen = remotesEl.style.display !== 'none';
+                        remotesEl.style.display = isOpen ? 'none' : '';
+                        if (caret) caret.style.transform = isOpen ? '' : 'rotate(90deg)';
+                    });
+                });
+            })
+            .catch(function(e) {
+                if (String(wrap.dataset.asn) !== String(asn.asn)) return;
+                list.innerHTML = '<div style="text-align:center;padding:16px;color:var(--danger)">Failed to load: ' + e + '</div>';
+            });
+    };
+
+    window._closeASNMachinesDetail = function() {
+        var wrap = document.getElementById('asnMachinesDetail');
+        if (!wrap) return;
+        wrap.style.display = 'none';
+        delete wrap.dataset.asn;
+    };
+
 
     // ── Chart theme sync ──
     // These charts are created in other modules; we collect them at runtime
