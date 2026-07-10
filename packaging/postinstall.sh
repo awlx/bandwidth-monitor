@@ -5,6 +5,16 @@ set -e
 mkdir -p /var/lib/bandwidth-monitor
 chmod 0755 /var/lib/bandwidth-monitor
 
+# Seed configuration only on first install. It is deliberately not a package
+# conffile, so upgrades never prompt or replace administrator settings.
+config_dir=/etc/bandwidth-monitor
+config_file=$config_dir/env
+example_file=/usr/share/doc/bandwidth-monitor/env.example
+mkdir -p "$config_dir"
+if [ ! -e "$config_file" ]; then
+    install -m 0600 "$example_file" "$config_file"
+fi
+
 # Always enable and (re)start the service.  The old package's prerm may
 # have disabled it during upgrade; we cannot reliably detect this because
 # dpkg sometimes passes an empty old-version to postinst.
