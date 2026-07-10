@@ -68,6 +68,7 @@ func run(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
+	defer enricher.Close()
 	dns := resolver.New()
 	defer dns.Stop()
 	tracker := talkers.NewDirect(iface.Name, false, localNets, nil, dns)
@@ -118,8 +119,10 @@ func run(args []string, stdout, stderr io.Writer) error {
 			}
 			fmt.Fprint(stdout, "\x1b[H\x1b[2J")
 		}
-		fmt.Fprintf(stdout, "bandwidth-top  interface=%s  refresh=%s\n", iface.Name, refresh.String())
-		fmt.Fprint(stdout, bandwidthtop.Render(viewRows, outputWidth(stdout, *width)))
+		frameWidth := outputWidth(stdout, *width)
+		title := fmt.Sprintf("bandwidth-top  interface=%s  refresh=%s", iface.Name, refresh.String())
+		fmt.Fprintln(stdout, bandwidthtop.Truncate(title, frameWidth))
+		fmt.Fprint(stdout, bandwidthtop.Render(viewRows, frameWidth))
 		firstFrame = false
 		if *snapshot {
 			return nil

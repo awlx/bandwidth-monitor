@@ -3,33 +3,32 @@
 package bandwidthtop
 
 import (
-	"bufio"
 	"fmt"
-	"io"
 	"net"
-	"os"
-	"strconv"
-	"strings"
+
+	vnl "github.com/vishvananda/netlink"
 )
 
 func SelectInterface(name string) (*net.Interface, []*net.IPNet, string, error) {
+	var iface *net.Interface
+	var err error
 	if name == "" {
-		f, err := os.Open("/proc/net/route")
-		if err != nil {
-			return nil, nil, "", err
+		routes, routeErr := vnl.RouteList(nil, vnl.FAMILY_ALL)
+		if routeErr != nil {
+			return nil, nil, "", fmt.Errorf("list default routes: %w", routeErr)
 		}
-		name, err = defaultInterface(f)
-		f.Close()
+		iface, err = selectDefaultInterface(routes, net.InterfaceByIndex)
+	} else {
+		iface, err = net.InterfaceByName(name)
 		if err != nil {
-			return nil, nil, "", err
+			return nil, nil, "", fmt.Errorf("interface %q does not exist", name)
 		}
 	}
-	iface, err := net.InterfaceByName(name)
 	if err != nil {
-		return nil, nil, "", fmt.Errorf("interface %q does not exist", name)
+		return nil, nil, "", err
 	}
 	if iface.Flags&net.FlagUp == 0 {
-		return nil, nil, "", fmt.Errorf("interface %q is down", name)
+		return nil, nil, "", fmt.Errorf("interface %q is down", iface.Name)
 	}
 	addrs, err := iface.Addrs()
 	if err != nil {
@@ -49,38 +48,43 @@ func SelectInterface(name string) (*net.Interface, []*net.IPNet, string, error) 
 		}
 	}
 	if local == "" {
-		return nil, nil, "", fmt.Errorf("interface %q has no usable IP address", name)
+		return nil, nil, "", fmt.Errorf("interface %q has no usable IP address", iface.Name)
 	}
 	return iface, nets, local, nil
 }
 
-func defaultInterface(r io.Reader) (string, error) {
-	scanner := bufio.NewScanner(r)
-	if !scanner.Scan() {
-		return "", errorsNew("empty route table")
-	}
-	best, bestMetric := "", int64(^uint64(0)>>1)
-	for scanner.Scan() {
-		f := strings.Fields(scanner.Text())
-		if len(f) < 8 || f[1] != "00000000" || f[7] != "00000000" {
+func selectDefaultInterface(routes []vnl.Route, lookup func(int) (*net.Interface, error)) (*net.Interface, error) {
+	var best *net.Interface
+	bestMetric := int(^uint(0) >> 1)
+	for _, route := range routes {
+		if !isDefaultRoute(route) || route.LinkIndex <= 0 {
 			continue
 		}
-		flags, err1 := strconv.ParseUint(f[3], 16, 32)
-		metric, err2 := strconv.ParseInt(f[6], 10, 64)
-		if err1 != nil || err2 != nil || flags&1 == 0 {
+		iface, err := lookup(route.LinkIndex)
+		if err != nil || iface == nil || iface.Flags&net.FlagUp == 0 ||
+			iface.Flags&net.FlagLoopback != 0 {
 			continue
 		}
-		if metric < bestMetric {
-			best, bestMetric = f[0], metric
+		if best == nil || route.Priority < bestMetric ||
+			(route.Priority == bestMetric && (iface.Name < best.Name ||
+				(iface.Name == best.Name && iface.Index < best.Index))) {
+			copy := *iface
+			best = &copy
+			bestMetric = route.Priority
 		}
 	}
-	if err := scanner.Err(); err != nil {
-		return "", err
-	}
-	if best == "" {
-		return "", errorsNew("no default-route interface found")
+	if best == nil {
+		return nil, errorsNew("no active default-route interface found")
 	}
 	return best, nil
 }
 
-func errorsNew(s string) error { return fmt.Errorf("%s", s) }
+func isDefaultRoute(route vnl.Route) bool {
+	if route.Dst == nil {
+		return true
+	}
+	ones, _ := route.Dst.Mask.Size()
+	return ones == 0
+}
+
+func errorsNew(message string) error { return fmt.Errorf("%s", message) }

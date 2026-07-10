@@ -20,6 +20,8 @@ import (
 const (
 	DefaultPublicURL = "https://ip.ffmuc.net/json"
 	maxResponseBody  = 64 << 10
+	defaultCacheSize = 4096
+	defaultQueueSize = 256
 )
 
 type Enrichment struct {
@@ -38,8 +40,12 @@ type Config struct {
 	PublicURL     string
 	HTTPClient    *http.Client
 	Concurrency   int
+	CacheSize     int
+	QueueSize     int
 	DisablePublic bool
 	AllowHTTP     bool
+
+	lookupIP func(context.Context, string) ([]net.IP, error)
 }
 
 type cacheEntry struct {
@@ -48,12 +54,21 @@ type cacheEntry struct {
 }
 
 type Enricher struct {
-	cfg      Config
-	mu       sync.RWMutex
-	cache    map[string]cacheEntry
-	sem      chan struct{}
-	inFlight int
-	maxSeen  int
+	cfg           Config
+	monitorClient *http.Client
+	publicClient  *http.Client
+	lookupIP      func(context.Context, string) ([]net.IP, error)
+
+	mu        sync.RWMutex
+	cache     map[string]cacheEntry
+	order     []string
+	jobs      chan string
+	stopCh    chan struct{}
+	workers   sync.WaitGroup
+	closeOnce sync.Once
+	closed    bool
+	inFlight  int
+	maxSeen   int
 }
 
 func NewEnricher(cfg Config) (*Enricher, error) {
@@ -68,26 +83,124 @@ func NewEnricher(cfg Config) (*Enricher, error) {
 		if err != nil || u.Host == "" {
 			return nil, fmt.Errorf("invalid enrichment URL %q", raw)
 		}
-		isPublic := i == 1
-		if isPublic && !publicURLAllowed(u, cfg.AllowHTTP) {
-			return nil, fmt.Errorf("enrichment URL must use HTTPS")
+		if i == 1 && !publicURLAllowed(u, cfg.AllowHTTP) {
+			return nil, fmt.Errorf("public enrichment URL must use HTTPS")
 		}
-		if !isPublic && u.Scheme != "https" && u.Scheme != "http" {
+		if i == 0 && u.Scheme != "https" && u.Scheme != "http" {
 			return nil, fmt.Errorf("monitor URL must use HTTP or HTTPS")
 		}
-	}
-	if cfg.HTTPClient == nil {
-		cfg.HTTPClient = &http.Client{Timeout: 2 * time.Second}
 	}
 	if cfg.Concurrency <= 0 {
 		cfg.Concurrency = 4
 	}
-	return &Enricher{cfg: cfg, cache: make(map[string]cacheEntry), sem: make(chan struct{}, cfg.Concurrency)}, nil
+	if cfg.CacheSize <= 0 {
+		cfg.CacheSize = defaultCacheSize
+	}
+	if cfg.QueueSize <= 0 {
+		cfg.QueueSize = defaultQueueSize
+	}
+	lookupIP := cfg.lookupIP
+	if lookupIP == nil {
+		lookupIP = func(ctx context.Context, host string) ([]net.IP, error) {
+			addrs, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+			if err != nil {
+				return nil, err
+			}
+			ips := make([]net.IP, 0, len(addrs))
+			for _, addr := range addrs {
+				ips = append(ips, addr.IP)
+			}
+			return ips, nil
+		}
+	}
+
+	monitorClient := cloneHTTPClient(cfg.HTTPClient)
+	publicClient := cloneHTTPClient(cfg.HTTPClient)
+	transport := cloneTransport(publicClient.Transport)
+	transport.Proxy = nil
+	transport.DialTLSContext = nil
+	transport.DialContext = publicDialContext(cfg.AllowHTTP, lookupIP)
+	publicClient.Transport = schemeRoundTripper{base: transport}
+	publicClient.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if len(via) >= 5 {
+			return errors.New("too many public enrichment redirects")
+		}
+		return validatePublicDestination(req.Context(), req.URL, cfg.AllowHTTP, lookupIP)
+	}
+
+	e := &Enricher{
+		cfg:           cfg,
+		monitorClient: monitorClient,
+		publicClient:  publicClient,
+		lookupIP:      lookupIP,
+		cache:         make(map[string]cacheEntry, cfg.CacheSize),
+		order:         make([]string, 0, cfg.CacheSize),
+		jobs:          make(chan string, cfg.QueueSize),
+		stopCh:        make(chan struct{}),
+	}
+	for i := 0; i < cfg.Concurrency; i++ {
+		e.workers.Add(1)
+		go e.worker()
+	}
+	return e, nil
+}
+
+type publicSchemeContextKey struct{}
+
+type schemeRoundTripper struct {
+	base http.RoundTripper
+}
+
+func (s schemeRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	ctx := context.WithValue(req.Context(), publicSchemeContextKey{}, req.URL.Scheme)
+	return s.base.RoundTrip(req.Clone(ctx))
+}
+
+func publicDialContext(allowHTTP bool, lookupIP func(context.Context, string) ([]net.IP, error)) func(context.Context, string, string) (net.Conn, error) {
+	dialer := &net.Dialer{Timeout: 2 * time.Second}
+	return func(ctx context.Context, network, address string) (net.Conn, error) {
+		host, port, err := net.SplitHostPort(address)
+		if err != nil {
+			return nil, fmt.Errorf("invalid public dial address: %w", err)
+		}
+		scheme, _ := ctx.Value(publicSchemeContextKey{}).(string)
+		ips, err := resolveAndValidate(ctx, host, scheme == "http", allowHTTP, lookupIP)
+		if err != nil {
+			return nil, err
+		}
+		var lastErr error
+		for _, ip := range ips {
+			conn, err := dialer.DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
+			if err == nil {
+				return conn, nil
+			}
+			lastErr = err
+		}
+		return nil, lastErr
+	}
+}
+
+func cloneHTTPClient(base *http.Client) *http.Client {
+	if base == nil {
+		return &http.Client{Timeout: 2 * time.Second}
+	}
+	clone := *base
+	if clone.Timeout <= 0 {
+		clone.Timeout = 2 * time.Second
+	}
+	return &clone
+}
+
+func cloneTransport(base http.RoundTripper) *http.Transport {
+	if transport, ok := base.(*http.Transport); ok {
+		return transport.Clone()
+	}
+	return http.DefaultTransport.(*http.Transport).Clone()
 }
 
 func publicURLAllowed(u *url.URL, allowHTTP bool) bool {
-	return u.Scheme == "https" ||
-		(allowHTTP && u.Scheme == "http" && isLoopbackHost(u.Hostname()))
+	return u != nil && (u.Scheme == "https" ||
+		(allowHTTP && u.Scheme == "http" && isLoopbackHost(u.Hostname())))
 }
 
 func isLoopbackHost(host string) bool {
@@ -95,40 +208,42 @@ func isLoopbackHost(host string) bool {
 	return strings.EqualFold(host, "localhost") || (ip != nil && ip.IsLoopback())
 }
 
-// Lookup returns cached data immediately and starts one bounded background
-// lookup when remote fields are still missing.
-func (e *Enricher) Lookup(ip string) Enrichment {
-	parsed := net.ParseIP(ip)
-	if parsed == nil {
-		return Enrichment{Err: "invalid IP"}
+func validatePublicDestination(ctx context.Context, u *url.URL, allowHTTP bool, lookup func(context.Context, string) ([]net.IP, error)) error {
+	if !publicURLAllowed(u, allowHTTP) {
+		return errors.New("public enrichment destination must use HTTPS")
 	}
-	e.mu.RLock()
-	entry, ok := e.cache[ip]
-	e.mu.RUnlock()
-	if ok {
-		return entry.value
-	}
+	_, err := resolveAndValidate(ctx, u.Hostname(), u.Scheme == "http", allowHTTP, lookup)
+	return err
+}
 
-	value := e.local(ip)
-	if !publicEligible(parsed) || (value.ASN != 0 && value.Provider != "") {
-		e.mu.Lock()
-		e.cache[ip] = cacheEntry{value: value, done: true}
-		e.mu.Unlock()
-		return value
+func resolveAndValidate(ctx context.Context, host string, isHTTP, allowHTTP bool, lookup func(context.Context, string) ([]net.IP, error)) ([]net.IP, error) {
+	var ips []net.IP
+	if ip := net.ParseIP(host); ip != nil {
+		ips = []net.IP{ip}
+	} else {
+		var err error
+		ips, err = lookup(ctx, host)
+		if err != nil {
+			return nil, fmt.Errorf("resolve public enrichment host: %w", err)
+		}
 	}
-
-	e.mu.Lock()
-	if entry, ok = e.cache[ip]; !ok {
-		e.cache[ip] = cacheEntry{value: value}
-		go e.resolve(ip)
+	if len(ips) == 0 {
+		return nil, errors.New("public enrichment host resolved to no addresses")
 	}
-	e.mu.Unlock()
-	return value
+	for _, ip := range ips {
+		if isHTTP && allowHTTP && ip.IsLoopback() {
+			continue
+		}
+		if !publicEligible(ip) {
+			return nil, fmt.Errorf("public enrichment resolved to disallowed address %s", ip)
+		}
+	}
+	return ips, nil
 }
 
 var nonPublicRanges = func() []*net.IPNet {
 	cidrs := []string{
-		"0.0.0.0/8", "192.0.0.0/24", "192.0.2.0/24", "198.18.0.0/15",
+		"0.0.0.0/8", "100.64.0.0/10", "192.0.0.0/24", "192.0.2.0/24", "192.88.99.0/24", "198.18.0.0/15",
 		"198.51.100.0/24", "203.0.113.0/24", "224.0.0.0/4", "240.0.0.0/4",
 		"2001:db8::/32", "2001:10::/28", "ff00::/8",
 	}
@@ -158,55 +273,169 @@ func (e *Enricher) local(ip string) Enrichment {
 	if e.cfg.GeoDB == nil {
 		return out
 	}
-	if r := e.cfg.GeoDB.Lookup(ip); r != nil {
-		out.Country, out.City, out.ASN, out.Provider = first(r.CountryName, r.Country), r.City, r.ASN, r.ASOrg
-		if out.Country != "" || out.ASN != 0 || out.Provider != "" {
+	if result := e.cfg.GeoDB.Lookup(ip); result != nil {
+		out.Country = first(result.CountryName, result.Country)
+		out.City = result.City
+		out.ASN = result.ASN
+		out.Provider = result.ASOrg
+		if out.Country != "" || out.City != "" || out.ASN != 0 || out.Provider != "" {
 			out.Source = "local"
 		}
 	}
 	return out
 }
 
-func (e *Enricher) resolve(ip string) {
-	e.sem <- struct{}{}
-	e.mu.Lock()
-	e.inFlight++
-	if e.inFlight > e.maxSeen {
-		e.maxSeen = e.inFlight
+// Lookup returns cached data immediately and schedules at most one bounded
+// background lookup. Completed entries are evicted FIFO when CacheSize is
+// reached; in-flight entries are never evicted.
+func (e *Enricher) Lookup(ip string) Enrichment {
+	parsed := net.ParseIP(ip)
+	if parsed == nil {
+		return Enrichment{Err: "invalid IP"}
 	}
-	e.mu.Unlock()
-	defer func() {
-		e.mu.Lock()
-		e.inFlight--
-		e.mu.Unlock()
-		<-e.sem
-	}()
-
 	e.mu.RLock()
-	out := e.cache[ip].value
+	entry, ok := e.cache[ip]
 	e.mu.RUnlock()
+	if ok {
+		return entry.value
+	}
+
+	value := e.local(ip)
+	canMonitor := e.cfg.ServerURL != ""
+	canPublic := !e.cfg.DisablePublic && publicEligible(parsed)
+	if !needsFallback(value) || (!canMonitor && !canPublic) {
+		e.storeCompleted(ip, value)
+		return value
+	}
+	if !e.enqueue(ip, value) {
+		value.Err = "enrichment queue or cache full"
+	}
+	return value
+}
+
+func needsFallback(value Enrichment) bool {
+	return value.Hostname == "" || value.Country == "" || value.City == "" ||
+		value.Provider == "" || value.ASN == 0
+}
+
+func (e *Enricher) enqueue(ip string, value Enrichment) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.closed {
+		return false
+	}
+	if _, ok := e.cache[ip]; ok {
+		return true
+	}
+	if !e.makeCacheRoomLocked() {
+		return false
+	}
+	e.cache[ip] = cacheEntry{value: value}
+	e.order = append(e.order, ip)
+	select {
+	case e.jobs <- ip:
+		return true
+	default:
+		delete(e.cache, ip)
+		e.order = e.order[:len(e.order)-1]
+		return false
+	}
+}
+
+func (e *Enricher) storeCompleted(ip string, value Enrichment) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if _, ok := e.cache[ip]; ok {
+		return
+	}
+	if !e.makeCacheRoomLocked() {
+		return
+	}
+	e.cache[ip] = cacheEntry{value: value, done: true}
+	e.order = append(e.order, ip)
+}
+
+func (e *Enricher) makeCacheRoomLocked() bool {
+	for len(e.cache) >= e.cfg.CacheSize {
+		evicted := false
+		for i, ip := range e.order {
+			if entry, ok := e.cache[ip]; ok && entry.done {
+				delete(e.cache, ip)
+				e.order = append(e.order[:i], e.order[i+1:]...)
+				evicted = true
+				break
+			}
+		}
+		if !evicted {
+			return false
+		}
+	}
+	return true
+}
+
+func (e *Enricher) worker() {
+	defer e.workers.Done()
+	for {
+		select {
+		case <-e.stopCh:
+			return
+		default:
+		}
+		select {
+		case ip := <-e.jobs:
+			select {
+			case <-e.stopCh:
+				return
+			default:
+			}
+			e.mu.Lock()
+			e.inFlight++
+			if e.inFlight > e.maxSeen {
+				e.maxSeen = e.inFlight
+			}
+			e.mu.Unlock()
+			e.resolve(ip)
+			e.mu.Lock()
+			e.inFlight--
+			e.mu.Unlock()
+		case <-e.stopCh:
+			return
+		}
+	}
+}
+
+func (e *Enricher) resolve(ip string) {
+	e.mu.RLock()
+	entry, ok := e.cache[ip]
+	e.mu.RUnlock()
+	if !ok {
+		return
+	}
+	out := entry.value
 	var errs []string
-	if e.cfg.ServerURL != "" && (out.ASN == 0 || out.Provider == "") {
-		v, err := e.fetch(ip, e.cfg.ServerURL, true)
+	if e.cfg.ServerURL != "" && needsFallback(out) {
+		value, err := e.fetch(ip, e.cfg.ServerURL, true)
 		if err != nil {
 			errs = append(errs, "monitor: "+err.Error())
 		} else {
-			merge(&out, v, "monitor")
+			merge(&out, value, "monitor")
 		}
 	}
-	if !e.cfg.DisablePublic && (out.ASN == 0 || out.Provider == "") {
-		v, err := e.fetch(ip, e.cfg.PublicURL, false)
+	if !e.cfg.DisablePublic && publicEligible(net.ParseIP(ip)) && needsFallback(out) {
+		value, err := e.fetch(ip, e.cfg.PublicURL, false)
 		if err != nil {
 			errs = append(errs, "public: "+err.Error())
 		} else {
-			merge(&out, v, "public")
+			merge(&out, value, "public")
 		}
 	}
 	if len(errs) > 0 {
 		out.Err = strings.Join(errs, "; ")
 	}
 	e.mu.Lock()
-	e.cache[ip] = cacheEntry{value: out, done: true}
+	if _, ok := e.cache[ip]; ok {
+		e.cache[ip] = cacheEntry{value: out, done: true}
+	}
 	e.mu.Unlock()
 }
 
@@ -257,15 +486,24 @@ func (e *Enricher) fetch(ip, base string, monitor bool) (Enrichment, error) {
 	u.RawQuery = q.Encode()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
-	respHTTP, err := e.cfg.HTTPClient.Do(req)
+	if !monitor {
+		if err := validatePublicDestination(ctx, u, e.cfg.AllowHTTP, e.lookupIP); err != nil {
+			return Enrichment{}, err
+		}
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	if err != nil {
+		return Enrichment{}, err
+	}
+	client := e.publicClient
+	if monitor {
+		client = e.monitorClient
+	}
+	respHTTP, err := client.Do(req)
 	if err != nil {
 		return Enrichment{}, err
 	}
 	defer respHTTP.Body.Close()
-	if !monitor && !publicURLAllowed(respHTTP.Request.URL, e.cfg.AllowHTTP) {
-		return Enrichment{}, errors.New("public enrichment redirected away from HTTPS")
-	}
 	if respHTTP.StatusCode != http.StatusOK {
 		return Enrichment{}, fmt.Errorf("HTTP %d", respHTTP.StatusCode)
 	}
@@ -317,9 +555,9 @@ func parseASN(raw json.RawMessage) (uint, error) {
 }
 
 func first(values ...string) string {
-	for _, v := range values {
-		if v != "" {
-			return v
+	for _, value := range values {
+		if value != "" {
+			return value
 		}
 	}
 	return ""
@@ -329,6 +567,10 @@ func first(values ...string) string {
 func (e *Enricher) Wait() {
 	for {
 		e.mu.RLock()
+		if e.closed {
+			e.mu.RUnlock()
+			return
+		}
 		pending := false
 		for _, entry := range e.cache {
 			if !entry.done {
@@ -342,4 +584,23 @@ func (e *Enricher) Wait() {
 		}
 		time.Sleep(time.Millisecond)
 	}
+}
+
+func (e *Enricher) Close() {
+	e.closeOnce.Do(func() {
+		e.mu.Lock()
+		e.closed = true
+		e.mu.Unlock()
+		close(e.stopCh)
+		e.workers.Wait()
+		e.mu.Lock()
+		for ip, entry := range e.cache {
+			if !entry.done {
+				entry.done = true
+				entry.value.Err = "enrichment stopped"
+				e.cache[ip] = entry
+			}
+		}
+		e.mu.Unlock()
+	})
 }

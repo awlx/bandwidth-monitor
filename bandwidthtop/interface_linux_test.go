@@ -3,18 +3,79 @@
 package bandwidthtop
 
 import (
-	"strings"
+	"errors"
+	"net"
 	"testing"
+
+	vnl "github.com/vishvananda/netlink"
 )
 
-func TestDefaultInterfaceChoosesLowestMetricUpRoute(t *testing.T) {
-	table := `Iface Destination Gateway Flags RefCnt Use Metric Mask
-eth1 00000000 010200C0 0003 0 0 200 00000000
-eth0 00000000 010200C0 0003 0 0 10 00000000
-eth2 00000000 010200C0 0000 0 0 1 00000000
-`
-	got, err := defaultInterface(strings.NewReader(table))
-	if err != nil || got != "eth0" {
-		t.Fatalf("got %q, %v", got, err)
+func TestDefaultInterfaceChoosesLowestMetricAcrossFamilies(t *testing.T) {
+	_, ipv6Default, _ := net.ParseCIDR("::/0")
+	routes := []vnl.Route{
+		{LinkIndex: 2, Priority: 200},
+		{LinkIndex: 3, Priority: 10, Dst: ipv6Default},
+	}
+	got, err := selectDefaultInterface(routes, interfaceLookup(map[int]*net.Interface{
+		2: {Index: 2, Name: "eth1", Flags: net.FlagUp},
+		3: {Index: 3, Name: "eth0", Flags: net.FlagUp},
+	}))
+	if err != nil || got.Name != "eth0" {
+		t.Fatalf("got %+v, %v", got, err)
+	}
+}
+
+func TestDefaultInterfaceSupportsIPv6Only(t *testing.T) {
+	_, ipv6Default, _ := net.ParseCIDR("::/0")
+	got, err := selectDefaultInterface([]vnl.Route{{
+		LinkIndex: 7, Priority: 5, Dst: ipv6Default,
+	}}, interfaceLookup(map[int]*net.Interface{
+		7: {Index: 7, Name: "wan6", Flags: net.FlagUp},
+	}))
+	if err != nil || got.Name != "wan6" {
+		t.Fatalf("got %+v, %v", got, err)
+	}
+}
+
+func TestDefaultInterfaceTieIsDeterministic(t *testing.T) {
+	routes := []vnl.Route{
+		{LinkIndex: 4, Priority: 10},
+		{LinkIndex: 2, Priority: 10},
+	}
+	got, err := selectDefaultInterface(routes, interfaceLookup(map[int]*net.Interface{
+		4: {Index: 4, Name: "eth1", Flags: net.FlagUp},
+		2: {Index: 2, Name: "eth0", Flags: net.FlagUp},
+	}))
+	if err != nil || got.Name != "eth0" {
+		t.Fatalf("got %+v, %v", got, err)
+	}
+}
+
+func TestDefaultInterfaceSkipsDownMissingLoopbackAndNonDefault(t *testing.T) {
+	_, nonDefault, _ := net.ParseCIDR("192.0.2.0/24")
+	routes := []vnl.Route{
+		{LinkIndex: 1, Priority: 1},
+		{LinkIndex: 2, Priority: 2},
+		{LinkIndex: 3, Priority: 3},
+		{LinkIndex: 4, Priority: 4, Dst: nonDefault},
+		{LinkIndex: 5, Priority: 5},
+	}
+	got, err := selectDefaultInterface(routes, interfaceLookup(map[int]*net.Interface{
+		1: {Index: 1, Name: "lo", Flags: net.FlagUp | net.FlagLoopback},
+		2: {Index: 2, Name: "down0", Flags: 0},
+		4: {Index: 4, Name: "specific0", Flags: net.FlagUp},
+		5: {Index: 5, Name: "eth0", Flags: net.FlagUp},
+	}))
+	if err != nil || got.Name != "eth0" {
+		t.Fatalf("got %+v, %v", got, err)
+	}
+}
+
+func interfaceLookup(interfaces map[int]*net.Interface) func(int) (*net.Interface, error) {
+	return func(index int) (*net.Interface, error) {
+		if iface := interfaces[index]; iface != nil {
+			return iface, nil
+		}
+		return nil, errors.New("missing interface")
 	}
 }

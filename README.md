@@ -195,8 +195,8 @@ sudo ./bandwidth-top --interface eth0 --rows 20 --refresh 1s
 ./bandwidth-top --snapshot --no-public
 ```
 
-When `--interface` is omitted, the lowest-metric active default-route interface
-is selected. Capture requires root or `CAP_NET_RAW`:
+When `--interface` is omitted, the lowest-metric active IPv4 or IPv6
+default-route interface is selected. Capture requires root or `CAP_NET_RAW`:
 
 ```bash
 sudo setcap cap_net_raw+ep /usr/bin/bandwidth-top
@@ -223,8 +223,8 @@ Use `--snapshot` for plain, non-ANSI output.
 MMDB files are discovered in the current directory,
 `/usr/share/bandwidth-monitor`, and `/opt/bandwidth-monitor`. Enrichment fills
 missing fields in order: local MMDB, configured `--server` `/api/host`, then
-ip.ffmuc.net. Lookups are asynchronous, bounded, validated, and cached for the
-process lifetime.
+ip.ffmuc.net. Lookups use a fixed worker pool and queue, validate every public
+redirect and resolved destination, and use a bounded FIFO-evicted result cache.
 
 > **Privacy:** public fallback sends each observed globally routable peer IP to
 > ip.ffmuc.net. Use `--no-public` to prevent this. Private, loopback,
