@@ -33,8 +33,3 @@ and companion clients use the same API.
 `/api/events` streams interface rates, talkers, DNS, WiFi, latency, and related
 live summaries. Conntrack and topology are polled through their dedicated
 endpoints.
-
-The API currently has no authentication layer. Bind the daemon only to trusted
-interfaces or place it behind an authenticated reverse proxy before exposing
-it outside a trusted network. HTTPS can be enabled directly as described in
-[Configuration](configuration.md#https).
