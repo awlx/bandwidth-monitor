@@ -31,8 +31,21 @@ func TestInvalidLocalNetworkFailsBeforeCapture(t *testing.T) {
 	}
 }
 
-func TestOutputWidthUsesExplicitValue(t *testing.T) {
-	if got := outputWidth(&bytes.Buffer{}, 73); got != 73 {
-		t.Fatalf("got %d", got)
+func TestTerminalDimensionsUseConfiguredUpperBound(t *testing.T) {
+	session := newTerminalSession(&bytes.Buffer{}, true, func() terminalDimensions {
+		return terminalDimensions{width: 100, height: 30}
+	})
+	if got := session.dimensions(73); got.width != 72 || got.height != 30 {
+		t.Fatalf("got %+v", got)
+	}
+	if got := session.dimensions(200); got.width != 99 || got.height != 30 {
+		t.Fatalf("live width exceeded terminal: %+v", got)
+	}
+
+	snapshot := newTerminalSession(&bytes.Buffer{}, false, func() terminalDimensions {
+		return terminalDimensions{width: 120, height: 24}
+	})
+	if got := snapshot.dimensions(200); got.width != 200 || got.height != 24 {
+		t.Fatalf("snapshot ignored explicit width: %+v", got)
 	}
 }

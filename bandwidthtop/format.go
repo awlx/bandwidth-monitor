@@ -40,6 +40,7 @@ type flowLayout struct {
 	rank, local, arrow, remote int
 	asn, provider, graph, rate int
 	showASN, showProvider      bool
+	showGraph                  bool
 }
 
 const (
@@ -202,23 +203,33 @@ func Render(rows []Row, width int) string {
 }
 
 func RenderSnapshot(rows []Row, totals Totals, width int) string {
-	return renderFlows(rows, totals, width, false)
+	return RenderSnapshotWithRowLimit(rows, totals, width, len(rows))
 }
 
 func RenderLive(rows []Row, totals Totals, width int) string {
-	return renderFlows(rows, totals, width, true)
+	return RenderLiveWithRowLimit(rows, totals, width, len(rows))
 }
 
-func renderFlows(rows []Row, totals Totals, width int, ansi bool) string {
+func RenderSnapshotWithRowLimit(rows []Row, totals Totals, width, maxRows int) string {
+	return renderFlows(rows, totals, width, maxRows, false)
+}
+
+func RenderLiveWithRowLimit(rows []Row, totals Totals, width, maxRows int) string {
+	return renderFlows(rows, totals, width, maxRows, true)
+}
+
+func renderFlows(rows []Row, totals Totals, width, maxRows int, ansi bool) string {
 	if width <= 0 {
 		width = 120
 	}
-	layout, structured := makeFlowLayout(width)
+	layout, structured := makeFlowLayout(width, rankWidth(maxRows))
 	maxRate := maximumDirectionalRate(rows)
 	var b strings.Builder
 	if structured {
-		b.WriteString(color(ansiDim, flowLine(layout, "", "", "", "", "", "", graphRuler(maxRate, layout.graph), "", "", ""), ansi))
-		b.WriteByte('\n')
+		if layout.showGraph {
+			b.WriteString(color(ansiDim, flowLine(layout, "", "", "", "", "", "", graphRuler(maxRate, layout.graph), "", "", ""), ansi))
+			b.WriteByte('\n')
+		}
 		header := flowLine(layout, "#", "LOCAL", "  ", "REMOTE", "ASN", "PROVIDER", "GRAPH", "2s", "10s", "40s")
 		b.WriteString(color(ansiBold, header, ansi))
 		b.WriteByte('\n')
@@ -269,32 +280,50 @@ func renderFlows(rows []Row, totals Totals, width int, ansi bool) string {
 	return b.String()
 }
 
-func makeFlowLayout(width int) (flowLayout, bool) {
-	layout := flowLayout{rank: 2, local: 7, arrow: 2, remote: 7, graph: 5, rate: 6}
+func rankWidth(maxRows int) int {
+	if maxRows < 1 {
+		maxRows = 1
+	}
+	return max(2, len(strconv.Itoa(maxRows)))
+}
+
+func makeFlowLayout(width, rank int) (flowLayout, bool) {
+	layout := flowLayout{rank: rank, local: 7, arrow: 2, remote: 7, graph: 5, rate: 6}
+	asnOnly := layout
+	asnOnly.showASN, asnOnly.asn = true, 12
+	asnGraph := asnOnly
+	asnGraph.showGraph = true
+	all := asnGraph
+	all.showProvider, all.provider = true, 8
+	graphOnly := layout
+	graphOnly.showGraph = true
 	switch {
-	case width >= 65:
-		layout.showASN = true
-		layout.asn = 7
-		layout.showProvider = true
-		layout.provider = 8
-	case width >= 56:
-		layout.showASN = true
-		layout.asn = 7
-	case width < 48:
+	case width >= flowLayoutWidth(all)+16:
+		layout = all
+	case width >= flowLayoutWidth(asnGraph):
+		layout = asnGraph
+	case width >= flowLayoutWidth(asnOnly):
+		layout = asnOnly
+	case width >= flowLayoutWidth(graphOnly):
+		layout = graphOnly
+	case width < flowLayoutWidth(layout):
 		return flowLayout{}, false
 	}
 	extra := width - flowLayoutWidth(layout)
 	growColumnsEven(&layout.local, &layout.remote, 15, &extra)
-	growColumn(&layout.graph, 10, &extra)
 	if layout.showProvider {
-		growColumn(&layout.provider, 12, &extra)
+		growColumn(&layout.provider, 16, &extra)
 	}
 	growColumnsEven(&layout.local, &layout.remote, 39, &extra)
-	growColumn(&layout.graph, 24, &extra)
+	if layout.showGraph {
+		growColumn(&layout.graph, 24, &extra)
+	}
 	if layout.showProvider {
 		growColumn(&layout.provider, 24, &extra)
 	}
-	growColumn(&layout.graph, 40, &extra)
+	if layout.showGraph {
+		growColumn(&layout.graph, 40, &extra)
+	}
 	if layout.showProvider {
 		growColumn(&layout.provider, 40, &extra)
 	}
@@ -322,7 +351,7 @@ func growColumnsEven(left, right *int, limit int, extra *int) {
 
 func flowLayoutWidth(layout flowLayout) int {
 	widths := layout.widths()
-	total := len(widths) - 2
+	total := len(widths) - 1
 	for _, width := range widths {
 		total += width
 	}
@@ -337,7 +366,10 @@ func (layout flowLayout) widths() []int {
 	if layout.showProvider {
 		widths = append(widths, layout.provider)
 	}
-	return append(widths, layout.graph, layout.rate, layout.rate, layout.rate)
+	if layout.showGraph {
+		widths = append(widths, layout.graph)
+	}
+	return append(widths, layout.rate, layout.rate, layout.rate)
 }
 
 func flowLine(layout flowLayout, rank, local, arrow, remote, asn, provider, graph, rate2, rate10, rate40 string) string {
@@ -348,13 +380,16 @@ func flowLine(layout flowLayout, rank, local, arrow, remote, asn, provider, grap
 	if layout.showProvider {
 		values = append(values, provider)
 	}
-	values = append(values, graph, rate2, rate10, rate40)
+	if layout.showGraph {
+		values = append(values, graph)
+	}
+	values = append(values, rate2, rate10, rate40)
 	widths := layout.widths()
 	cells := make([]string, len(values))
 	for i := range values {
-		cells[i] = fitCell(values[i], widths[i], i >= len(values)-3)
+		cells[i] = fitCell(values[i], widths[i], i == 0 || i >= len(values)-3)
 	}
-	return joinFlowCells(cells)
+	return strings.Join(cells, " ")
 }
 
 func flowLineStyled(layout flowLayout, rank, local, arrow, remote, asn, provider, graph, rate2, rate10, rate40, style string, ansi bool) string {
@@ -368,23 +403,21 @@ func flowLineStyled(layout flowLayout, rank, local, arrow, remote, asn, provider
 	if layout.showProvider {
 		values = append(values, provider)
 	}
-	values = append(values, graph, rate2, rate10, rate40)
+	if layout.showGraph {
+		values = append(values, graph)
+	}
+	values = append(values, rate2, rate10, rate40)
 	widths := layout.widths()
 	cells := make([]string, len(values))
 	for i := range values {
-		cells[i] = fitCell(values[i], widths[i], i >= len(values)-3)
+		cells[i] = fitCell(values[i], widths[i], i == 0 || i >= len(values)-3)
 	}
 	cells[0] = color(ansiBold, cells[0], true)
 	cells[2] = color(style, cells[2], true)
-	cells[len(cells)-4] = color(style, cells[len(cells)-4], true)
-	return joinFlowCells(cells)
-}
-
-func joinFlowCells(cells []string) string {
-	if len(cells) < 2 {
-		return strings.Join(cells, " ")
+	if layout.showGraph {
+		cells[len(cells)-4] = color(style, cells[len(cells)-4], true)
 	}
-	return cells[0] + cells[1] + " " + strings.Join(cells[2:], " ")
+	return strings.Join(cells, " ")
 }
 
 func fitCell(value string, width int, right bool) string {
@@ -450,8 +483,8 @@ func remoteHost(row Row) string {
 }
 
 func formatASN(asn uint) string {
-	if asn == 0 {
-		return ""
+	if asn == 0 || uint64(asn) > uint64(1<<32-1) {
+		return "-"
 	}
 	return fmt.Sprintf("AS%d", asn)
 }

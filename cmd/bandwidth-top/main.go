@@ -16,8 +16,6 @@ import (
 	"bandwidth-monitor/bandwidthtop"
 	"bandwidth-monitor/resolver"
 	"bandwidth-monitor/talkers"
-
-	"golang.org/x/sys/unix"
 )
 
 func main() {
@@ -75,6 +73,14 @@ func run(args []string, stdout, stderr io.Writer) error {
 	for _, warning := range enricher.StartupWarnings() {
 		fmt.Fprintln(stderr, "bandwidth-top:", warning)
 	}
+	liveTerminal := supportsLiveTerminal(stdout, *snapshot, os.Getenv("TERM"))
+	singleFrame := *snapshot || !liveTerminal
+	if !*snapshot && !liveTerminal {
+		fmt.Fprintln(stderr, "bandwidth-top: non-interactive terminal; rendering one plain snapshot")
+	}
+	terminal := newTerminalSession(stdout, liveTerminal, func() terminalDimensions {
+		return terminalSize(stdout)
+	})
 	dns := resolver.New()
 	defer dns.Stop()
 	tracker := talkers.NewDirect(iface.Name, false, localNetworks, nil, dns)
@@ -83,7 +89,7 @@ func run(args []string, stdout, stderr io.Writer) error {
 	defer tracker.Stop()
 
 	delay := *refresh
-	if *snapshot && delay < 1200*time.Millisecond {
+	if singleFrame && delay < 1200*time.Millisecond {
 		delay = 1200 * time.Millisecond
 	}
 	timer := time.NewTimer(delay)
@@ -91,6 +97,9 @@ func run(args []string, stdout, stderr io.Writer) error {
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
 	defer signal.Stop(signals)
+	resizes := make(chan os.Signal, 1)
+	signal.Notify(resizes, syscall.SIGWINCH)
+	defer signal.Stop(resizes)
 	select {
 	case <-signals:
 		return nil
@@ -99,84 +108,83 @@ func run(args []string, stdout, stderr io.Writer) error {
 	case <-timer.C:
 	}
 
-	firstFrame := true
-	for {
-		stats, rateTotals := tracker.DirectBandwidthSnapshot(*rows)
-		viewRows := make([]bandwidthtop.Row, 0, len(stats))
-		for _, stat := range stats {
-			viewRows = append(viewRows, bandwidthtop.Row{
-				LocalIP: stat.LocalIP,
-				Stat: bandwidthtop.Stat{
-					IP: stat.IP, Hostname: stat.Hostname, Packets: stat.Packets,
-					Rx: bandwidthtop.RateWindows{
-						Two: stat.RxRate, Ten: stat.RxRate10, Forty: stat.RxRate40,
+	return terminal.withScreen(func() error {
+		for {
+			stats, rateTotals := tracker.DirectBandwidthSnapshot(*rows)
+			viewRows := make([]bandwidthtop.Row, 0, len(stats))
+			for _, stat := range stats {
+				viewRows = append(viewRows, bandwidthtop.Row{
+					LocalIP: stat.LocalIP,
+					Stat: bandwidthtop.Stat{
+						IP: stat.IP, Hostname: stat.Hostname, Packets: stat.Packets,
+						Rx: bandwidthtop.RateWindows{
+							Two: stat.RxRate, Ten: stat.RxRate10, Forty: stat.RxRate40,
+						},
+						Tx: bandwidthtop.RateWindows{
+							Two: stat.TxRate, Ten: stat.TxRate10, Forty: stat.TxRate40,
+						},
 					},
-					Tx: bandwidthtop.RateWindows{
-						Two: stat.TxRate, Ten: stat.TxRate10, Forty: stat.TxRate40,
-					},
+					Info: enricher.Lookup(stat.IP),
+				})
+			}
+			totals := bandwidthtop.Totals{
+				Rx: bandwidthtop.RateWindows{
+					Two: rateTotals.RxRate, Ten: rateTotals.RxRate10, Forty: rateTotals.RxRate40,
 				},
-				Info: enricher.Lookup(stat.IP),
-			})
-		}
-		totals := bandwidthtop.Totals{
-			Rx: bandwidthtop.RateWindows{
-				Two: rateTotals.RxRate, Ten: rateTotals.RxRate10, Forty: rateTotals.RxRate40,
-			},
-			Tx: bandwidthtop.RateWindows{
-				Two: rateTotals.TxRate, Ten: rateTotals.TxRate10, Forty: rateTotals.TxRate40,
-			},
-		}
-		if *snapshot {
-			enricher.Wait()
-			for i := range viewRows {
-				viewRows[i].Info = enricher.Lookup(viewRows[i].Stat.IP)
+				Tx: bandwidthtop.RateWindows{
+					Two: rateTotals.TxRate, Ten: rateTotals.TxRate10, Forty: rateTotals.TxRate40,
+				},
+			}
+			if singleFrame {
+				enricher.Wait()
+				for i := range viewRows {
+					viewRows[i].Info = enricher.Lookup(viewRows[i].Stat.IP)
+				}
+			}
+			size := terminal.dimensions(*width)
+			title := fmt.Sprintf("bandwidth-top  interface=%s  refresh=%s  rates=bit/s",
+				iface.Name, refresh.String())
+			status := enricher.SourceStatusLines(size.width)
+			if lookupStatus := lookupErrorStatus(viewRows); lookupStatus != "" {
+				status = append(status, lookupStatus)
+			}
+			frame := composeFrame(title, status, viewRows, totals, *rows, size, liveTerminal)
+			if err := terminal.draw(frame); err != nil {
+				return err
+			}
+			if singleFrame {
+				return nil
+			}
+			timer.Reset(*refresh)
+			select {
+			case <-signals:
+				return nil
+			case err := <-tracker.Errors():
+				return fmt.Errorf("capture %s failed: %w (run as root or grant CAP_NET_RAW)", iface.Name, err)
+			case <-resizes:
+				if !timer.Stop() {
+					select {
+					case <-timer.C:
+					default:
+					}
+				}
+			case <-timer.C:
 			}
 		}
-		if !*snapshot {
-			if firstFrame {
-				fmt.Fprint(stdout, "\x1b[?25l")
-			}
-			fmt.Fprint(stdout, "\x1b[H\x1b[2J")
-		}
-		frameWidth := outputWidth(stdout, *width)
-		title := fmt.Sprintf("bandwidth-top  interface=%s  refresh=%s  rates=bit/s",
-			iface.Name, refresh.String())
-		fmt.Fprintln(stdout, bandwidthtop.Truncate(title, frameWidth))
-		for _, status := range enricher.SourceStatusLines(frameWidth) {
-			fmt.Fprintln(stdout, status)
-		}
-		if *snapshot {
-			fmt.Fprint(stdout, bandwidthtop.RenderSnapshot(viewRows, totals, frameWidth))
-		} else {
-			fmt.Fprint(stdout, bandwidthtop.RenderLive(viewRows, totals, frameWidth))
-		}
-		firstFrame = false
-		if *snapshot {
-			return nil
-		}
-		timer.Reset(*refresh)
-		select {
-		case <-signals:
-			fmt.Fprint(stdout, "\x1b[?25h")
-			return nil
-		case err := <-tracker.Errors():
-			fmt.Fprint(stdout, "\x1b[?25h")
-			return fmt.Errorf("capture %s failed: %w (run as root or grant CAP_NET_RAW)", iface.Name, err)
-		case <-timer.C:
-		}
-	}
+	})
 }
 
-func outputWidth(w io.Writer, configured int) int {
-	if configured > 0 {
-		return configured
-	}
-	if file, ok := w.(*os.File); ok {
-		if size, err := unix.IoctlGetWinsize(int(file.Fd()), unix.TIOCGWINSZ); err == nil && size.Col > 0 {
-			return int(size.Col)
+func lookupErrorStatus(rows []bandwidthtop.Row) string {
+	count := 0
+	for _, row := range rows {
+		if row.Info.Err != "" {
+			count++
 		}
 	}
-	return 120
+	if count == 0 {
+		return ""
+	}
+	return fmt.Sprintf("enrichment lookups: %d unavailable", count)
 }
 
 func discover(name string) string {

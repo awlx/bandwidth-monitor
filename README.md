@@ -210,14 +210,20 @@ uses two linked lines: `=>` for outbound traffic and `<=` for inbound traffic,
 with an iftop-style bandwidth ruler, proportional graph-lane bars, and rolling
 2s, 10s, and 40s rates. Remote IP, ASN, and provider have independent headed
 columns on the primary line; the inbound continuation leaves those cells blank
-and aligned. Narrow layouts shrink or drop whole optional columns rather than
-merging metadata into the remote host. The footer summarizes TX, RX, and total
-rates across all observed peers, including peers below the row limit.
+and aligned. A shown ASN always has room for the full `AS4294967295`; narrower
+layouts truncate and then drop provider before dropping ASN, and drop optional
+columns whole rather than merging metadata into the remote host. The footer
+summarizes TX, RX, and total rates across all observed peers, including peers
+below the row limit.
 
 Each flow is one local/remote endpoint pair, counted once with direction relative
 to the actual local endpoint. Local-to-local and remote-to-remote packets are
 excluded because they have no unambiguous peer direction. Live output uses
-restrained direction colors; `--snapshot` is deterministic plain text.
+restrained direction colors in the terminal's alternate screen, adapts the
+pair limit on resize, and always restores the original screen and cursor.
+`--snapshot` is deterministic plain text. Redirected output, `TERM=dumb`, and
+other unsupported terminals automatically emit one plain snapshot instead of
+cursor-control animation.
 LOCAL classification uses only the selected interface's assigned unicast
 prefixes and netmasks; address categories such as RFC1918 or ULA are not local
 by themselves. Repeatable `--local-network CIDR` flags replace all
