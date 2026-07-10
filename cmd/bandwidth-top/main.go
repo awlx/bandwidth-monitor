@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -34,6 +35,7 @@ func run(args []string, stdout, stderr io.Writer) error {
 	rows := fs.Int("rows", 20, "maximum rows")
 	refresh := fs.Duration("refresh", time.Second, "refresh interval")
 	snapshot := fs.Bool("snapshot", false, "print one plain snapshot and exit")
+	ports := fs.Bool("ports", false, "aggregate by remote port and protocol (view: ports)")
 	asnPath := fs.String("asn-mmdb", discover("GeoLite2-ASN.mmdb"), "ASN MMDB path")
 	cityPath := fs.String("city-mmdb", discoverCity(), "city/country MMDB path")
 	server := fs.String("server", "", "bandwidth-monitor base URL for enrichment")
@@ -89,6 +91,12 @@ func run(args []string, stdout, stderr io.Writer) error {
 		defer dns.Stop()
 	}
 	tracker := talkers.NewDirect(iface.Name, false, localNetworks, nil, dns)
+	viewMode := bandwidthtop.ViewHosts
+	directViewMode := talkers.DirectViewHosts
+	if *ports {
+		viewMode = bandwidthtop.ViewPorts
+		directViewMode = talkers.DirectViewPorts
+	}
 	log.SetOutput(io.Discard)
 	go tracker.Run()
 	defer tracker.Stop()
@@ -115,7 +123,7 @@ func run(args []string, stdout, stderr io.Writer) error {
 
 	return terminal.withScreen(func() error {
 		for {
-			stats, rateTotals := tracker.DirectBandwidthSnapshot(*rows)
+			stats, rateTotals := tracker.DirectBandwidthSnapshotForMode(directViewMode, *rows)
 			viewRows := make([]bandwidthtop.Row, 0, len(stats))
 			for _, stat := range stats {
 				viewRows = append(viewRows, bandwidthtop.Row{
@@ -132,6 +140,13 @@ func run(args []string, stdout, stderr io.Writer) error {
 					},
 					Info: enricher.Lookup(stat.IP),
 				})
+				if viewMode == bandwidthtop.ViewPorts {
+					viewRows[len(viewRows)-1].Protocol = stat.Protocol
+					viewRows[len(viewRows)-1].Port = "-"
+					if stat.HasPort {
+						viewRows[len(viewRows)-1].Port = strconv.FormatUint(uint64(stat.RemotePort), 10)
+					}
+				}
 			}
 			totals := bandwidthtop.Totals{
 				Rx: bandwidthtop.RateWindows{
@@ -148,13 +163,17 @@ func run(args []string, stdout, stderr io.Writer) error {
 				}
 			}
 			size := terminal.dimensions(*width)
-			title := fmt.Sprintf("bandwidth-top  interface=%s  refresh=%s  rates=bit/s",
-				iface.Name, refresh.String())
+			viewName := "hosts"
+			if viewMode == bandwidthtop.ViewPorts {
+				viewName = "ports"
+			}
+			title := fmt.Sprintf("bandwidth-top  interface=%s  refresh=%s  view: %s  rates=bit/s",
+				iface.Name, refresh.String(), viewName)
 			status := enricher.SourceStatusLines(size.width)
 			if lookupStatus := lookupErrorStatus(viewRows); lookupStatus != "" {
 				status = append(status, lookupStatus)
 			}
-			frame := composeFrame(title, status, viewRows, totals, *rows, size, liveTerminal)
+			frame := composeFrameForMode(title, status, viewRows, totals, *rows, size, liveTerminal, viewMode)
 			if err := terminal.draw(frame); err != nil {
 				return err
 			}

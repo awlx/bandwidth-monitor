@@ -21,6 +21,7 @@ func TestHelpDoesNotStartCapture(t *testing.T) {
 		!strings.Contains(stderr.String(), "CAP_NET_RAW") ||
 		!strings.Contains(stderr.String(), "checked once at startup") ||
 		!strings.Contains(stderr.String(), "local-network") ||
+		!strings.Contains(stderr.String(), "ports") ||
 		!strings.Contains(stderr.String(), "no-resolve") ||
 		!strings.Contains(stderr.String(), "-n") {
 		t.Fatalf("unexpected help:\n%s", stderr.String())

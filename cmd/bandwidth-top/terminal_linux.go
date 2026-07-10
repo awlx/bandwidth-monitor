@@ -118,6 +118,10 @@ func (t *terminalSession) dimensions(configuredWidth int) terminalDimensions {
 }
 
 func composeFrame(title string, status []string, rows []bandwidthtop.Row, totals bandwidthtop.Totals, maxRows int, size terminalDimensions, ansi bool) string {
+	return composeFrameForMode(title, status, rows, totals, maxRows, size, ansi, bandwidthtop.ViewHosts)
+}
+
+func composeFrameForMode(title string, status []string, rows []bandwidthtop.Row, totals bandwidthtop.Totals, maxRows int, size terminalDimensions, ansi bool, mode bandwidthtop.ViewMode) string {
 	width := size.width
 	if width <= 0 {
 		width = defaultWidth
@@ -125,7 +129,7 @@ func composeFrame(title string, status []string, rows []bandwidthtop.Row, totals
 	title = bandwidthtop.Truncate(title, width)
 	if !ansi || size.height <= 0 {
 		lines := append([]string{title}, boundedLines(status, width)...)
-		lines = append(lines, splitFrame(bandwidthtop.RenderSnapshotWithRowLimit(rows, totals, width, maxRows))...)
+		lines = append(lines, splitFrame(bandwidthtop.RenderSnapshotForMode(rows, totals, width, maxRows, mode))...)
 		return strings.Join(lines, "\n")
 	}
 
@@ -141,20 +145,24 @@ func composeFrame(title string, status []string, rows []bandwidthtop.Row, totals
 				rows = rows[:pairLimit]
 			}
 			lines := append([]string{title}, status...)
-			lines = append(lines, splitFrame(bandwidthtop.RenderLiveWithRowLimit(rows, totals, width, maxRows))...)
+			lines = append(lines, splitFrame(bandwidthtop.RenderLiveForMode(rows, totals, width, maxRows, mode))...)
 			return strings.Join(lines, "\n")
 		}
 	}
-	return composeShortFrame(title, status, rows, totals, maxRows, width, height)
+	return composeShortFrameForMode(title, status, rows, totals, maxRows, width, height, mode)
 }
 
 // Very short terminals preserve title, column identity, and TOTAL first. The
 // fallback chain, complete pairs, and TX/RX details are added as space permits.
 func composeShortFrame(title string, status []string, rows []bandwidthtop.Row, totals bandwidthtop.Totals, maxRows, width, height int) string {
+	return composeShortFrameForMode(title, status, rows, totals, maxRows, width, height, bandwidthtop.ViewHosts)
+}
+
+func composeShortFrameForMode(title string, status []string, rows []bandwidthtop.Row, totals bandwidthtop.Totals, maxRows, width, height int, mode bandwidthtop.ViewMode) string {
 	if height <= 1 {
 		return bandwidthtop.Truncate(title, width)
 	}
-	rendered := splitFrame(bandwidthtop.RenderLiveWithRowLimit(rows, totals, width, maxRows))
+	rendered := splitFrame(bandwidthtop.RenderLiveForMode(rows, totals, width, maxRows, mode))
 	headerIndex := lineContaining(rendered, "LOCAL")
 	header := ""
 	total := ""
