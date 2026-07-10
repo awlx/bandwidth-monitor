@@ -32,6 +32,11 @@ const (
 	// portion of the ring, so peaks show within 5–10s instead of 60–120s.
 	rateSlotDuration = 5 * time.Second
 	rateSlotCount    = 6
+
+	// Direct captures use independent one-second slots so the CLI can report
+	// iftop-style 2s, 10s, and 40s windows without changing daemon rates.
+	directRateSlotDuration = time.Second
+	directRateSlotCount    = 41
 )
 
 type TalkerKey struct {
@@ -63,6 +68,21 @@ type TalkerStat struct {
 type DirectTalkerStat struct {
 	LocalIP string
 	TalkerStat
+	RxRate10 float64
+	RxRate40 float64
+	TxRate10 float64
+	TxRate40 float64
+}
+
+// DirectRateTotals contains all observed direct peers, including rows below
+// the display limit.
+type DirectRateTotals struct {
+	RxRate   float64
+	RxRate10 float64
+	RxRate40 float64
+	TxRate   float64
+	TxRate10 float64
+	TxRate40 float64
 }
 
 type directPairKey struct {
@@ -86,9 +106,13 @@ type bucket struct {
 
 // rateSlot is one slot in the short rate ring buffer.
 type rateSlot struct {
-	timestamp   time.Time
-	hosts       map[string]*hostAccum
-	directPeers map[directPairKey]*hostAccum
+	timestamp time.Time
+	hosts     map[string]*hostAccum
+}
+
+type directRateSlot struct {
+	timestamp time.Time
+	peers     map[directPairKey]*hostAccum
 }
 
 type hostAccum struct {
@@ -134,6 +158,9 @@ type Tracker struct {
 	// Protected by the same mu as buckets/current.
 	rateRing    [rateSlotCount]*rateSlot
 	rateRingIdx int // index of current slot in rateRing
+
+	directRateRing    [directRateSlotCount]*directRateSlot
+	directRateRingIdx int
 }
 
 func New(devices []string, promiscuous bool, localNets []*net.IPNet, geoDB *geoip.DB, dns *resolver.Resolver) *Tracker {
@@ -232,9 +259,14 @@ func newTracker(devices []string, promiscuous bool, localNets []*net.IPNet, geoD
 	trk.captureFn = trk.captureDevice
 	// Initialize first rate ring slot
 	trk.rateRing[0] = &rateSlot{
-		timestamp:   time.Now(),
-		hosts:       make(map[string]*hostAccum),
-		directPeers: make(map[directPairKey]*hostAccum),
+		timestamp: time.Now(),
+		hosts:     make(map[string]*hostAccum),
+	}
+	if direct {
+		trk.directRateRing[0] = &directRateSlot{
+			timestamp: time.Now(),
+			peers:     make(map[directPairKey]*hostAccum),
+		}
 	}
 	return trk
 }
@@ -281,6 +313,9 @@ func (t *Tracker) Run() {
 	}
 	t.startWorker(t.rotateBuckets)
 	t.startWorker(t.rotateRateRing)
+	if t.direct {
+		t.startWorker(t.rotateDirectRateRing)
+	}
 	for _, dev := range devices {
 		if !t.direct && !t.lanDevices[dev] {
 			log.Printf("talkers: skipping capture on %s (not LAN)", dev)
@@ -527,33 +562,65 @@ func (t *Tracker) TopByBandwidth(n int) []TalkerStat {
 // excluded because they do not define an unambiguous local-to-remote flow.
 // The daemon's endpoint-based TopByBandwidth accounting is unchanged.
 func (t *Tracker) DirectTopByBandwidth(n int) []DirectTalkerStat {
+	rows, _ := t.DirectBandwidthSnapshot(n)
+	return rows
+}
+
+// DirectBandwidthSnapshot returns ranked peers and all-peer rolling totals.
+func (t *Tracker) DirectBandwidthSnapshot(n int) ([]DirectTalkerStat, DirectRateTotals) {
+	return t.directBandwidthSnapshot(n, time.Now())
+}
+
+func (t *Tracker) directBandwidthSnapshot(n int, now time.Time) ([]DirectTalkerStat, DirectRateTotals) {
 	if !t.direct || n <= 0 {
-		return nil
+		return nil, DirectRateTotals{}
 	}
 
 	t.mu.RLock()
 	if t.current == nil {
 		t.mu.RUnlock()
-		return nil
+		return nil, DirectRateTotals{}
 	}
-	rates, elapsed := t.directRateFromRing()
+	rates2, elapsed2 := t.directRateFromRing(now, 2*time.Second)
+	rates10, elapsed10 := t.directRateFromRing(now, 10*time.Second)
+	rates40, elapsed40 := t.directRateFromRing(now, 40*time.Second)
 	t.mu.RUnlock()
 
-	list := make([]DirectTalkerStat, 0, len(rates))
-	for pair, rate := range rates {
-		list = append(list, DirectTalkerStat{
+	list := make([]DirectTalkerStat, 0, len(rates40))
+	var totals DirectRateTotals
+	for pair, rate40 := range rates40 {
+		rate2 := rates2[pair]
+		rate10 := rates10[pair]
+		if rate2 == nil {
+			rate2 = &hostAccum{}
+		}
+		if rate10 == nil {
+			rate10 = &hostAccum{}
+		}
+		stat := DirectTalkerStat{
 			LocalIP: pair.local,
 			TalkerStat: TalkerStat{
 				IP:         pair.remote,
-				TotalBytes: rate.bytes,
-				RxBytes:    rate.rxBytes,
-				TxBytes:    rate.txBytes,
-				RateBytes:  float64(rate.bytes) / elapsed,
-				RxRate:     float64(rate.rxBytes) / elapsed,
-				TxRate:     float64(rate.txBytes) / elapsed,
-				Packets:    rate.packets,
+				TotalBytes: rate40.bytes,
+				RxBytes:    rate40.rxBytes,
+				TxBytes:    rate40.txBytes,
+				RateBytes:  float64(rate2.bytes) / elapsed2,
+				RxRate:     float64(rate2.rxBytes) / elapsed2,
+				TxRate:     float64(rate2.txBytes) / elapsed2,
+				Packets:    rate40.packets,
 			},
-		})
+			RxRate10: float64(rate10.rxBytes) / elapsed10,
+			RxRate40: float64(rate40.rxBytes) / elapsed40,
+			TxRate10: float64(rate10.txBytes) / elapsed10,
+			TxRate40: float64(rate40.txBytes) / elapsed40,
+		}
+		totals.RxRate += stat.RxRate
+		totals.RxRate10 += stat.RxRate10
+		totals.RxRate40 += stat.RxRate40
+		totals.TxRate += stat.TxRate
+		totals.TxRate10 += stat.TxRate10
+		totals.TxRate40 += stat.TxRate40
+		list = append(list, stat)
 	}
 	sort.Slice(list, func(i, j int) bool {
 		if list[i].RateBytes != list[j].RateBytes {
@@ -573,7 +640,7 @@ func (t *Tracker) DirectTopByBandwidth(n int) []DirectTalkerStat {
 		}
 		t.geoDB.Enrich(list[i].IP, &list[i].TalkerStat)
 	}
-	return list
+	return list, totals
 }
 
 // BandwidthForIPs returns current bandwidth stats for the given IP list.
@@ -764,12 +831,16 @@ func (t *Tracker) captureDevice(device string) error {
 			continue
 		}
 		rSlot := t.rateRing[t.rateRingIdx]
+		var directSlot *directRateSlot
+		if t.direct {
+			directSlot = t.directRateRing[t.directRateRingIdx]
+		}
 		for i := range batch {
 			p := &batch[i]
 			t.accountPacket(p, t.current, rSlot)
 			t.accountDirection(p, t.current, rSlot)
 			if t.direct {
-				t.accountDirectPeer(p, rSlot)
+				t.accountDirectPeer(p, directSlot)
 			}
 			t.current.protoBytes[p.proto] += p.wireLen
 			t.current.ipVerBytes[p.ipVersion] += p.wireLen
@@ -781,8 +852,8 @@ func (t *Tracker) captureDevice(device string) error {
 // accountDirectPeer records a packet once under its remote endpoint. Direction
 // is relative to the actual local endpoint, including router-originated flows.
 // Must be called with t.mu held.
-func (t *Tracker) accountDirectPeer(p *parsedPkt, rSlot *rateSlot) {
-	if rSlot == nil || p.srcLocal == p.dstLocal {
+func (t *Tracker) accountDirectPeer(p *parsedPkt, slot *directRateSlot) {
+	if slot == nil || p.srcLocal == p.dstLocal {
 		return
 	}
 	var pair directPairKey
@@ -794,13 +865,13 @@ func (t *Tracker) accountDirectPeer(p *parsedPkt, rSlot *rateSlot) {
 		pair = directPairKey{local: p.dstStr, remote: p.srcStr}
 		rx = p.wireLen
 	}
-	acc, ok := rSlot.directPeers[pair]
+	acc, ok := slot.peers[pair]
 	if !ok {
-		if len(rSlot.directPeers) >= maxHostsPerBucket {
+		if len(slot.peers) >= maxHostsPerBucket {
 			return
 		}
 		acc = &hostAccum{}
-		rSlot.directPeers[pair] = acc
+		slot.peers[pair] = acc
 	}
 	acc.bytes += p.wireLen
 	acc.rxBytes += rx
@@ -1017,9 +1088,27 @@ func (t *Tracker) rotateRateRing() {
 			t.mu.Lock()
 			t.rateRingIdx = (t.rateRingIdx + 1) % rateSlotCount
 			t.rateRing[t.rateRingIdx] = &rateSlot{
-				timestamp:   time.Now(),
-				hosts:       make(map[string]*hostAccum),
-				directPeers: make(map[directPairKey]*hostAccum),
+				timestamp: time.Now(),
+				hosts:     make(map[string]*hostAccum),
+			}
+			t.mu.Unlock()
+		case <-t.stopCh:
+			return
+		}
+	}
+}
+
+func (t *Tracker) rotateDirectRateRing() {
+	ticker := time.NewTicker(directRateSlotDuration)
+	defer ticker.Stop()
+	for {
+		select {
+		case now := <-ticker.C:
+			t.mu.Lock()
+			t.directRateRingIdx = (t.directRateRingIdx + 1) % directRateSlotCount
+			t.directRateRing[t.directRateRingIdx] = &directRateSlot{
+				timestamp: now,
+				peers:     make(map[directPairKey]*hostAccum),
 			}
 			t.mu.Unlock()
 		case <-t.stopCh:
@@ -1072,18 +1161,18 @@ func (t *Tracker) rateFromRing() (rates map[string]*hostAccum, elapsed float64) 
 
 // directRateFromRing computes rates for direct local/remote pairs.
 // Must be called with t.mu held (at least RLock).
-func (t *Tracker) directRateFromRing() (map[directPairKey]*hostAccum, float64) {
-	now := time.Now()
+func (t *Tracker) directRateFromRing(now time.Time, window time.Duration) (map[directPairKey]*hostAccum, float64) {
 	rates := make(map[directPairKey]*hostAccum)
 	var oldest time.Time
-	for _, slot := range t.rateRing {
-		if slot == nil {
+	cutoff := now.Add(-window)
+	for _, slot := range t.directRateRing {
+		if slot == nil || slot.timestamp.Before(cutoff) {
 			continue
 		}
 		if oldest.IsZero() || slot.timestamp.Before(oldest) {
 			oldest = slot.timestamp
 		}
-		for pair, acc := range slot.directPeers {
+		for pair, acc := range slot.peers {
 			if total, ok := rates[pair]; ok {
 				total.bytes += acc.bytes
 				total.rxBytes += acc.rxBytes
@@ -1098,6 +1187,9 @@ func (t *Tracker) directRateFromRing() (map[directPairKey]*hostAccum, float64) {
 		}
 	}
 	elapsed := now.Sub(oldest).Seconds()
+	if elapsed > window.Seconds() {
+		elapsed = window.Seconds()
+	}
 	if elapsed < 1 {
 		elapsed = 1
 	}

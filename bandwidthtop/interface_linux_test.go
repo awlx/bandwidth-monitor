@@ -75,17 +75,17 @@ func TestDefaultInterfaceSupportsIPv4Multipath(t *testing.T) {
 	routes := []vnl.Route{{
 		Priority: 20,
 		MultiPath: []*vnl.NexthopInfo{
-			{LinkIndex: 2, Hops: 0},
-			{LinkIndex: 3, Hops: 8},
-			{LinkIndex: 4, Hops: 1},
+			{LinkIndex: 2, Hops: 0, Gw: net.ParseIP("192.0.2.2")},
+			{LinkIndex: 3, Hops: 8, Gw: net.ParseIP("192.0.2.3")},
+			{LinkIndex: 4, Hops: 1, Gw: net.ParseIP("192.0.2.4")},
 		},
 	}}
-	got, err := selectDefaultInterface(routes, interfaceLookup(map[int]*net.Interface{
+	got, err := selectDefaultRoute(routes, interfaceLookup(map[int]*net.Interface{
 		2: {Index: 2, Name: "down0"},
 		3: {Index: 3, Name: "wan1", Flags: net.FlagUp},
 		4: {Index: 4, Name: "wan0", Flags: net.FlagUp},
 	}))
-	if err != nil || got.Name != "wan0" {
+	if err != nil || got.Interface.Name != "wan0" || !got.Gateway.Equal(net.ParseIP("192.0.2.4")) {
 		t.Fatalf("got %+v, %v", got, err)
 	}
 }
@@ -98,22 +98,38 @@ func TestDefaultInterfaceSupportsIPv6MultipathAndRouteMetric(t *testing.T) {
 			Dst:      ipv6Default,
 			MultiPath: []*vnl.NexthopInfo{
 				nil,
-				{LinkIndex: 8, Hops: 0},
+				{LinkIndex: 8, Hops: 0, Gw: net.ParseIP("2001:db8::8")},
 			},
 		},
 		{
 			Priority: 10,
 			Dst:      ipv6Default,
 			MultiPath: []*vnl.NexthopInfo{
-				{LinkIndex: 9, Hops: 20},
+				{LinkIndex: 9, Hops: 20, Gw: net.ParseIP("2001:db8::9")},
 			},
 		},
 	}
-	got, err := selectDefaultInterface(routes, interfaceLookup(map[int]*net.Interface{
+	got, err := selectDefaultRoute(routes, interfaceLookup(map[int]*net.Interface{
 		8: {Index: 8, Name: "wan0", Flags: net.FlagUp},
 		9: {Index: 9, Name: "wan6", Flags: net.FlagUp},
 	}))
-	if err != nil || got.Name != "wan6" {
+	if err != nil || got.Interface.Name != "wan6" || !got.Gateway.Equal(net.ParseIP("2001:db8::9")) {
+		t.Fatalf("got %+v, %v", got, err)
+	}
+}
+
+func TestDefaultRouteGatewayTieIsDeterministic(t *testing.T) {
+	routes := []vnl.Route{{
+		Priority: 10,
+		MultiPath: []*vnl.NexthopInfo{
+			{LinkIndex: 2, Gw: net.ParseIP("192.0.2.20")},
+			{LinkIndex: 2, Gw: net.ParseIP("192.0.2.10")},
+		},
+	}}
+	got, err := selectDefaultRoute(routes, interfaceLookup(map[int]*net.Interface{
+		2: {Index: 2, Name: "wan0", Flags: net.FlagUp},
+	}))
+	if err != nil || !got.Gateway.Equal(net.ParseIP("192.0.2.10")) {
 		t.Fatalf("got %+v, %v", got, err)
 	}
 }

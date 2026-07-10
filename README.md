@@ -204,13 +204,17 @@ tie-breaking. Capture requires root or `CAP_NET_RAW`:
 sudo setcap cap_net_raw+ep /usr/bin/bandwidth-top
 ```
 
-Rates are displayed in bit/s (capture accounting uses bytes/s). The full table
-shows remote/local IP, hostname, RX, TX, total rate, packets, ASN, provider,
-country, and enrichment source; narrow widths use a stable reduced column set.
-Each row is one local/remote endpoint pair, counted once with RX/TX relative to
-the actual local endpoint. Local-to-local and remote-to-remote packets are
-excluded because they have no unambiguous peer direction. Use `--snapshot` for
-plain, non-ANSI output.
+Rates are displayed in bit/s (capture accounting uses bytes/s). Each ranked flow
+uses two linked lines: `=>` for outbound traffic and `<=` for inbound traffic,
+with proportional bars and rolling 2s, 10s, and 40s rates. The footer summarizes
+TX, RX, and total rates across all observed peers, including peers below the row
+limit. Wide layouts include hostname, ASN, provider, country, and enrichment
+source; normal and narrow layouts truncate predictably.
+
+Each flow is one local/remote endpoint pair, counted once with direction relative
+to the actual local endpoint. Local-to-local and remote-to-remote packets are
+excluded because they have no unambiguous peer direction. Live output uses
+restrained direction colors; `--snapshot` is deterministic plain text.
 
 | Option | Default | Purpose |
 |--------|---------|---------|
@@ -221,20 +225,33 @@ plain, non-ANSI output.
 | `--width` | terminal width | Output width; long values are truncated |
 | `--asn-mmdb` | auto | GeoLite2 ASN MMDB |
 | `--city-mmdb` | auto | GeoLite2 City/Country MMDB |
-| `--server` | none | Optional bandwidth-monitor base URL |
+| `--server` | gateway discovery | Explicit bandwidth-monitor base URL; suppresses discovery |
+| `--no-server-discovery` | off | Do not probe the selected default gateway |
 | `--public-url` | `https://ip.ffmuc.net/json` | Public fallback API |
 | `--no-public` | off | Disable public fallback |
 
 MMDB files are discovered in the current directory,
 `/usr/share/bandwidth-monitor`, and `/opt/bandwidth-monitor`. Enrichment fills
-missing fields in order: local MMDB, configured `--server` `/api/host`, then
+missing fields in order: local MMDB, ready monitor `/api/host`, then
 ip.ffmuc.net. Lookups use a fixed worker pool and queue, validate every public
 redirect and resolved destination, and use a bounded FIFO-evicted result cache.
+At startup, the two optional MMDB readers and one monitor capability probe run
+concurrently. An explicit `--server` is probed once. Without it, the CLI makes
+one direct, no-proxy HTTP request to port 8080 on the selected default-route
+gateway; it does not scan other hosts or ports, and `--no-server-discovery`
+disables the request. The probe uses a fixed documentation IP, not a captured
+peer. A failed source is disabled with one endpoint-free warning while remaining
+sources continue; public fallback is never preflighted. The title reports
+concise `geo`, `asn`, `monitor`, and `public` source state.
 
 > **Privacy:** public fallback sends each observed globally routable peer IP to
 > ip.ffmuc.net. Use `--no-public` to prevent this. Private, loopback,
 > link-local, multicast, unspecified, reserved documentation, and other
 > non-global addresses are never sent.
+>
+> Gateway discovery sends no observed peer IP. After a valid monitor response,
+> normal enrichment requests send observed peer IPs only to that discovered
+> gateway service. Use `--no-server-discovery` to prevent all gateway probing.
 
 ---
 

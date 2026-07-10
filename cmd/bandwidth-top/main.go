@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"bandwidth-monitor/bandwidthtop"
-	"bandwidth-monitor/geoip"
 	"bandwidth-monitor/resolver"
 	"bandwidth-monitor/talkers"
 
@@ -38,12 +37,14 @@ func run(args []string, stdout, stderr io.Writer) error {
 	asnPath := fs.String("asn-mmdb", discover("GeoLite2-ASN.mmdb"), "ASN MMDB path")
 	cityPath := fs.String("city-mmdb", discoverCity(), "city/country MMDB path")
 	server := fs.String("server", "", "bandwidth-monitor base URL for enrichment")
+	noServerDiscovery := fs.Bool("no-server-discovery", false, "disable one-time default-gateway monitor discovery")
 	publicURL := fs.String("public-url", bandwidthtop.DefaultPublicURL, "public enrichment API base URL")
 	noPublic := fs.Bool("no-public", false, "disable public enrichment fallback")
 	width := fs.Int("width", 0, "output width in columns (default: terminal width)")
 	fs.Usage = func() {
 		fmt.Fprintln(stderr, "Usage: bandwidth-top [options]")
 		fmt.Fprintln(stderr, "Live AF_PACKET traffic viewer; requires root or CAP_NET_RAW.")
+		fmt.Fprintln(stderr, "Local databases and monitor readiness are checked once at startup.")
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil {
@@ -53,25 +54,27 @@ func run(args []string, stdout, stderr io.Writer) error {
 		return fmt.Errorf("rows and refresh must be positive")
 	}
 
-	iface, localNets, _, err := bandwidthtop.SelectInterface(*ifaceName)
+	selected, err := bandwidthtop.SelectCaptureInterface(*ifaceName)
 	if err != nil {
 		return err
 	}
-	db, err := geoip.Open(*cityPath, *asnPath)
-	if err != nil {
-		return err
-	}
-	defer db.Close()
-	enricher, err := bandwidthtop.NewEnricher(bandwidthtop.Config{
-		GeoDB: db, ServerURL: *server, PublicURL: *publicURL, DisablePublic: *noPublic,
-	})
+	iface := selected.Interface
+	monitorURL, monitorDiscovery := bandwidthtop.MonitorServerURL(
+		*server, *noServerDiscovery, selected.Gateway, iface.Name)
+	enricher, err := bandwidthtop.NewEnricherWithDatabases(bandwidthtop.Config{
+		ServerURL: monitorURL, PublicURL: *publicURL, DisablePublic: *noPublic,
+		MonitorDiscovery: monitorDiscovery, DisableMonitorDiscovery: *noServerDiscovery,
+	}, *cityPath, *asnPath)
 	if err != nil {
 		return err
 	}
 	defer enricher.Close()
+	for _, warning := range enricher.StartupWarnings() {
+		fmt.Fprintln(stderr, "bandwidth-top:", warning)
+	}
 	dns := resolver.New()
 	defer dns.Stop()
-	tracker := talkers.NewDirect(iface.Name, false, localNets, nil, dns)
+	tracker := talkers.NewDirect(iface.Name, false, selected.LocalNets, nil, dns)
 	log.SetOutput(io.Discard)
 	go tracker.Run()
 	defer tracker.Stop()
@@ -95,17 +98,30 @@ func run(args []string, stdout, stderr io.Writer) error {
 
 	firstFrame := true
 	for {
-		stats := tracker.DirectTopByBandwidth(*rows)
+		stats, rateTotals := tracker.DirectBandwidthSnapshot(*rows)
 		viewRows := make([]bandwidthtop.Row, 0, len(stats))
 		for _, stat := range stats {
 			viewRows = append(viewRows, bandwidthtop.Row{
 				LocalIP: stat.LocalIP,
 				Stat: bandwidthtop.Stat{
-					IP: stat.IP, Hostname: stat.Hostname, RxRate: stat.RxRate,
-					TxRate: stat.TxRate, RateBytes: stat.RateBytes, Packets: stat.Packets,
+					IP: stat.IP, Hostname: stat.Hostname, Packets: stat.Packets,
+					Rx: bandwidthtop.RateWindows{
+						Two: stat.RxRate, Ten: stat.RxRate10, Forty: stat.RxRate40,
+					},
+					Tx: bandwidthtop.RateWindows{
+						Two: stat.TxRate, Ten: stat.TxRate10, Forty: stat.TxRate40,
+					},
 				},
 				Info: enricher.Lookup(stat.IP),
 			})
+		}
+		totals := bandwidthtop.Totals{
+			Rx: bandwidthtop.RateWindows{
+				Two: rateTotals.RxRate, Ten: rateTotals.RxRate10, Forty: rateTotals.RxRate40,
+			},
+			Tx: bandwidthtop.RateWindows{
+				Two: rateTotals.TxRate, Ten: rateTotals.TxRate10, Forty: rateTotals.TxRate40,
+			},
 		}
 		if *snapshot {
 			enricher.Wait()
@@ -120,9 +136,14 @@ func run(args []string, stdout, stderr io.Writer) error {
 			fmt.Fprint(stdout, "\x1b[H\x1b[2J")
 		}
 		frameWidth := outputWidth(stdout, *width)
-		title := fmt.Sprintf("bandwidth-top  interface=%s  refresh=%s", iface.Name, refresh.String())
+		title := fmt.Sprintf("bandwidth-top  interface=%s  refresh=%s  rates=bit/s  sources=%s",
+			iface.Name, refresh.String(), enricher.SourceSummary())
 		fmt.Fprintln(stdout, bandwidthtop.Truncate(title, frameWidth))
-		fmt.Fprint(stdout, bandwidthtop.Render(viewRows, frameWidth))
+		if *snapshot {
+			fmt.Fprint(stdout, bandwidthtop.RenderSnapshot(viewRows, totals, frameWidth))
+		} else {
+			fmt.Fprint(stdout, bandwidthtop.RenderLive(viewRows, totals, frameWidth))
+		}
 		firstFrame = false
 		if *snapshot {
 			return nil

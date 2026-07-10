@@ -2,19 +2,25 @@ package bandwidthtop
 
 import (
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
 )
 
+type RateWindows struct {
+	Two   float64
+	Ten   float64
+	Forty float64
+}
+
 type Stat struct {
-	IP        string
-	Hostname  string
-	RxRate    float64
-	TxRate    float64
-	RateBytes float64
-	Packets   uint64
+	IP       string
+	Hostname string
+	Rx       RateWindows
+	Tx       RateWindows
+	Packets  uint64
 }
 
 type Row struct {
@@ -23,27 +29,23 @@ type Row struct {
 	Info    Enrichment
 }
 
-type column struct {
-	key       int
-	name      string
-	minWidth  int
-	preferred int
-	width     int
+type Totals struct {
+	Rx RateWindows
+	Tx RateWindows
 }
 
-var allColumns = []column{
-	{0, "REMOTE", 12, 15, 0},
-	{1, "LOCAL", 12, 15, 0},
-	{2, "HOSTNAME", 10, 18, 0},
-	{3, "RX", 9, 11, 0},
-	{4, "TX", 9, 11, 0},
-	{5, "TOTAL", 9, 11, 0},
-	{6, "PACKETS", 6, 8, 0},
-	{7, "ASN", 6, 8, 0},
-	{8, "PROVIDER", 10, 18, 0},
-	{9, "COUNTRY", 7, 12, 0},
-	{10, "SOURCE", 8, 14, 0},
+type flowLayout struct {
+	rank, local, arrow, remote, bar int
+	rate, packets                   int
 }
+
+const (
+	ansiReset = "\x1b[0m"
+	ansiBold  = "\x1b[1m"
+	ansiDim   = "\x1b[2m"
+	ansiGreen = "\x1b[32m"
+	ansiCyan  = "\x1b[36m"
+)
 
 func FormatRate(bytesPerSecond float64) string {
 	bits := bytesPerSecond * 8
@@ -57,6 +59,29 @@ func FormatRate(bytesPerSecond float64) string {
 		return fmt.Sprintf("%.0f %s", bits, units[i])
 	}
 	return fmt.Sprintf("%.1f %s", bits, units[i])
+}
+
+func formatCompactRate(bytesPerSecond float64) string {
+	if bytesPerSecond < 0 {
+		bytesPerSecond = 0
+	}
+	value := bytesPerSecond * 8
+	units := []string{"b", "Kb", "Mb", "Gb", "Tb"}
+	unit := 0
+	for value >= 1000 && unit < len(units)-1 {
+		value /= 1000
+		unit++
+	}
+	switch {
+	case unit == 0:
+		return fmt.Sprintf("%.0f%s", value, units[unit])
+	case value < 10:
+		return fmt.Sprintf("%.2f%s", value, units[unit])
+	case value < 100:
+		return fmt.Sprintf("%.1f%s", value, units[unit])
+	default:
+		return fmt.Sprintf("%.0f%s", value, units[unit])
+	}
 }
 
 func Truncate(s string, width int) string {
@@ -164,92 +189,228 @@ func sanitizeTerminal(s string) string {
 	return out.String()
 }
 
+// Render keeps the plain snapshot behavior for callers that do not supply
+// all-peer totals.
 func Render(rows []Row, width int) string {
+	return RenderSnapshot(rows, sumTotals(rows), width)
+}
+
+func RenderSnapshot(rows []Row, totals Totals, width int) string {
+	return renderFlows(rows, totals, width, false)
+}
+
+func RenderLive(rows []Row, totals Totals, width int) string {
+	return renderFlows(rows, totals, width, true)
+}
+
+func renderFlows(rows []Row, totals Totals, width int, ansi bool) string {
 	if width <= 0 {
 		width = 120
 	}
-	columns := layout(width)
+	layout, structured := makeFlowLayout(width)
+	maxRate := maximumDirectionalRate(rows)
 	var b strings.Builder
-	b.WriteString(renderCells(columns, func(c column) string { return c.name }))
-	b.WriteByte('\n')
-	for _, row := range rows {
-		source := row.Info.Source
-		if row.Info.Err != "" {
-			if source == "" {
-				source = "error"
-			} else {
-				source += "!"
-			}
-		}
-		values := []string{
-			row.Stat.IP, row.LocalIP, first(row.Info.Hostname, row.Stat.Hostname),
-			FormatRate(row.Stat.RxRate), FormatRate(row.Stat.TxRate), FormatRate(row.Stat.RateBytes),
-			strconv.FormatUint(row.Stat.Packets, 10), strconv.FormatUint(uint64(row.Info.ASN), 10),
-			row.Info.Provider, row.Info.Country, source,
-		}
-		b.WriteString(renderCells(columns, func(c column) string { return values[c.key] }))
+	if structured {
+		header := flowLine(layout, "#", "LOCAL", "  ", "REMOTE PEER", "RATE", "2s", "10s", "40s", "PKTS")
+		b.WriteString(color(ansiBold, header, ansi))
 		b.WriteByte('\n')
+		b.WriteString(color(ansiDim, strings.Repeat("-", width), ansi))
+		b.WriteByte('\n')
+		for i, row := range rows {
+			rank := fmt.Sprintf("%d", i+1)
+			outRemote := remoteIdentity(row)
+			inRemote := remoteMetadata(row)
+			outBar := rateBar(row.Stat.Tx.Two, maxRate, layout.bar)
+			inBar := rateBar(row.Stat.Rx.Two, maxRate, layout.bar)
+			b.WriteString(flowLineStyled(layout, rank, row.LocalIP, "=>", outRemote, outBar,
+				formatCompactRate(row.Stat.Tx.Two), formatCompactRate(row.Stat.Tx.Ten),
+				formatCompactRate(row.Stat.Tx.Forty), strconv.FormatUint(row.Stat.Packets, 10),
+				ansiGreen, ansi))
+			b.WriteByte('\n')
+			b.WriteString(flowLineStyled(layout, "|", row.LocalIP, "<=", inRemote, inBar,
+				formatCompactRate(row.Stat.Rx.Two), formatCompactRate(row.Stat.Rx.Ten),
+				formatCompactRate(row.Stat.Rx.Forty), "", ansiCyan, ansi))
+			b.WriteByte('\n')
+		}
+	} else {
+		b.WriteString(Truncate("# FLOWS  2s rate", width))
+		b.WriteByte('\n')
+		for i, row := range rows {
+			out := fmt.Sprintf("%d %s => %s %s %s", i+1, row.LocalIP,
+				remoteIdentity(row), rateBar(row.Stat.Tx.Two, maxRate, max(1, width/8)),
+				formatCompactRate(row.Stat.Tx.Two))
+			in := fmt.Sprintf("| %s <= %s %s %s", row.LocalIP,
+				remoteMetadata(row), rateBar(row.Stat.Rx.Two, maxRate, max(1, width/8)),
+				formatCompactRate(row.Stat.Rx.Two))
+			b.WriteString(color(ansiGreen, Truncate(out, width), ansi))
+			b.WriteByte('\n')
+			b.WriteString(color(ansiCyan, Truncate(in, width), ansi))
+			b.WriteByte('\n')
+		}
 	}
+	b.WriteString(color(ansiDim, strings.Repeat("-", width), ansi))
+	b.WriteByte('\n')
+	b.WriteString(footerLine("TX", totals.Tx, width, ansiGreen, ansi))
+	b.WriteByte('\n')
+	b.WriteString(footerLine("RX", totals.Rx, width, ansiCyan, ansi))
+	b.WriteByte('\n')
+	b.WriteString(footerLine("TOTAL", addRates(totals.Tx, totals.Rx), width, ansiBold, ansi))
+	b.WriteByte('\n')
+	hint := "snapshot complete"
+	if ansi {
+		hint = "Ctrl-C / SIGTERM quit"
+	}
+	b.WriteString(color(ansiDim, Truncate(hint, width), ansi))
+	b.WriteByte('\n')
 	return b.String()
 }
 
-func layout(width int) []column {
-	var selected []column
-	switch {
-	case width >= minimumWidth(allColumns):
-		selected = append(selected, allColumns...)
-	case width >= minimumWidth(allColumns[:7]):
-		selected = append(selected, allColumns[:7]...)
-	case width >= minimumWidth([]column{allColumns[0], allColumns[1], allColumns[5], allColumns[6]}):
-		selected = append(selected, allColumns[0], allColumns[1], allColumns[5], allColumns[6])
-	case width >= minimumWidth([]column{allColumns[0], allColumns[5]}):
-		selected = append(selected, allColumns[0], allColumns[5])
-	default:
-		selected = append(selected, allColumns[0])
-		selected[0].minWidth = max(1, width)
-		selected[0].preferred = selected[0].minWidth
+func makeFlowLayout(width int) (flowLayout, bool) {
+	layout := flowLayout{rank: 2, local: 6, arrow: 2, remote: 6, bar: 1, rate: 6, packets: 6}
+	if flowLayoutWidth(layout) > width {
+		return flowLayout{}, false
 	}
-	for i := range selected {
-		selected[i].width = selected[i].minWidth
-	}
-	extra := width - minimumWidth(selected)
-	for extra > 0 {
-		changed := false
-		for i := range selected {
-			if selected[i].width < selected[i].preferred {
-				selected[i].width++
-				extra--
-				changed = true
-				if extra == 0 {
-					break
-				}
-			}
-		}
-		if !changed {
-			break
+	for extra := width - flowLayoutWidth(layout); extra > 0; extra-- {
+		switch {
+		case layout.bar < 8:
+			layout.bar++
+		case layout.local < 15:
+			layout.local++
+		case layout.remote < 24:
+			layout.remote++
+		case layout.bar < 20:
+			layout.bar++
+		case layout.local < 25:
+			layout.local++
+		case layout.remote < 64:
+			layout.remote++
+		default:
+			extra = 0
 		}
 	}
-	return selected
+	return layout, true
 }
 
-func minimumWidth(columns []column) int {
-	if len(columns) == 0 {
-		return 0
-	}
-	total := len(columns) - 1
-	for _, c := range columns {
-		total += c.minWidth
-	}
-	return total
+func flowLayoutWidth(layout flowLayout) int {
+	return layout.rank + layout.local + layout.arrow + layout.remote +
+		layout.bar + 3*layout.rate + layout.packets + 8
 }
 
-func renderCells(columns []column, value func(column) string) string {
-	cells := make([]string, len(columns))
-	for i, c := range columns {
-		cell := Truncate(value(c), c.width)
-		cells[i] = cell + strings.Repeat(" ", c.width-displayWidth(cell))
+func flowLine(layout flowLayout, rank, local, arrow, remote, bar, rate2, rate10, rate40, packets string) string {
+	widths := []int{layout.rank, layout.local, layout.arrow, layout.remote, layout.bar,
+		layout.rate, layout.rate, layout.rate, layout.packets}
+	values := []string{rank, local, arrow, remote, bar, rate2, rate10, rate40, packets}
+	cells := make([]string, len(values))
+	for i := range values {
+		cells[i] = fitCell(values[i], widths[i], i >= 5)
 	}
 	return strings.Join(cells, " ")
+}
+
+func flowLineStyled(layout flowLayout, rank, local, arrow, remote, bar, rate2, rate10, rate40, packets, style string, ansi bool) string {
+	if !ansi {
+		return flowLine(layout, rank, local, arrow, remote, bar, rate2, rate10, rate40, packets)
+	}
+	widths := []int{layout.rank, layout.local, layout.arrow, layout.remote, layout.bar,
+		layout.rate, layout.rate, layout.rate, layout.packets}
+	values := []string{rank, local, arrow, remote, bar, rate2, rate10, rate40, packets}
+	cells := make([]string, len(values))
+	for i := range values {
+		cells[i] = fitCell(values[i], widths[i], i >= 5)
+	}
+	cells[0] = color(ansiBold, cells[0], true)
+	cells[2] = color(style, cells[2], true)
+	cells[4] = color(style, cells[4], true)
+	return strings.Join(cells, " ")
+}
+
+func fitCell(value string, width int, right bool) string {
+	value = Truncate(value, width)
+	padding := strings.Repeat(" ", max(0, width-displayWidth(value)))
+	if right {
+		return padding + value
+	}
+	return value + padding
+}
+
+func rateBar(rate, maximum float64, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	filled := 0
+	if rate > 0 && maximum > 0 {
+		filled = int(math.Ceil(rate / maximum * float64(width)))
+		filled = max(1, min(width, filled))
+	}
+	return strings.Repeat("#", filled) + strings.Repeat(".", width-filled)
+}
+
+func maximumDirectionalRate(rows []Row) float64 {
+	var maximum float64
+	for _, row := range rows {
+		maximum = math.Max(maximum, row.Stat.Tx.Two)
+		maximum = math.Max(maximum, row.Stat.Rx.Two)
+	}
+	return maximum
+}
+
+func remoteIdentity(row Row) string {
+	return strings.TrimSpace(strings.Join(nonEmpty(row.Stat.IP,
+		first(row.Info.Hostname, row.Stat.Hostname)), " "))
+}
+
+func remoteMetadata(row Row) string {
+	asn := ""
+	if row.Info.ASN != 0 {
+		asn = fmt.Sprintf("AS%d", row.Info.ASN)
+	}
+	source := row.Info.Source
+	if row.Info.Err != "" {
+		if source == "" {
+			source = "error"
+		} else {
+			source += "!"
+		}
+	}
+	meta := strings.Join(nonEmpty(asn, row.Info.Provider, row.Info.Country, source), " / ")
+	return strings.TrimSpace(strings.Join(nonEmpty(row.Stat.IP, meta), " "))
+}
+
+func nonEmpty(values ...string) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if value = sanitizeTerminal(value); value != "" {
+			out = append(out, value)
+		}
+	}
+	return out
+}
+
+func footerLine(label string, rates RateWindows, width int, style string, ansi bool) string {
+	line := fmt.Sprintf("%-5s 2s %7s  10s %7s  40s %7s", label,
+		formatCompactRate(rates.Two), formatCompactRate(rates.Ten),
+		formatCompactRate(rates.Forty))
+	return color(style, Truncate(line, width), ansi)
+}
+
+func sumTotals(rows []Row) Totals {
+	var totals Totals
+	for _, row := range rows {
+		totals.Tx = addRates(totals.Tx, row.Stat.Tx)
+		totals.Rx = addRates(totals.Rx, row.Stat.Rx)
+	}
+	return totals
+}
+
+func addRates(a, b RateWindows) RateWindows {
+	return RateWindows{Two: a.Two + b.Two, Ten: a.Ten + b.Ten, Forty: a.Forty + b.Forty}
+}
+
+func color(code, value string, enabled bool) string {
+	if !enabled || value == "" {
+		return value
+	}
+	return code + value + ansiReset
 }
 
 func displayWidth(s string) int {
@@ -284,6 +445,13 @@ func terminalRuneWidth(r rune) int {
 
 func max(a, b int) int {
 	if a > b {
+		return a
+	}
+	return b
+}
+
+func min(a, b int) int {
+	if a < b {
 		return a
 	}
 	return b

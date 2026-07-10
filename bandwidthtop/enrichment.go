@@ -23,6 +23,7 @@ const (
 	maxResponseBody  = 64 << 10
 	defaultCacheSize = 4096
 	defaultQueueSize = 256
+	monitorProbeIP   = "192.0.2.1"
 )
 
 type Enrichment struct {
@@ -36,17 +37,22 @@ type Enrichment struct {
 }
 
 type Config struct {
-	GeoDB         *geoip.DB
-	ServerURL     string
-	PublicURL     string
-	HTTPClient    *http.Client
-	Concurrency   int
-	CacheSize     int
-	QueueSize     int
-	DisablePublic bool
-	AllowHTTP     bool
+	GeoDB                   *geoip.DB
+	ServerURL               string
+	PublicURL               string
+	HTTPClient              *http.Client
+	Concurrency             int
+	CacheSize               int
+	QueueSize               int
+	DisablePublic           bool
+	AllowHTTP               bool
+	MonitorDiscovery        bool
+	DisableMonitorDiscovery bool
 
 	lookupIP func(context.Context, string) ([]net.IP, error)
+
+	skipMonitorProbe      bool
+	allowDiscoveryTestURL bool
 }
 
 type cacheEntry struct {
@@ -55,10 +61,14 @@ type cacheEntry struct {
 }
 
 type Enricher struct {
-	cfg           Config
-	monitorClient *http.Client
-	publicClient  *http.Client
-	lookupIP      func(context.Context, string) ([]net.IP, error)
+	cfg             Config
+	monitorClient   *http.Client
+	publicClient    *http.Client
+	lookupIP        func(context.Context, string) ([]net.IP, error)
+	localDBs        *LocalDatabases
+	sourceMu        sync.RWMutex
+	monitorState    string
+	startupWarnings []string
 
 	mu        sync.RWMutex
 	cache     map[string]cacheEntry
@@ -90,6 +100,10 @@ func NewEnricher(cfg Config) (*Enricher, error) {
 		if i == 0 && u.Scheme != "https" && u.Scheme != "http" {
 			return nil, fmt.Errorf("monitor URL must use HTTP or HTTPS")
 		}
+		if i == 0 && cfg.MonitorDiscovery && !cfg.allowDiscoveryTestURL &&
+			!discoveryURLAllowed(raw) {
+			return nil, errors.New("invalid gateway monitor discovery URL")
+		}
 	}
 	if cfg.Concurrency <= 0 {
 		cfg.Concurrency = 4
@@ -116,6 +130,14 @@ func NewEnricher(cfg Config) (*Enricher, error) {
 	}
 
 	monitorClient := cloneHTTPClient(cfg.HTTPClient)
+	if cfg.MonitorDiscovery {
+		monitorTransport := cloneTransport(monitorClient.Transport)
+		monitorTransport.Proxy = nil
+		monitorClient.Transport = monitorTransport
+		monitorClient.CheckRedirect = func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		}
+	}
 	publicClient := cloneHTTPClient(cfg.HTTPClient)
 	transport := cloneTransport(publicClient.Transport)
 	transport.Proxy = nil
@@ -138,6 +160,27 @@ func NewEnricher(cfg Config) (*Enricher, error) {
 		order:         make([]string, 0, cfg.CacheSize),
 		jobs:          make(chan string, cfg.QueueSize),
 		stopCh:        make(chan struct{}),
+		monitorState:  "unavailable",
+	}
+	if cfg.DisableMonitorDiscovery {
+		e.monitorState = "off"
+	}
+	if cfg.ServerURL != "" {
+		e.monitorState = "ready"
+		if cfg.MonitorDiscovery {
+			e.monitorState = "gateway"
+		}
+		if !cfg.skipMonitorProbe {
+			if _, err := e.fetch(monitorProbeIP, cfg.ServerURL, true); err != nil {
+				e.cfg.ServerURL = ""
+				e.monitorState = "disabled"
+				warning := "monitor enrichment disabled: startup readiness probe failed"
+				if cfg.MonitorDiscovery {
+					warning = "gateway monitor discovery unavailable: startup probe failed"
+				}
+				e.startupWarnings = append(e.startupWarnings, warning)
+			}
+		}
 	}
 	for i := 0; i < cfg.Concurrency; i++ {
 		e.workers.Add(1)
@@ -277,19 +320,71 @@ func publicEligible(ip net.IP) bool {
 
 func (e *Enricher) local(ip string) Enrichment {
 	var out Enrichment
-	if e.cfg.GeoDB == nil {
-		return out
-	}
-	if result := e.cfg.GeoDB.Lookup(ip); result != nil {
-		out.Country = first(result.CountryName, result.Country)
-		out.City = result.City
-		out.ASN = result.ASN
-		out.Provider = result.ASOrg
-		if out.Country != "" || out.City != "" || out.ASN != 0 || out.Provider != "" {
-			out.Source = "local"
+	if e.cfg.GeoDB != nil {
+		if result := e.cfg.GeoDB.Lookup(ip); result != nil {
+			mergeLocalResult(&out, result, true, true)
 		}
 	}
+	e.sourceMu.RLock()
+	defer e.sourceMu.RUnlock()
+	dbs := e.localDBs
+	if dbs != nil {
+		if dbs.city != nil {
+			mergeLocalResult(&out, dbs.city.Lookup(ip), true, false)
+		}
+		if dbs.asn != nil {
+			mergeLocalResult(&out, dbs.asn.Lookup(ip), false, true)
+		}
+	}
+	if out.Country != "" || out.City != "" || out.ASN != 0 || out.Provider != "" {
+		out.Source = "local"
+	}
 	return out
+}
+
+func mergeLocalResult(out *Enrichment, result *geoip.Result, geography, network bool) {
+	if result == nil {
+		return
+	}
+	if geography {
+		out.Country = first(result.CountryName, result.Country)
+		out.City = result.City
+	}
+	if network {
+		out.ASN = result.ASN
+		out.Provider = result.ASOrg
+	}
+}
+
+func (e *Enricher) setLocalDatabases(dbs *LocalDatabases) {
+	e.sourceMu.Lock()
+	e.localDBs = dbs
+	if dbs != nil {
+		e.startupWarnings = append(e.startupWarnings, dbs.warnings...)
+	}
+	e.sourceMu.Unlock()
+}
+
+// StartupWarnings returns one sanitized, endpoint-free diagnostic per failed
+// startup source check.
+func (e *Enricher) StartupWarnings() []string {
+	e.sourceMu.RLock()
+	defer e.sourceMu.RUnlock()
+	return append([]string(nil), e.startupWarnings...)
+}
+
+func (e *Enricher) SourceSummary() string {
+	e.sourceMu.RLock()
+	defer e.sourceMu.RUnlock()
+	local := "geo:off asn:off"
+	if e.localDBs != nil {
+		local = e.localDBs.summary()
+	}
+	public := "public:ready"
+	if e.cfg.DisablePublic {
+		public = "public:off"
+	}
+	return local + " monitor:" + e.monitorState + " " + public
 }
 
 // Lookup returns cached data immediately and schedules at most one bounded
@@ -600,6 +695,11 @@ func (e *Enricher) Close() {
 		e.mu.Unlock()
 		close(e.stopCh)
 		e.workers.Wait()
+		e.sourceMu.Lock()
+		if e.localDBs != nil {
+			e.localDBs.Close()
+		}
+		e.sourceMu.Unlock()
 		e.mu.Lock()
 		for ip, entry := range e.cache {
 			if !entry.done {

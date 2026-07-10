@@ -485,6 +485,7 @@ func TestCloseDoesNotDrainQueuedLookups(t *testing.T) {
 
 func testEnricher(t *testing.T, cfg Config) *Enricher {
 	t.Helper()
+	cfg.skipMonitorProbe = true
 	e, err := NewEnricher(cfg)
 	if err != nil {
 		t.Fatal(err)

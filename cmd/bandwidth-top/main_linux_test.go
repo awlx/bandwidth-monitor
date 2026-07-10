@@ -16,7 +16,8 @@ func TestHelpDoesNotStartCapture(t *testing.T) {
 		t.Fatalf("got %v", err)
 	}
 	if !strings.Contains(stderr.String(), "Usage: bandwidth-top") ||
-		!strings.Contains(stderr.String(), "CAP_NET_RAW") {
+		!strings.Contains(stderr.String(), "CAP_NET_RAW") ||
+		!strings.Contains(stderr.String(), "checked once at startup") {
 		t.Fatalf("unexpected help:\n%s", stderr.String())
 	}
 }
