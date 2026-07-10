@@ -18,6 +18,27 @@ func TestFormatRateUsesBitsPerSecond(t *testing.T) {
 	}
 }
 
+func TestFormatBytesUsesBinaryAmountUnits(t *testing.T) {
+	tests := []struct {
+		bytes uint64
+		want  string
+	}{
+		{0, "0 B"},
+		{1023, "1023 B"},
+		{1024, "1.00 KiB"},
+		{10 * 1024, "10.0 KiB"},
+		{100 * 1024, "100 KiB"},
+		{1024 * 1024, "1.00 MiB"},
+		{1024 * 1024 * 1024, "1.00 GiB"},
+		{1024 * 1024 * 1024 * 1024, "1.00 TiB"},
+	}
+	for _, test := range tests {
+		if got := FormatBytes(test.bytes); got != test.want {
+			t.Fatalf("FormatBytes(%d)=%q, want %q", test.bytes, got, test.want)
+		}
+	}
+}
+
 func TestTruncate(t *testing.T) {
 	if got := Truncate("abcdefgh", 5); got != "abcd~" {
 		t.Fatalf("got %q", got)
@@ -585,6 +606,53 @@ func TestPortModeStableOffsetsAndBoundsAtEveryWidth(t *testing.T) {
 	}
 }
 
+func TestSinceStartFooterPreservesRatesAmountsAndBounds(t *testing.T) {
+	totals := testTotals()
+	totals.TxBytes = 1024
+	totals.RxBytes = 2048
+	for _, mode := range []ViewMode{ViewHosts, ViewPorts} {
+		row := testFlowRow()
+		row.Port, row.Protocol = "443", "TCP"
+		for _, width := range []int{40, 80, 120, 160} {
+			got := RenderSnapshotForMode([]Row{row}, totals, width, 20, mode)
+			for _, want := range []string{"TX", "RX", "TOTAL", "SINCE START"} {
+				if width >= 80 && !strings.Contains(got, want) {
+					t.Fatalf("mode %d width %d missing %q:\n%s", mode, width, want, got)
+				}
+			}
+			if width >= 80 {
+				for _, want := range []string{"1.00 KiB", "2.00 KiB", "3.00 KiB"} {
+					if !strings.Contains(got, want) {
+						t.Fatalf("mode %d width %d missing amount %q:\n%s", mode, width, want, got)
+					}
+				}
+			}
+			for _, line := range strings.Split(strings.TrimSuffix(got, "\n"), "\n") {
+				if gotWidth := displayWidth(line); gotWidth > width {
+					t.Fatalf("mode %d width %d produced %d cells: %q", mode, width, gotWidth, line)
+				}
+			}
+			if strings.Contains(got, "KiB/s") || strings.Contains(got, "Kibit") {
+				t.Fatalf("amount rendered as a rate:\n%s", got)
+			}
+		}
+	}
+}
+
+func TestSinceStartCombinedAmountSaturates(t *testing.T) {
+	const maxUint64 = ^uint64(0)
+	if got := saturatingByteSum(maxUint64-1, 10); got != maxUint64 {
+		t.Fatalf("combined amount wrapped: %d", got)
+	}
+}
+
+func TestLegacyRenderDoesNotInventSinceStartTotals(t *testing.T) {
+	got := Render([]Row{testFlowRow()}, 120)
+	if strings.Contains(got, "SINCE START") {
+		t.Fatalf("legacy renderer invented unavailable cumulative totals:\n%s", got)
+	}
+}
+
 func testFlowRow() Row {
 	return Row{
 		LocalIP: "192.0.2.10",
@@ -603,7 +671,10 @@ func testFlowRow() Row {
 
 func testTotals() Totals {
 	row := testFlowRow()
-	return Totals{Tx: row.Stat.Tx, Rx: row.Stat.Rx}
+	return Totals{
+		Tx: row.Stat.Tx, Rx: row.Stat.Rx,
+		TxBytes: 1024, RxBytes: 2048, HasCumulative: true,
+	}
 }
 
 func stripRenderANSI(value string) string {

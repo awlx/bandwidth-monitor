@@ -35,8 +35,11 @@ type Row struct {
 }
 
 type Totals struct {
-	Rx RateWindows
-	Tx RateWindows
+	Rx            RateWindows
+	Tx            RateWindows
+	RxBytes       uint64
+	TxBytes       uint64
+	HasCumulative bool
 }
 
 type flowLayout struct {
@@ -88,6 +91,7 @@ func formatCompactRate(bytesPerSecond float64) string {
 	if bytesPerSecond < 0 {
 		bytesPerSecond = 0
 	}
+
 	value := bytesPerSecond * 8
 	units := []string{"b", "Kb", "Mb", "Gb", "Tb"}
 	unit := 0
@@ -104,6 +108,26 @@ func formatCompactRate(bytesPerSecond float64) string {
 		return fmt.Sprintf("%.1f%s", value, units[unit])
 	default:
 		return fmt.Sprintf("%.0f%s", value, units[unit])
+	}
+}
+
+func FormatBytes(bytes uint64) string {
+	units := []string{"B", "KiB", "MiB", "GiB", "TiB", "PiB", "EiB"}
+	value := float64(bytes)
+	unit := 0
+	for value >= 1024 && unit < len(units)-1 {
+		value /= 1024
+		unit++
+	}
+	switch {
+	case unit == 0:
+		return fmt.Sprintf("%d B", bytes)
+	case value < 10:
+		return fmt.Sprintf("%.2f %s", value, units[unit])
+	case value < 100:
+		return fmt.Sprintf("%.1f %s", value, units[unit])
+	default:
+		return fmt.Sprintf("%.0f %s", value, units[unit])
 	}
 }
 
@@ -305,6 +329,10 @@ func renderFlows(rows []Row, totals Totals, width, maxRows int, ansi bool) strin
 	b.WriteByte('\n')
 	b.WriteString(footerLine("TOTAL", addRates(totals.Tx, totals.Rx), width, ansiBold, ansi))
 	b.WriteByte('\n')
+	if totals.HasCumulative {
+		b.WriteString(color(ansiBold, sinceStartLine(totals, width), ansi))
+		b.WriteByte('\n')
+	}
 	hint := "snapshot complete"
 	if ansi {
 		hint = "Ctrl-C / SIGTERM quit"
@@ -368,6 +396,10 @@ func renderPortFlows(rows []Row, totals Totals, width, maxRows int, ansi bool) s
 	b.WriteByte('\n')
 	b.WriteString(footerLine("TOTAL", addRates(totals.Tx, totals.Rx), width, ansiBold, ansi))
 	b.WriteByte('\n')
+	if totals.HasCumulative {
+		b.WriteString(color(ansiBold, sinceStartLine(totals, width), ansi))
+		b.WriteByte('\n')
+	}
 	hint := "snapshot complete"
 	if ansi {
 		hint = "Ctrl-C / SIGTERM quit"
@@ -375,6 +407,26 @@ func renderPortFlows(rows []Row, totals Totals, width, maxRows int, ansi bool) s
 	b.WriteString(color(ansiDim, Truncate(hint, width), ansi))
 	b.WriteByte('\n')
 	return b.String()
+}
+
+func sinceStartLine(totals Totals, width int) string {
+	tx := FormatBytes(totals.TxBytes)
+	rx := FormatBytes(totals.RxBytes)
+	total := FormatBytes(saturatingByteSum(totals.TxBytes, totals.RxBytes))
+	full := fmt.Sprintf("SINCE START  TX %s  RX %s  TOTAL %s", tx, rx, total)
+	if displayWidth(full) <= width {
+		return full
+	}
+	compact := fmt.Sprintf("since start TX %s RX %s TOTAL %s", tx, rx, total)
+	return Truncate(compact, width)
+}
+
+func saturatingByteSum(a, b uint64) uint64 {
+	const maxUint64 = ^uint64(0)
+	if b > maxUint64-a {
+		return maxUint64
+	}
+	return a + b
 }
 
 func rankWidth(maxRows int) int {

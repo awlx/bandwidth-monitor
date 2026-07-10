@@ -134,6 +134,8 @@ func TestLiveModelPortModeTransitionsStatusHelpAndDNS(t *testing.T) {
 		lookups: make(map[string]int),
 	}
 	model.config.enricher = enricher
+	tracker.totals.TxBytes = 1024
+	tracker.totals.RxBytes = 2048
 
 	updateModel(t, model, tickMsg(time.Now()))
 	if model.mode != bandwidthtop.ViewHosts || tracker.modes[0] != talkers.DirectViewHosts {
@@ -165,6 +167,10 @@ func TestLiveModelPortModeTransitionsStatusHelpAndDNS(t *testing.T) {
 		if !strings.Contains(help, want) {
 			t.Fatalf("help missing %q:\n%s", want, help)
 		}
+	}
+	updateModel(t, model, tea.WindowSizeMsg{Width: 81, Height: 12})
+	if model.totals.TxBytes != 1024 || model.totals.RxBytes != 2048 {
+		t.Fatalf("UI state changes altered cumulative totals: %+v", model.totals)
 	}
 	updateModel(t, model, keyPress("p"))
 	if tracker.modes[3] != talkers.DirectViewHosts {
@@ -490,12 +496,13 @@ func TestComposeFrameCapsPairsAcrossResize(t *testing.T) {
 		maxPairs int
 		minPairs int
 	}{
-		{name: "normal", size: terminalDimensions{width: 119, height: 20}, maxPairs: 5, minPairs: 5},
-		{name: "shrink", size: terminalDimensions{width: 79, height: 8}, maxPairs: 2, minPairs: 2},
+		{name: "normal", size: terminalDimensions{width: 119, height: 20}, maxPairs: 4, minPairs: 4},
+		{name: "shrink", size: terminalDimensions{width: 79, height: 8}, maxPairs: 1, minPairs: 1},
 		{name: "grow", size: terminalDimensions{width: 159, height: 30}, maxPairs: 10, minPairs: 9},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			frame := composeFrame("bandwidth-top", status, rows, bandwidthtop.Totals{}, 99, test.size, true)
+			frame := composeFrame("bandwidth-top", status, rows,
+				bandwidthtop.Totals{HasCumulative: true}, 99, test.size, true)
 			plain := stripTerminalANSI(frame)
 			lines := strings.Split(plain, "\n")
 			if len(lines) > test.size.height {
@@ -514,8 +521,11 @@ func TestComposeFrameCapsPairsAcrossResize(t *testing.T) {
 			if !strings.Contains(plain, "TOTAL") {
 				t.Fatalf("height %d lost aggregate footer:\n%s", test.size.height, plain)
 			}
-			if test.size.height == 8 && !strings.HasPrefix(lines[len(lines)-1], "TOTAL") {
-				t.Fatalf("short frame selected flow metadata instead of structural footer:\n%s", plain)
+			if !strings.Contains(plain, "SINCE START") {
+				t.Fatalf("height %d lost cumulative footer:\n%s", test.size.height, plain)
+			}
+			if test.size.height == 8 && !strings.HasPrefix(lines[len(lines)-1], "SINCE START") {
+				t.Fatalf("short frame did not prioritize cumulative footer:\n%s", plain)
 			}
 		})
 	}
@@ -534,7 +544,8 @@ func TestLookupErrorsBecomeEndpointFreeFrameStatus(t *testing.T) {
 
 func TestSnapshotAndUnsupportedTerminalsNeverAnimate(t *testing.T) {
 	frame := composeFrame("bandwidth-top", []string{"enrichment: public fallback"},
-		terminalTestRows(1), bandwidthtop.Totals{}, 20, terminalDimensions{width: 80}, false)
+		terminalTestRows(1), bandwidthtop.Totals{HasCumulative: true},
+		20, terminalDimensions{width: 80}, false)
 	if strings.Contains(frame, "\x1b") {
 		t.Fatalf("snapshot contains ANSI: %q", frame)
 	}
@@ -554,7 +565,7 @@ func TestPortSnapshotIsANSIFreeAndModeAware(t *testing.T) {
 		"bandwidth-top",
 		[]string{"view: ports | rdns: off"},
 		rows,
-		bandwidthtop.Totals{},
+		bandwidthtop.Totals{HasCumulative: true},
 		20,
 		terminalDimensions{width: 120},
 		false,

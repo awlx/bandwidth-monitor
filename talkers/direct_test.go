@@ -1,6 +1,7 @@
 package talkers
 
 import (
+	"fmt"
 	"net"
 	"testing"
 	"time"
@@ -225,6 +226,81 @@ func TestDirectModeSwitchUsesContinuousRollingData(t *testing.T) {
 		hostTotalsBefore != portTotals || hostTotalsAfter != hostTotalsBefore {
 		t.Fatalf("mode switch reset or changed data: hosts=%+v ports=%+v after=%+v totals=%+v/%+v/%+v",
 			hostsBefore, ports, hostsAfter, hostTotalsBefore, portTotals, hostTotalsAfter)
+	}
+}
+
+func TestDirectCumulativeTotalsAreSharedAndCountAcceptedPacketsOnce(t *testing.T) {
+	now := time.Unix(950, 0)
+	tracker := directAggregationTracker(now.Add(-2 * time.Second))
+	slot := tracker.directRateRing[0]
+	for _, packet := range []*parsedPkt{
+		flowPacket("192.168.1.20", "192.0.2.20", true, false, 100, "TCP", 50000, 443, true),
+		flowPacket("192.0.2.20", "192.168.1.20", false, true, 200, "TCP", 443, 50000, true),
+		flowPacket("192.168.1.20", "192.0.2.20", true, false, 50, "UDP", 50001, 53, true),
+	} {
+		accountDirectTestFlow(tracker, packet, slot)
+	}
+	for _, ambiguous := range []*parsedPkt{
+		directPacket("192.168.1.20", "192.168.1.30", true, true, 999),
+		directPacket("192.0.2.20", "198.51.100.30", false, false, 999),
+	} {
+		if tracker.accountDirectPeer(ambiguous, slot) {
+			t.Fatalf("ambiguous packet was accepted: %+v", ambiguous)
+		}
+	}
+
+	_, hostTotals := tracker.DirectBandwidthSnapshotForModeAt(DirectViewHosts, 10, now)
+	_, portTotals := tracker.DirectBandwidthSnapshotForModeAt(DirectViewPorts, 10, now)
+	if hostTotals.TxBytes != 150 || hostTotals.RxBytes != 200 {
+		t.Fatalf("unexpected cumulative totals: %+v", hostTotals)
+	}
+	if hostTotals != portTotals {
+		t.Fatalf("host and port totals differ: hosts=%+v ports=%+v", hostTotals, portTotals)
+	}
+	if hostTotals.TxBytes+hostTotals.RxBytes != 350 {
+		t.Fatalf("combined bytes=%d", hostTotals.TxBytes+hostTotals.RxBytes)
+	}
+}
+
+func TestDirectCumulativeTotalsStartAtZeroAndSaturate(t *testing.T) {
+	now := time.Unix(975, 0)
+	tracker := directAggregationTracker(now.Add(-2 * time.Second))
+	_, totals := tracker.DirectBandwidthSnapshotForModeAt(DirectViewHosts, 10, now)
+	if totals.RxBytes != 0 || totals.TxBytes != 0 {
+		t.Fatalf("new tracker totals=%+v", totals)
+	}
+
+	const maxUint64 = ^uint64(0)
+	tracker.directTxBytes = maxUint64 - 5
+	tracker.directRxBytes = maxUint64 - 2
+	slot := tracker.directRateRing[0]
+	tracker.accountDirectPeer(
+		directPacket("192.168.1.20", "192.0.2.20", true, false, 10), slot)
+	tracker.accountDirectPeer(
+		directPacket("192.0.2.20", "192.168.1.20", false, true, 10), slot)
+	_, totals = tracker.DirectBandwidthSnapshotForModeAt(DirectViewPorts, 10, now)
+	if totals.TxBytes != maxUint64 || totals.RxBytes != maxUint64 {
+		t.Fatalf("overflow wrapped cumulative totals: %+v", totals)
+	}
+}
+
+func TestDirectCumulativeTotalsIgnorePeerIndexCardinality(t *testing.T) {
+	now := time.Unix(980, 0)
+	tracker := directAggregationTracker(now.Add(-2 * time.Second))
+	slot := tracker.directRateRing[0]
+	for i := 0; i < maxHostsPerBucket; i++ {
+		slot.peers[directPairKey{
+			local: "192.168.1.20", remote: fmt.Sprintf("192.0.2.%d", i),
+		}] = &hostAccum{}
+	}
+	addedToIndex := tracker.accountDirectPeer(
+		directPacket("192.168.1.20", "198.51.100.20", true, false, 77), slot)
+	if addedToIndex {
+		t.Fatal("peer index exceeded its cardinality bound")
+	}
+	if tracker.directTxBytes != 77 || tracker.directRxBytes != 0 {
+		t.Fatalf("cardinality cap suppressed cumulative accounting: tx=%d rx=%d",
+			tracker.directTxBytes, tracker.directRxBytes)
 	}
 }
 

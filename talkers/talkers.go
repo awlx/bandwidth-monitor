@@ -87,6 +87,8 @@ type DirectRateTotals struct {
 	TxRate   float64
 	TxRate10 float64
 	TxRate40 float64
+	RxBytes  uint64
+	TxBytes  uint64
 }
 
 type directPairKey struct {
@@ -184,6 +186,8 @@ type Tracker struct {
 
 	directRateRing    [directRateSlotCount]*directRateSlot
 	directRateRingIdx int
+	directRxBytes     uint64
+	directTxBytes     uint64
 }
 
 func New(devices []string, promiscuous bool, localNets []*net.IPNet, geoDB *geoip.DB, dns *resolver.Resolver) *Tracker {
@@ -617,6 +621,7 @@ func (t *Tracker) directBandwidthSnapshot(n int, now time.Time) ([]DirectTalkerS
 	rates2, elapsed2 := t.directRateFromRing(now, 2*time.Second)
 	rates10, elapsed10 := t.directRateFromRing(now, 10*time.Second)
 	rates40, elapsed40 := t.directRateFromRing(now, 40*time.Second)
+	rxBytes, txBytes := t.directRxBytes, t.directTxBytes
 	t.mu.RUnlock()
 
 	list := make([]DirectTalkerStat, 0, len(rates40))
@@ -655,6 +660,8 @@ func (t *Tracker) directBandwidthSnapshot(n int, now time.Time) ([]DirectTalkerS
 		totals.TxRate40 += stat.TxRate40
 		list = append(list, stat)
 	}
+	totals.RxBytes = rxBytes
+	totals.TxBytes = txBytes
 	sort.Slice(list, func(i, j int) bool {
 		if list[i].RateBytes != list[j].RateBytes {
 			return list[i].RateBytes > list[j].RateBytes
@@ -692,6 +699,7 @@ func (t *Tracker) directPortBandwidthSnapshot(n int, now time.Time) ([]DirectTal
 	peerRates2, peerElapsed2 := t.directRateFromRing(now, 2*time.Second)
 	peerRates10, peerElapsed10 := t.directRateFromRing(now, 10*time.Second)
 	peerRates40, peerElapsed40 := t.directRateFromRing(now, 40*time.Second)
+	rxBytes, txBytes := t.directRxBytes, t.directTxBytes
 	t.mu.RUnlock()
 
 	list := make([]DirectTalkerStat, 0, len(rates40))
@@ -752,6 +760,8 @@ func (t *Tracker) directPortBandwidthSnapshot(n int, now time.Time) ([]DirectTal
 		peerRates2, peerElapsed2, peerRates10, peerElapsed10,
 		peerRates40, peerElapsed40,
 	)
+	totals.RxBytes = rxBytes
+	totals.TxBytes = txBytes
 	return list, totals
 }
 
@@ -1020,6 +1030,8 @@ func (t *Tracker) accountDirectPeer(p *parsedPkt, slot *directRateSlot) bool {
 		pair = directPairKey{local: p.dstStr, remote: p.srcStr}
 		rx = p.wireLen
 	}
+	t.directRxBytes = saturatingAddUint64(t.directRxBytes, rx)
+	t.directTxBytes = saturatingAddUint64(t.directTxBytes, tx)
 	acc, ok := slot.peers[pair]
 	if !ok {
 		if len(slot.peers) >= maxHostsPerBucket {
@@ -1033,6 +1045,14 @@ func (t *Tracker) accountDirectPeer(p *parsedPkt, slot *directRateSlot) bool {
 	acc.txBytes += tx
 	acc.packets++
 	return true
+}
+
+func saturatingAddUint64(current, value uint64) uint64 {
+	const maxUint64 = ^uint64(0)
+	if value > maxUint64-current {
+		return maxUint64
+	}
+	return current + value
 }
 
 // accountDirectFlow keeps remote service aggregation independent of the local

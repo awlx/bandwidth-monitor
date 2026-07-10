@@ -67,8 +67,8 @@ systemd setup, and GeoIP options.
 
 `bandwidth-top` is an iftop-style viewer for ad-hoc inspection of one Linux
 interface. It ranks local/remote flows with outbound and inbound lines, rolling
-2-, 10-, and 40-second rates, and total TX/RX rates. It can enrich peers with
-PTR names, ASN, provider, and location data.
+2-, 10-, and 40-second rates, total TX/RX rates, and traffic amounts since start.
+It can enrich peers with PTR names, ASN, provider, and location data.
 
 In an interactive terminal, press `n` to enable or disable PTR lookups, `h` or
 `?` for key help, and `q` or Ctrl-C to quit. `--no-resolve`/`-n` starts with

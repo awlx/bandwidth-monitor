@@ -137,8 +137,8 @@ func (m *liveModel) refreshSnapshot() {
 
 func (m *liveModel) View() tea.View {
 	size := liveDimensions(m.size, m.config.width)
-	status := m.config.enricher.SourceStatusLines(size.width)
-	status = append(status, viewStatus(m.mode)+" | "+rdnsStatus(!m.noResolve)+" | p ports | n rDNS | h/? help | q quit")
+	status := []string{viewStatus(m.mode) + " | " + rdnsStatus(!m.noResolve) + " | p ports | n rDNS | h/? help | q quit"}
+	status = append(status, m.config.enricher.SourceStatusLines(size.width)...)
 	if m.showHelp {
 		status = append(status, "keys: p toggle ports | n toggle rDNS | q quit | h/? close help")
 	}
@@ -255,6 +255,9 @@ func mapSnapshotRows(
 		Tx: bandwidthtop.RateWindows{
 			Two: rateTotals.TxRate, Ten: rateTotals.TxRate10, Forty: rateTotals.TxRate40,
 		},
+		RxBytes:       rateTotals.RxBytes,
+		TxBytes:       rateTotals.TxBytes,
+		HasCumulative: true,
 	}
 }
 
@@ -318,11 +321,18 @@ func composeFrameForMode(title string, status []string, rows []bandwidthtop.Row,
 
 	height := size.height
 	status = boundedLines(status, width)
-	for len(status) > 1 && 1+len(status)+7 > height {
+	minimumBody := 7
+	if totals.HasCumulative {
+		minimumBody++
+	}
+	if len(rows) > 0 {
+		minimumBody += 2
+	}
+	for len(status) > 1 && 1+len(status)+minimumBody > height {
 		status = status[:len(status)-1]
 	}
-	if 1+len(status)+7 <= height {
-		pairLimit := maxInt(0, (height-1-len(status)-7)/2)
+	if 1+len(status)+8 <= height {
+		pairLimit := maxInt(0, (height-1-len(status)-8)/2)
 		if len(rows) == 0 || pairLimit > 0 {
 			if len(rows) > pairLimit {
 				rows = rows[:pairLimit]
@@ -335,8 +345,8 @@ func composeFrameForMode(title string, status []string, rows []bandwidthtop.Row,
 	return composeShortFrameForMode(title, status, rows, totals, maxRows, width, height, mode)
 }
 
-// Very short terminals preserve title, column identity, and TOTAL first. The
-// fallback chain, complete pairs, and TX/RX details are added as space permits.
+// Very short terminals preserve title and since-start totals first. Rate totals,
+// column identity, and complete pairs are added as space permits.
 func composeShortFrame(title string, status []string, rows []bandwidthtop.Row, totals bandwidthtop.Totals, maxRows, width, height int) string {
 	return composeShortFrameForMode(title, status, rows, totals, maxRows, width, height, bandwidthtop.ViewHosts)
 }
@@ -349,38 +359,48 @@ func composeShortFrameForMode(title string, status []string, rows []bandwidthtop
 	headerIndex := lineContaining(rendered, "LOCAL")
 	header := ""
 	total := ""
+	sinceStart := ""
 	if headerIndex >= 0 {
 		header = rendered[headerIndex]
 	}
-	footerStart := len(rendered) - 5
+	footerLines := 5
+	if totals.HasCumulative {
+		footerLines++
+	}
+	footerStart := len(rendered) - footerLines
 	if footerStart >= 0 {
 		total = rendered[footerStart+3]
+		if totals.HasCumulative {
+			sinceStart = rendered[footerStart+4]
+		}
 	}
 	lines := []string{title}
 	remaining := height - 1
 	if remaining == 1 {
-		if total != "" {
+		if sinceStart != "" {
+			lines = append(lines, sinceStart)
+		} else if total != "" {
 			lines = append(lines, total)
 		}
 		return strings.Join(lines, "\n")
 	}
-	if len(status) > 0 && remaining >= 3 {
+	if len(status) > 0 && remaining >= 4 {
 		lines = append(lines, status[0])
 		remaining--
 	}
-	if header != "" && remaining >= 2 {
+	if header != "" && remaining >= 3 {
 		lines = append(lines, header)
 		remaining--
 	}
 	pairStart := headerIndex + 1
 	for pair := 0; pair < len(rows) && pairStart >= 1 &&
-		pairStart+1 < len(rendered) && remaining >= 3; pair++ {
+		pairStart+1 < len(rendered) && remaining >= 4; pair++ {
 		lines = append(lines, rendered[pairStart], rendered[pairStart+1])
 		pairStart += 2
 		remaining -= 2
 	}
 	for offset := 1; offset <= 2; offset++ {
-		if remaining <= 1 {
+		if remaining <= 2 {
 			break
 		}
 		if footerStart >= 0 {
@@ -390,6 +410,10 @@ func composeShortFrameForMode(title string, status []string, rows []bandwidthtop
 	}
 	if remaining > 0 && total != "" {
 		lines = append(lines, total)
+		remaining--
+	}
+	if remaining > 0 && sinceStart != "" {
+		lines = append(lines, sinceStart)
 	}
 	if len(lines) > height {
 		lines = lines[:height]
