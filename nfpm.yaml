@@ -6,7 +6,7 @@ maintainer: "Annika Wickert <awlx@users.noreply.github.com>"
 description: "Real-time network monitoring dashboard with embedded web UI"
 vendor: "awlx"
 homepage: "https://github.com/awlx/bandwidth-monitor"
-license: "ISC"
+license: "AGPL-3.0-only"
 
 contents:
   - src: ./bandwidth-monitor
@@ -15,7 +15,7 @@ contents:
       mode: 0755
 
   - src: ./env.example
-    dst: /usr/share/doc/bandwidth-monitor/env.example
+    dst: /usr/share/bandwidth-monitor/env.example
     file_info:
       mode: 0644
 
@@ -30,5 +30,7 @@ contents:
       mode: 0755
 
 scripts:
+  preinstall: ./packaging/preinstall.sh
   postinstall: ./packaging/postinstall.sh
   preremove: ./packaging/preremove.sh
+  postremove: ./packaging/postremove.sh

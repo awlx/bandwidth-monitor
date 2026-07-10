@@ -1,6 +1,13 @@
 #!/bin/sh
 set -e
 
+# Complete the transition from the old dpkg-managed conffile. Modified
+# administrator configuration is retained as .dpkg-bak by the helper.
+if command -v dpkg-maintscript-helper >/dev/null 2>&1 &&
+    dpkg-maintscript-helper supports rm_conffile; then
+    dpkg-maintscript-helper rm_conffile /etc/bandwidth-monitor/env -- "$@"
+fi
+
 # Create working directory for GeoIP databases
 mkdir -p /var/lib/bandwidth-monitor
 chmod 0755 /var/lib/bandwidth-monitor
@@ -9,10 +16,14 @@ chmod 0755 /var/lib/bandwidth-monitor
 # conffile, so upgrades never prompt or replace administrator settings.
 config_dir=/etc/bandwidth-monitor
 config_file=$config_dir/env
-example_file=/usr/share/doc/bandwidth-monitor/env.example
+example_file=/usr/share/bandwidth-monitor/env.example
 mkdir -p "$config_dir"
 if [ ! -e "$config_file" ]; then
-    install -m 0600 "$example_file" "$config_file"
+    if [ -e "$config_file.dpkg-bak" ]; then
+        mv "$config_file.dpkg-bak" "$config_file"
+    else
+        install -m 0600 "$example_file" "$config_file"
+    fi
 fi
 
 # Always enable and (re)start the service.  The old package's prerm may

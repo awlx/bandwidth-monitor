@@ -10,7 +10,6 @@ Single-binary deployment with an embedded web UI, optional DNS stats (AdGuard Ho
 - [Features](#features)
 - [Quick Start](#quick-start)
 - [Installation](#installation)
-  - [Service Management](#service-management)
 - [Configuration](#configuration)
 - [macOS Menu Bar Plugin](#macos-menu-bar-plugin)
 - [Windows System Tray Widget](#windows-system-tray-widget)
@@ -18,6 +17,7 @@ Single-binary deployment with an embedded web UI, optional DNS stats (AdGuard Ho
 - [iOS App](#ios-app)
 - [Architecture](#architecture)
 - [API Endpoints](#api-endpoints)
+- [Development and Validation](#development-and-validation)
 - [External Services Transparency](#external-services-transparency)
 - [Notes](#notes)
 - [License](#license)
@@ -83,8 +83,6 @@ Single-binary deployment with an embedded web UI, optional DNS stats (AdGuard Ho
 - **IP version breakdown** — IPv4 vs IPv6 traffic split
 - **GeoIP enrichment** — country flags, city names, ASN org names via MaxMind MMDB files (city-level precision with GeoLite2-City)
 - **Reverse DNS** — resolves IPs to hostnames via a shared resolver with TTL-based cache expiry and bounded concurrency
-- **Traffic world map** — live SVG map showing traffic flows with directional RX/TX lines (green for download, orange for upload), city-level coordinates when available, animated flow lines sized by rate, with zoom/pan controls
-- **Latency monitor** — continuous ICMP + HTTPS probes against configurable targets (default: FFMUC anycast, Quad9, Digitalcourage) with rolling sparklines, RTT, jitter, and packet loss; dual-stack IPv4+IPv6; 15-minute history
 
 ### DNS Tab
 
@@ -115,6 +113,17 @@ Single-binary deployment with an embedded web UI, optional DNS stats (AdGuard Ho
 - **Full entry table** — original and reply tuples with translated addresses highlighted, searchable and filterable by NAT type
 - **macOS menu bar** — SwiftBar plugin shows connection count, table usage, IPv4/IPv6 split, and SNAT/DNAT counts
 
+### Network Tab
+
+- **Network topology** — discovers local clients and infrastructure and renders their relationships
+- **Client inventory** — shows names, addresses, vendors, connection state, and traffic context when available
+
+### Monitor Tab
+
+- **Traffic world map** — live SVG map showing traffic flows with directional RX/TX lines (green for download, orange for upload), city-level coordinates when available, animated flow lines sized by rate, with zoom/pan controls
+- **Active countries** — summarizes current remote traffic by country and links back to matching talkers
+- **Latency monitor** — continuous ICMP + HTTPS probes against configurable targets (default: FFMUC anycast, Quad9, Digitalcourage) with rolling sparklines, RTT, jitter, and packet loss; dual-stack IPv4+IPv6; 15-minute history
+
 ### Speed Test Tab
 
 - **Server-side speed test** — runs download/upload/ping tests from the router against [speed.ffmuc.net](https://speed.ffmuc.net) (OpenSpeedTest)
@@ -129,6 +138,9 @@ Single-binary deployment with an embedded web UI, optional DNS stats (AdGuard Ho
 - **Traceroute** — native Go ICMP traceroute with configurable probes per hop (default 20), using raw sockets with proper TTL manipulation and ICMP ID matching; shows per-hop IP, reverse DNS hostname (always fresh, bypasses cache), avg/min/max RTT, and packet loss percentage; supports IPv4 and IPv6; streams progress via SSE
 - **DNS Check** — queries a domain (A, AAAA, MX, TXT, NS, CNAME, SOA, PTR) against 14 DNS servers in parallel: System Resolver, FFMUC Anycast01/02 (IPv4+IPv6), Cloudflare (IPv4+IPv6), Google (IPv4+IPv6), Quad9 (IPv4+IPv6), and OpenDNS (IPv4+IPv6); shows comparison matrix, RCode, latency, TTL, DNSSEC AD flag per server; highlights the fastest server and flags records unique to a single server
 - **Resolver leak check** — automatically detects which public IPs your system resolver uses when talking to authoritative servers, via `o-o.myaddr.l.google.com` TXT and `dnscheck.tools` TXT (including IPv4-only and IPv6-only variants); shows the configured local resolver from `/etc/resolv.conf`, upstream egress IPs, EDNS Client Subnet info, and resolver org/geo from dnscheck.tools
+- **Path MTU discovery** — probes a target from a selected interface and streams progress
+- **Public IP check** — compares address-family and interface-specific egress
+- **TCP connectivity check** — tests a host and port from a selected interface
 
 ### General
 
@@ -136,7 +148,9 @@ Single-binary deployment with an embedded web UI, optional DNS stats (AdGuard Ho
 - **Dark/light/auto theme** — saved to localStorage
 - **Fully embedded UI** — all HTML/CSS/JS baked into the binary via `go:embed`
 - **macOS menu bar plugin** — SwiftBar/xbar script showing live stats
-- **Windows system tray widget** — PowerShell script showing live stats in the notification area- **GNOME/Linux indicator** -- Python AppIndicator showing live stats in the top bar
+- **Windows system tray widget** — PowerShell script showing live stats in the notification area
+- **GNOME/Linux indicator** — Python AppIndicator showing live stats in the top bar
+
 ---
 
 ## Quick Start
@@ -200,7 +214,7 @@ sudo apt install bandwidth-monitor
 ```bash
 sudo dpkg -i bandwidth-monitor_*.deb
 sudo vi /etc/bandwidth-monitor/env
-sudo systemctl enable --now bandwidth-monitor
+sudo systemctl restart bandwidth-monitor
 ```
 
 #### RHEL / Fedora
@@ -273,15 +287,16 @@ Or run directly without installing:
 nix run github:awlx/bandwidth-monitor
 ```
 
-### Debian and RPM packages
+### System package layout and upgrades
 
 System packages install the binary in `/usr/bin`, service definitions in the
 platform service directories, and configuration in
 `/etc/bandwidth-monitor/env`. On first installation the configuration is
 created with mode `0600` from the packaged example. It is not managed as a
 Debian conffile: package upgrades are noninteractive and always preserve the
-administrator-owned file, including any credentials it contains. New example
-settings are available in `/usr/share/doc/bandwidth-monitor/env.example`.
+administrator-owned file, including any credentials it contains. Review the
+packaged example at `/usr/share/bandwidth-monitor/env.example` after upgrades
+for newly supported settings.
 
 ### Using the Makefile
 
@@ -323,9 +338,11 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now bandwidth-monitor
 ```
 
-### Systemd Service
+### Standalone systemd service
 
-The included `bandwidth-monitor.service` runs the binary with:
+The root-level `bandwidth-monitor.service` is for the standalone `/opt`
+installation. System packages ship a package-specific unit with `/usr` and
+`/etc` paths. Both units run the binary with:
 - `CAP_NET_RAW` and `CAP_NET_ADMIN` for packet capture and netlink access (no full root needed)
 - `ProtectSystem=strict`, `ProtectHome=yes`, `PrivateTmp=yes` hardening
 - Environment loaded from `/opt/bandwidth-monitor/.env`
@@ -334,8 +351,24 @@ The included `bandwidth-monitor.service` runs the binary with:
 
 ## Configuration
 
-cp env.example /opt/bandwidth-monitor/.env
+Use the configuration path for your installation method:
 
+| Installation | Configuration file |
+|--------------|--------------------|
+| Debian/RPM package | `/etc/bandwidth-monitor/env` |
+| OpenWrt package | `/etc/bandwidth-monitor/env` |
+| `make install` or manual `/opt` install | `/opt/bandwidth-monitor/.env` |
+
+For a standalone install:
+
+```bash
+sudo cp env.example /opt/bandwidth-monitor/.env
+sudo chmod 0600 /opt/bandwidth-monitor/.env
+```
+
+Keep configuration files readable only by the service administrator: they may
+contain controller passwords, API keys, and TLS/APNs key paths. `env.example`
+is the canonical list of documented settings.
 
 ### Environment Variables
 
@@ -348,6 +381,7 @@ cp env.example /opt/bandwidth-monitor/.env
 | `PROMISCUOUS` | `true` | Enable promiscuous mode for packet capture (`true`/`false`) |
 | `DEBUG_HTTP_LOG` | `false` | Log every HTTP request (method, path+query, remote addr, status, response size in bytes, duration) to stdout. Opt-in and noisy — useful for debugging client request patterns (e.g. verifying `?since=`/`?iface=` params and the resulting response size) |
 | `INTERFACES` | *(all)* | Comma-separated list of interfaces to monitor and display (e.g. `eth0,ppp0,wg0`). Controls both the web UI and packet capture. If not set, all interfaces are used. |
+| `WAN_INTERFACE` | *(auto-detect)* | Explicit WAN interface override, useful when the uplink has a private address or auto-detection chooses incorrectly |
 | `GEO_CITY` | `GeoLite2-City.mmdb` | Path to GeoLite2 City MMDB (includes country, city, coordinates for map). ~57 MB. For devices with limited flash (e.g. OpenWrt routers), use `GeoLite2-Country.mmdb` (~6 MB) instead — set `GEO_CITY=GeoLite2-Country.mmdb`. Country data still works, just without city-level map precision. |
 | `GEO_ASN` | `GeoLite2-ASN.mmdb` | Path to GeoLite2 ASN MMDB (~11 MB) |
 
@@ -656,49 +690,33 @@ For running the shared relay gateway yourself, see [docs/apns-gateway.md](docs/a
 
 ## Architecture
 
-main.go                   → entry point, env config, wires all components
-collector/                → netlink-based interface stats (RTM_GETLINK/RTM_GETADDR), rates, 24h history, VPN routing
-conntrack/                → netlink-based conntrack (NAT) table reader via ti-mo/conntrack
-talkers/                  → AF_PACKET raw-socket capture, per-IP tracking, 1-min bucket aggregation + 5s rate ring for responsive peaks
-resolver/                 → shared reverse-DNS resolver with TTL-based cache and bounded concurrency
-latency/                  → continuous ICMP + HTTPS latency monitoring with rolling history
-speedtest/                → HTTP-based speed test client (download/upload/ping against OpenSpeedTest servers)
-debug/                    → traceroute (native ICMP), DNS checker (multi-server), resolver leak detection
-handler/                  → HTTP REST API + SSE streaming handler
-apns/                     → ES256 JWT signing + APNs HTTP/2 push client (shared by liveactivity and apnsgateway)
-liveactivity/             → optional per-instance Live Activity push loop (operator holds own APNs key; off unless APNS_KEY_FILE set)
-contentstate/             → Live Activity content-state builder + peak-preserving downsampler (shared by liveactivity and apnsgateway)
-poller/                   → generic tick-based runner used by liveactivity and apnsgateway
-apnsgateway/              → standalone relay binary (make build-gateway): polls any server's /api/interfaces* and pushes to APNs; the one place holding the key so self-hosters don't need one
-dns/                      → common DNS provider interface
-adguard/                  → AdGuard Home API client (stats, top clients/domains)
-nextdns/                  → NextDNS API client (stats, top clients/domains)
-pihole/                   → Pi-hole v6 API client (stats, top clients/domains, upstreams)
-wifi/                     → common WiFi provider interface
-unifi/                    → UniFi controller API client (APs, SSIDs, clients, live rates)
-omada/                    → TP-Link Omada controller API client (APs, SSIDs, clients, live rates)
-geoip/                    → MaxMind MMDB GeoIP lookups (country, city, coordinates, ASN)
-static/
-  index.html              → HTML shell with seven tabs (Traffic, NAT, DNS, WiFi, Monitor, Speed Test, Debug)
-  app.js                  → all frontend JavaScript (charts, tables, SSE client)
-  style.css               → full stylesheet (dark/light themes)
-swiftbar/                 → macOS menu bar plugin
-windows/                  → Windows system tray widget
-gnome/                    → GNOME/Linux top-bar indicator
-packaging/
-  openwrt-Makefile        → OpenWrt package definition
-  openwrt-files/
-    bandwidth-monitor.init → procd init script for OpenWrt
-    99-vpn-status         → OpenWrt hotplug script for VPN sentinel files
-  postinstall.sh          → deb/rpm post-install script
-  preremove.sh            → deb/rpm pre-remove script
-nfpm.yaml                 → deb/rpm packaging config (nfpm)
-.github/workflows/        → CI: builds deb, rpm, ipk, apk on push & tag
-env.example               → example environment configuration
-bandwidth-monitor.service → systemd unit file
-flake.nix                 → Nix flake with package + NixOS module
-Makefile                  → build, install, GeoIP download targets
-
+```text
+main.go                    Entry point, environment parsing, component wiring, routes
+collector/                 Netlink interface stats, rates, history, VPN routing
+conntrack/                 Netlink conntrack/NAT reader
+talkers/                   AF_PACKET capture, host accounting, rolling rate/volume data
+resolver/                  Shared reverse-DNS resolver and bounded cache
+latency/                   Continuous ICMP and HTTPS probes
+speedtest/                 Server-side download, upload, and latency tests
+debug/                     Traceroute, DNS, MTU, public-IP, and TCP diagnostics
+handler/                   JSON API and SSE handlers
+topology/                  Local network discovery and topology state
+dns/, wifi/                Provider interfaces
+adguard/, nextdns/, pihole/ DNS provider clients
+unifi/, omada/             WiFi controller clients
+geoip/                     MaxMind country, city, coordinate, and ASN lookups
+apns/, liveactivity/       Optional direct iOS Live Activity push support
+apnsgateway/               Standalone APNs relay binary
+contentstate/              Shared Live Activity content-state builder
+poller/                    Idempotent, waitable periodic-runner lifecycle
+static/index.html          Dashboard shell
+static/js/                 Modular frontend core, components, and tab renderers
+webassets/                 Local asset discovery and content fingerprinting
+packaging/                 System-package services, scripts, versioning, and tests
+nfpm.yaml                  Debian/RPM package manifest
+env.example                Canonical documented runtime configuration
+Makefile                   Build, install, and GeoIP targets
+```
 
 ---
 
@@ -710,17 +728,58 @@ Makefile                  → build, install, GeoIP download targets
 | `/api/interfaces/history` | GET | 24h time-series per interface. Optional params: `iface` (single interface), `since` (Unix ms — only newer points). Additive: servers predating them ignore them and return everything |
 | `/api/talkers/bandwidth` | GET | Top 10 by current bandwidth |
 | `/api/talkers/volume` | GET | Top 10 by 24h volume |
+| `/api/talkers/country` | GET | Talker aggregation by country |
+| `/api/talkers/asn` | GET | Talker aggregation by autonomous system |
 | `/api/dns` | GET | DNS summary (AdGuard Home, NextDNS, or Pi-hole) |
 | `/api/wifi` | GET | WiFi summary (UniFi or Omada) |
 | `/api/latency` | GET | Latency monitoring status (ICMP + HTTPS probes) |
 | `/api/conntrack` | GET | NAT / conntrack summary (connections, states, NAT types, entries) |
+| `/api/host` | GET | Detail for one host; parameter: `ip` |
+| `/api/host/dns` | GET | Recent DNS activity for one host; parameter: `ip` |
 | `/api/speedtest/run` | POST | Start a speed test; streams progress as SSE (Server-Sent Events) |
 | `/api/speedtest/results` | GET | Speed test history (last 50 results) and running status |
+| `/api/speedtest/interfaces` | GET | Interfaces available for speed-test binding |
 | `/api/debug/traceroute` | POST | ICMP traceroute with SSE progress; params: `target`, `count` (probes/hop), `maxttl` |
 | `/api/debug/dns` | GET | DNS check against 14 servers + resolver leak test; params: `domain`, `type` |
+| `/api/debug/mtu` | POST | Path MTU discovery with SSE progress |
+| `/api/debug/publicip` | GET | Interface-bound public address check |
+| `/api/debug/tcpcheck` | GET | Interface-bound TCP connectivity check |
 | `/api/summary` | GET | Compact summary for menu bar clients |
+| `/api/topology` | GET | Current discovered network topology |
 | `/api/events` | GET | SSE stream — pushes interface rates, talkers, DNS/WiFi/latency summaries every second (Server-Sent Events, gzip-compressed when the client accepts it). Conntrack and topology are deliberately excluded — poll `/api/conntrack`/`/api/topology` directly instead |
 | `/api/liveactivity/register` | POST | Register an iOS Live Activity push token (only available when `APNS_KEY_FILE` is set) |
+
+---
+
+## Development and Validation
+
+The runtime targets Linux and uses Linux-only networking APIs. Run the complete
+Go suite on Linux:
+
+```bash
+go test ./...
+go test -race ./poller
+go vet ./...
+go build ./...
+```
+
+Frontend and packaging checks:
+
+```bash
+node static/js/utils.test.js
+for file in static/js/*.js static/js/components/*.js static/js/tabs/*.js; do
+  node --check "$file"
+done
+./packaging/test-packaging.sh
+```
+
+Maintainer source-of-truth map:
+
+- Add runtime settings to `main.go`, `env.example`, and `packaging/runtime-env.list`; the packaging test enforces parity.
+- Register HTTP routes in `main.go` and update the API table above.
+- Add local scripts/styles to `static/index.html`; `webassets` discovers and fingerprints them at startup.
+- Keep standalone `/opt` service files separate from package-specific files under `packaging/`.
+- JavaScript that writes dynamic HTML must use the contextual escaping and numeric helpers in `static/js/utils.js`.
 
 ---
 
@@ -753,7 +812,9 @@ User-configured services (AdGuard Home, NextDNS, Pi-hole, UniFi Controller, Omad
 
 FFMUC services ([`speed.ffmuc.net`](https://speed.ffmuc.net), [`ip.ffmuc.net`](https://ip.ffmuc.net), Anycast DNS) are operated by [Freie Netze München e.V.](https://ffmuc.net/) — see their [privacy policy](https://ffmuc.net/privacy/).
 
-**No telemetry, no analytics, no crash reporting, no update checks.** The binary phones home to nothing.
+**No telemetry, analytics, crash reporting, or update checks.** Network requests
+are limited to the configured integrations and explicitly listed optional or
+diagnostic services above.
 
 ---
 

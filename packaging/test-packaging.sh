@@ -11,11 +11,11 @@ fail() {
 }
 
 assert_contains() {
-	grep -F "$2" "$1" >/dev/null || fail "$1 does not contain $2"
+	grep -F -- "$2" "$1" >/dev/null || fail "$1 does not contain $2"
 }
 
 assert_not_contains() {
-	if grep -F "$2" "$1" >/dev/null; then
+	if grep -F -- "$2" "$1" >/dev/null; then
 		fail "$1 unexpectedly contains $2"
 	fi
 }
@@ -45,10 +45,18 @@ sed -n 's/^[[:space:]]*\([A-Z][A-Z0-9_]*\)="${.*/\1/p' \
 cmp "$tmp/expected-env" "$tmp/openwrt-env" ||
 	fail "OpenWrt init does not forward every supported runtime variable"
 
-assert_contains "$repo/nfpm.yaml" "dst: /usr/share/doc/bandwidth-monitor/env.example"
+assert_contains "$repo/nfpm.yaml" "dst: /usr/share/bandwidth-monitor/env.example"
 assert_not_contains "$repo/nfpm.yaml" "dst: /etc/bandwidth-monitor/env"
+assert_contains "$repo/nfpm.yaml" 'license: "AGPL-3.0-only"'
+assert_contains "$repo/.github/workflows/release.yml" '-I "license:AGPL-3.0-only"'
 assert_contains "$repo/packaging/postinstall.sh" 'if [ ! -e "$config_file" ]; then'
+assert_contains "$repo/packaging/postinstall.sh" 'if [ -e "$config_file.dpkg-bak" ]; then'
+assert_contains "$repo/packaging/postinstall.sh" 'mv "$config_file.dpkg-bak" "$config_file"'
 assert_contains "$repo/packaging/postinstall.sh" 'install -m 0600 "$example_file" "$config_file"'
+for script in preinstall.sh postinstall.sh postremove.sh; do
+	assert_contains "$repo/packaging/$script" \
+		"dpkg-maintscript-helper rm_conffile /etc/bandwidth-monitor/env"
+done
 
 older_nfpm=$("$repo/packaging/package-version.sh" nfpm branch main 100 1 0123456789abcdef)
 newer_nfpm=$("$repo/packaging/package-version.sh" nfpm branch main 101 1 fedcba9876543210)
@@ -84,8 +92,10 @@ if command -v nfpm >/dev/null 2>&1; then
 	cp "$repo/nfpm.yaml" "$repo/env.example" "$tmp/build/"
 	cp "$repo/packaging/bandwidth-monitor.service" \
 		"$repo/packaging/bandwidth-monitor.openrc" \
+		"$repo/packaging/preinstall.sh" \
 		"$repo/packaging/postinstall.sh" \
 		"$repo/packaging/preremove.sh" \
+		"$repo/packaging/postremove.sh" \
 		"$tmp/build/packaging/"
 	printf '#!/bin/sh\nexit 0\n' > "$tmp/build/bandwidth-monitor"
 	chmod 0755 "$tmp/build/bandwidth-monitor"
@@ -103,10 +113,15 @@ if command -v nfpm >/dev/null 2>&1; then
 		assert_contains "$tmp/deb-info" "Version: $newer_nfpm"
 		assert_contains "$tmp/deb-contents" "./usr/bin/bandwidth-monitor"
 		assert_contains "$tmp/deb-contents" "./etc/init.d/bandwidth-monitor"
-		assert_contains "$tmp/deb-contents" "./usr/share/doc/bandwidth-monitor/env.example"
+		assert_contains "$tmp/deb-contents" "./usr/share/bandwidth-monitor/env.example"
 		assert_not_contains "$tmp/deb-contents" "./etc/bandwidth-monitor/env"
 		dpkg-deb --control "$tmp/package.deb" "$tmp/control"
 		[ ! -e "$tmp/control/conffiles" ] || fail "Debian package still declares conffiles"
+		assert_contains "$tmp/control/preinst" \
+			"dpkg-maintscript-helper rm_conffile /etc/bandwidth-monitor/env"
+		assert_contains "$tmp/control/postinst" 'mv "$config_file.dpkg-bak" "$config_file"'
+		assert_contains "$tmp/control/postrm" \
+			"dpkg-maintscript-helper rm_conffile /etc/bandwidth-monitor/env"
 	fi
 fi
 
