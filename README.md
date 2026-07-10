@@ -282,8 +282,8 @@ Pre-built packages are available from [GitHub Releases](https://github.com/awlx/
 |--------|--------------|----------|
 | `.deb` | amd64, arm64 | Debian, Ubuntu, Raspbian |
 | `.rpm` | amd64, arm64 | Fedora, RHEL, AlmaLinux |
-| `.ipk` | x86_64, aarch64, mips_24kc, mipsel_24kc | OpenWrt 23.05 (stable) |
-| `.apk` | x86_64, aarch64 | OpenWrt snapshot (nightly) |
+| `.ipk` | x86_64, aarch64, mips_24kc, mipsel_24kc, arm_cortex-a7_neon-vfpv4 | OpenWrt 23.05 (stable) |
+| `.apk` | x86_64, aarch64, arm_cortex-a7_neon-vfpv4 | OpenWrt snapshot (nightly) |
 | Nix flake | any | NixOS / Nix on Linux |
 
 Each format publishes independent `bandwidth-monitor` and `bandwidth-top`
