@@ -59,6 +59,7 @@
 
         document.getElementById('trResults').style.display = 'none';
 
+        var finished = false;
         BM.streamSSE({
             url: '/api/debug/traceroute?target=' + encodeURIComponent(target) + '&count=' + count + (iface ? '&iface=' + encodeURIComponent(iface) : ''),
             method: 'POST',
@@ -81,14 +82,22 @@
                     finishTraceroute();
                 }
             },
-            onDone: function() {},
-            onError: function() {
-                phase.textContent = 'Connection error';
+            onDone: function() {
+                if (finished) return;
+                phase.textContent = 'Connection closed before traceroute completed';
+                bar.className = 'speedtest-progress-bar-fill error';
+                finishTraceroute();
+            },
+            onError: function(err) {
+                phase.textContent = 'Error — ' + BM.describeStreamError(err);
+                bar.className = 'speedtest-progress-bar-fill error';
                 finishTraceroute();
             }
         });
 
         function finishTraceroute() {
+            if (finished) return;
+            finished = true;
             _trRunning = false;
             btn.disabled = false;
             btn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px"><polygon points="5 3 19 12 5 21 5 3"/></svg> Run';
@@ -152,6 +161,7 @@
 
         var probeCount = 0;
 
+        var finished = false;
         BM.streamSSE({
             url: '/api/debug/mtu?target=' + encodeURIComponent(target) + (iface ? '&iface=' + encodeURIComponent(iface) : ''),
             method: 'POST',
@@ -172,14 +182,22 @@
                     finishMTU();
                 }
             },
-            onDone: function() {},
-            onError: function() {
-                phase.textContent = 'Connection error';
+            onDone: function() {
+                if (finished) return;
+                phase.textContent = 'Connection closed before MTU discovery completed';
+                bar.className = 'speedtest-progress-bar-fill error';
+                finishMTU();
+            },
+            onError: function(err) {
+                phase.textContent = 'Error — ' + BM.describeStreamError(err);
+                bar.className = 'speedtest-progress-bar-fill error';
                 finishMTU();
             }
         });
 
         function finishMTU() {
+            if (finished) return;
+            finished = true;
             _mtuRunning = false;
             btn.disabled = false;
             btn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px"><path d="M12 2v20M2 12h20"/></svg> Discover';

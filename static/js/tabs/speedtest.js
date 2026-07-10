@@ -175,35 +175,12 @@
         var iface = (ifaceSel && ifaceSel.style.display !== 'none') ? ifaceSel.value : '';
         var runUrl = '/api/speedtest/run' + (iface ? ('?iface=' + encodeURIComponent(iface)) : '');
 
-        fetch(runUrl, { method: 'POST' }).then(function(resp) {
-            if (resp.status === 409) {
-                phase.textContent = 'Test already running';
-                return;
-            }
-            var reader = resp.body.getReader();
-            var decoder = new TextDecoder();
-            var buffer = '';
+        var finished = false;
 
-            function processChunk() {
-                return reader.read().then(function(result) {
-                    if (result.done) return;
-                    buffer += decoder.decode(result.value, { stream: true });
-                    var lines = buffer.split('\n');
-                    buffer = lines.pop();
-
-                    for (var i = 0; i < lines.length; i++) {
-                        var line = lines[i].trim();
-                        if (!line.startsWith('data: ')) continue;
-                        try {
-                            var p = JSON.parse(line.substring(6));
-                            handleProgress(p);
-                        } catch(e) {}
-                    }
-                    return processChunk();
-                });
-            }
-
-            function handleProgress(p) {
+        BM.streamSSE({
+            url: runUrl,
+            method: 'POST',
+            onMessage: function(p) {
                 if (p.phase === 'ping') {
                     phase.textContent = 'Measuring latency...';
                     bar.style.width = (p.percent * 0.10) + '%';
@@ -245,19 +222,29 @@
                     BM.loadSpeedTestHistory();
                     finishTest();
                 } else if (p.phase === 'error') {
-                    phase.textContent = 'Error — test failed';
+                    phase.textContent = p.message || 'Error — test failed';
                     bar.className = 'speedtest-progress-bar-fill error';
                     finishTest();
                 }
+            },
+            onDone: function() {
+                if (finished) return;
+                phase.textContent = 'Connection closed before test completed';
+                bar.className = 'speedtest-progress-bar-fill error';
+                finishTest();
+            },
+            onError: function(err) {
+                phase.textContent = err && err.status === 409
+                    ? 'Test already running'
+                    : 'Error — ' + BM.describeStreamError(err);
+                bar.className = 'speedtest-progress-bar-fill error';
+                finishTest();
             }
-
-            return processChunk();
-        }).catch(function(e) {
-            phase.textContent = 'Connection error';
-            finishTest();
         });
 
         function finishTest() {
+            if (finished) return;
+            finished = true;
             _stRunning = false;
             btn.disabled = false;
             btn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px"><polygon points="5 3 19 12 5 21 5 3"/></svg> Start Test';

@@ -2,9 +2,7 @@ package main
 
 import (
 	"context"
-	"crypto/sha256"
 	"embed"
-	"encoding/hex"
 	"fmt"
 	"io/fs"
 	"log"
@@ -34,6 +32,7 @@ import (
 	"bandwidth-monitor/topology"
 	"bandwidth-monitor/unifi"
 	"bandwidth-monitor/version"
+	"bandwidth-monitor/webassets"
 	"bandwidth-monitor/wifi"
 )
 
@@ -353,8 +352,10 @@ func main() {
 	// Safari caches the response with heuristic expiration and never
 	// revalidates — even on Cmd+R.  Injecting ?v=<hash> into the HTML
 	// forces the browser to fetch fresh assets after every build.
-	assetVersion := computeAssetVersions(staticFiles)
-	indexHTML := buildIndexHTML(staticFiles, assetVersion)
+	indexHTML, err := webassets.BuildIndexHTML(staticSub, version.String())
+	if err != nil {
+		log.Fatalf("Build embedded index: %v", err)
+	}
 
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" && r.URL.Path != "/index.html" {
@@ -430,42 +431,6 @@ func main() {
 		liveActivityMgr.Stop()
 	}
 	dnsResolver.Stop()
-}
-
-// computeAssetVersions hashes key embedded files to produce short
-// cache-busting version strings.  The returned map is keyed by
-// filename (e.g. "app.js") → 8-char hex hash.
-func computeAssetVersions(embedded embed.FS) map[string]string {
-	versions := make(map[string]string)
-	for _, name := range []string{"static/js/core.js", "static/style.css"} {
-		data, err := embedded.ReadFile(name)
-		if err != nil {
-			continue
-		}
-		h := sha256.Sum256(data)
-		// Use the path relative to static/ as key (e.g. "js/core.js", "style.css")
-		relPath := strings.TrimPrefix(name, "static/")
-		versions[relPath] = hex.EncodeToString(h[:4])
-	}
-	return versions
-}
-
-// buildIndexHTML reads the embedded index.html and injects ?v=<hash>
-// into script src and link href attributes for cache-busted assets.
-func buildIndexHTML(embedded embed.FS, versions map[string]string) []byte {
-	data, err := embedded.ReadFile("static/index.html")
-	if err != nil {
-		log.Fatalf("embedded index.html: %v", err)
-	}
-	html := string(data)
-	for name, ver := range versions {
-		// Replace href="style.css" → href="style.css?v=abcd1234"
-		// Replace src="app.js"     → src="app.js?v=abcd1234"
-		html = strings.ReplaceAll(html, `"`+name+`"`, `"`+name+"?v="+ver+`"`)
-	}
-	// Inject the build version into the header.
-	html = strings.Replace(html, "Bandwidth Monitor<span>v1.0</span>", "Bandwidth Monitor<span>"+version.String()+"</span>", 1)
-	return []byte(html)
 }
 
 // withSignature wraps an http.Handler to inject a X-Bandwidth-Monitor header
