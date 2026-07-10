@@ -73,6 +73,35 @@ jobs:
           export VERSION="${VERSION#v}"
           nfpm package -p deb -f nfpm.yaml
 
+      - name: Test deb install and upgrade
+        if: matrix.goarch == 'amd64'
+        run: |
+          package="$(find . -maxdepth 1 -name '*.deb' -print -quit)"
+          test -n "$package"
+
+          # Reproduce minimal systems that intentionally omit package docs.
+          echo 'path-exclude=/usr/share/doc/*' |
+            sudo tee /etc/dpkg/dpkg.cfg.d/99-bandwidth-monitor-test >/dev/null
+
+          sudo env DEBIAN_FRONTEND=noninteractive dpkg -i "$package"
+          test -f /etc/bandwidth-monitor/env
+          test -f /usr/share/bandwidth-monitor/env.example
+          test "$(stat -c '%a' /etc/bandwidth-monitor/env)" = "600"
+          ! dpkg-query -W -f='${Conffiles}\n' bandwidth-monitor |
+            grep -q '/etc/bandwidth-monitor/env'
+          verify="$(dpkg -V bandwidth-monitor)"
+          test -z "$verify"
+
+          sudo sh -c "printf '\n# locally-managed-setting\n' >> /etc/bandwidth-monitor/env"
+          before="$(sudo sha256sum /etc/bandwidth-monitor/env | awk '{print $1}')"
+          sudo env DEBIAN_FRONTEND=noninteractive dpkg -i "$package"
+          after="$(sudo sha256sum /etc/bandwidth-monitor/env | awk '{print $1}')"
+          test "$before" = "$after"
+          ! dpkg-query -W -f='${Conffiles}\n' bandwidth-monitor |
+            grep -q '/etc/bandwidth-monitor/env'
+          verify="$(dpkg -V bandwidth-monitor)"
+          test -z "$verify"
+
       - name: Build rpm
         env:
           VERSION: ${{ env.PACKAGE_VERSION }}
@@ -191,7 +220,7 @@ jobs:
               -I "url:https://github.com/awlx/bandwidth-monitor" \
               -I "build-time:${BUILDDATE}" \
               -I "arch:${ARCH}" \
-              -I "license:ISC" \
+              -I "license:AGPL-3.0-only" \
               -I "maintainer:Annika Wickert <awlx@users.noreply.github.com>" \
               -F "$PKG_DIR" \
               -o "$APK_FILE"
