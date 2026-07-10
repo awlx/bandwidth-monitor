@@ -141,6 +141,10 @@ jobs:
           - arch: aarch64_cortex-a53
             goarch: arm64
             pkg_format: ipk
+          - arch: arm_cortex-a7_neon-vfpv4
+            goarch: arm
+            goarm: "7"
+            pkg_format: ipk
           # ── OpenWrt SNAPSHOT (nightly, apk) ──
           - arch: x86_64-snapshot
             goarch: amd64
@@ -150,6 +154,10 @@ jobs:
             pkg_format: apk
           - arch: aarch64_cortex-a53-snapshot
             goarch: arm64
+            pkg_format: apk
+          - arch: arm_cortex-a7_neon-vfpv4-snapshot
+            goarch: arm
+            goarm: "7"
             pkg_format: apk
 
     runs-on: ubuntu-latest
@@ -167,6 +175,7 @@ jobs:
           GOOS: linux
           GOARCH: ${{ matrix.goarch }}
           GOMIPS: ${{ matrix.gomips }}
+          GOARM: ${{ matrix.goarm }}
         run: |
           COMMIT="$(echo $GITHUB_SHA | cut -c1-7)"
           LDFLAGS="-s -w -X bandwidth-monitor/version.Commit=${COMMIT}"
