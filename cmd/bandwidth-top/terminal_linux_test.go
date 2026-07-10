@@ -28,10 +28,17 @@ type fakeLiveTracker struct {
 	snapshots int
 	rows      []talkers.DirectTalkerStat
 	totals    talkers.DirectRateTotals
+	modes     []talkers.DirectViewMode
 }
 
 func (t *fakeLiveTracker) DirectBandwidthSnapshot(int) ([]talkers.DirectTalkerStat, talkers.DirectRateTotals) {
 	t.snapshots++
+	return t.rows, t.totals
+}
+
+func (t *fakeLiveTracker) DirectBandwidthSnapshotForMode(mode talkers.DirectViewMode, _ int) ([]talkers.DirectTalkerStat, talkers.DirectRateTotals) {
+	t.snapshots++
+	t.modes = append(t.modes, mode)
 	return t.rows, t.totals
 }
 
@@ -40,10 +47,14 @@ func (t *fakeLiveTracker) Errors() <-chan error {
 }
 
 type fakeLiveEnricher struct {
-	info bandwidthtop.Enrichment
+	info    bandwidthtop.Enrichment
+	lookups map[string]int
 }
 
-func (e *fakeLiveEnricher) Lookup(string) bandwidthtop.Enrichment {
+func (e *fakeLiveEnricher) Lookup(ip string) bandwidthtop.Enrichment {
+	if e.lookups != nil {
+		e.lookups[ip]++
+	}
 	return e.info
 }
 
@@ -96,6 +107,100 @@ func TestLiveModelKeysToggleDNSHelpAndQuit(t *testing.T) {
 		if _, ok := cmd().(tea.QuitMsg); !ok {
 			t.Fatalf("%v returned %T, want QuitMsg", msg, cmd())
 		}
+	}
+}
+
+func TestLiveModelPortModeTransitionsStatusHelpAndDNS(t *testing.T) {
+	model, resolver := testLiveModel(false)
+	tracker := model.config.tracker.(*fakeLiveTracker)
+	tracker.rows = []talkers.DirectTalkerStat{
+		{
+			LocalIP: "192.0.2.10",
+			TalkerStat: talkers.TalkerStat{
+				IP: "198.51.100.20", Hostname: "cached.example",
+			},
+			Protocol: "TCP", RemotePort: 443, HasPort: true,
+		},
+		{
+			LocalIP: "192.0.2.10",
+			TalkerStat: talkers.TalkerStat{
+				IP: "198.51.100.20", Hostname: "cached.example",
+			},
+			Protocol: "UDP", RemotePort: 443, HasPort: true,
+		},
+	}
+	enricher := &fakeLiveEnricher{
+		info:    bandwidthtop.Enrichment{ASN: 64500, Provider: "Example Networks"},
+		lookups: make(map[string]int),
+	}
+	model.config.enricher = enricher
+	tracker.totals.TxBytes = 1024
+	tracker.totals.RxBytes = 2048
+
+	updateModel(t, model, tickMsg(time.Now()))
+	if model.mode != bandwidthtop.ViewHosts || tracker.modes[0] != talkers.DirectViewHosts {
+		t.Fatalf("default mode=%v snapshots=%v", model.mode, tracker.modes)
+	}
+	updateModel(t, model, keyPress("p"))
+	if tracker.modes[1] != talkers.DirectViewPorts {
+		t.Fatalf("port toggle did not refresh immediately: snapshots=%v", tracker.modes)
+	}
+	updateModel(t, model, keyPress("n"))
+	updateModel(t, model, tickMsg(time.Now()))
+	if model.mode != bandwidthtop.ViewPorts || !model.noResolve ||
+		tracker.modes[2] != talkers.DirectViewPorts ||
+		len(resolver.states) != 1 || resolver.states[0] {
+		t.Fatalf("port+DNS mode=%v noResolve=%v snapshots=%v resolver=%v",
+			model.mode, model.noResolve, tracker.modes, resolver.states)
+	}
+	portView := stripTerminalANSI(model.View().Content)
+	for _, want := range []string{"view: ports", "rdns: off", "PORT", "PROTO", "443", "TCP"} {
+		if !strings.Contains(portView, want) {
+			t.Fatalf("port view missing %q:\n%s", want, portView)
+		}
+	}
+	updateModel(t, model, keyPress("?"))
+	help := stripTerminalANSI(model.View().Content)
+	for _, want := range []string{
+		"p toggle ports", "n toggle rDNS", "q quit", "h/? close help",
+	} {
+		if !strings.Contains(help, want) {
+			t.Fatalf("help missing %q:\n%s", want, help)
+		}
+	}
+	updateModel(t, model, tea.WindowSizeMsg{Width: 81, Height: 12})
+	if model.totals.TxBytes != 1024 || model.totals.RxBytes != 2048 {
+		t.Fatalf("UI state changes altered cumulative totals: %+v", model.totals)
+	}
+	updateModel(t, model, keyPress("p"))
+	if tracker.modes[3] != talkers.DirectViewHosts {
+		t.Fatalf("host toggle did not refresh immediately: snapshots=%v", tracker.modes)
+	}
+	updateModel(t, model, tickMsg(time.Now()))
+	if model.mode != bandwidthtop.ViewHosts || tracker.modes[4] != talkers.DirectViewHosts {
+		t.Fatalf("return mode=%v snapshots=%v", model.mode, tracker.modes)
+	}
+	if got := enricher.lookups["198.51.100.20"]; got != 5 {
+		t.Fatalf("duplicate enrichment within port rows: lookups=%d", got)
+	}
+}
+
+func TestLiveModelStartsInPortsWithNoResolve(t *testing.T) {
+	model, resolver := testLiveModel(true)
+	model = newLiveModel(liveModelConfig{
+		title: "bandwidth-top", rows: 20, refresh: time.Second,
+		noResolve: true, initialMode: bandwidthtop.ViewPorts,
+		tracker: model.config.tracker, enricher: model.config.enricher,
+		resolver: resolver, initialSize: terminalDimensions{width: 120, height: 24},
+		done: make(chan struct{}),
+	})
+	updateModel(t, model, tickMsg(time.Now()))
+	tracker := model.config.tracker.(*fakeLiveTracker)
+	if model.mode != bandwidthtop.ViewPorts || !model.noResolve ||
+		len(tracker.modes) != 1 || tracker.modes[0] != talkers.DirectViewPorts ||
+		len(resolver.states) != 0 {
+		t.Fatalf("startup mode=%v noResolve=%v snapshots=%v resolver=%v",
+			model.mode, model.noResolve, tracker.modes, resolver.states)
 	}
 }
 
@@ -391,12 +496,13 @@ func TestComposeFrameCapsPairsAcrossResize(t *testing.T) {
 		maxPairs int
 		minPairs int
 	}{
-		{name: "normal", size: terminalDimensions{width: 119, height: 20}, maxPairs: 5, minPairs: 5},
-		{name: "shrink", size: terminalDimensions{width: 79, height: 8}, maxPairs: 2, minPairs: 2},
+		{name: "normal", size: terminalDimensions{width: 119, height: 20}, maxPairs: 4, minPairs: 4},
+		{name: "shrink", size: terminalDimensions{width: 79, height: 8}, maxPairs: 1, minPairs: 1},
 		{name: "grow", size: terminalDimensions{width: 159, height: 30}, maxPairs: 10, minPairs: 9},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			frame := composeFrame("bandwidth-top", status, rows, bandwidthtop.Totals{}, 99, test.size, true)
+			frame := composeFrame("bandwidth-top", status, rows,
+				bandwidthtop.Totals{HasCumulative: true}, 99, test.size, true)
 			plain := stripTerminalANSI(frame)
 			lines := strings.Split(plain, "\n")
 			if len(lines) > test.size.height {
@@ -415,8 +521,11 @@ func TestComposeFrameCapsPairsAcrossResize(t *testing.T) {
 			if !strings.Contains(plain, "TOTAL") {
 				t.Fatalf("height %d lost aggregate footer:\n%s", test.size.height, plain)
 			}
-			if test.size.height == 8 && !strings.HasPrefix(lines[len(lines)-1], "TOTAL") {
-				t.Fatalf("short frame selected flow metadata instead of structural footer:\n%s", plain)
+			if !strings.Contains(plain, "SINCE START") {
+				t.Fatalf("height %d lost cumulative footer:\n%s", test.size.height, plain)
+			}
+			if test.size.height == 8 && !strings.HasPrefix(lines[len(lines)-1], "SINCE START") {
+				t.Fatalf("short frame did not prioritize cumulative footer:\n%s", plain)
 			}
 		})
 	}
@@ -435,15 +544,40 @@ func TestLookupErrorsBecomeEndpointFreeFrameStatus(t *testing.T) {
 
 func TestSnapshotAndUnsupportedTerminalsNeverAnimate(t *testing.T) {
 	frame := composeFrame("bandwidth-top", []string{"enrichment: public fallback"},
-		terminalTestRows(1), bandwidthtop.Totals{}, 20, terminalDimensions{width: 80}, false)
+		terminalTestRows(1), bandwidthtop.Totals{HasCumulative: true},
+		20, terminalDimensions{width: 80}, false)
 	if strings.Contains(frame, "\x1b") {
 		t.Fatalf("snapshot contains ANSI: %q", frame)
 	}
+
 	var unsupported bytes.Buffer
 	if supportsLiveTerminal(&bytes.Buffer{}, false, "xterm-256color") ||
 		supportsLiveTerminal(&unsupported, false, "dumb") ||
 		supportsLiveTerminal(&unsupported, true, "xterm-256color") {
 		t.Fatal("unsupported, dumb, or snapshot output was treated as live")
+	}
+}
+
+func TestPortSnapshotIsANSIFreeAndModeAware(t *testing.T) {
+	rows := terminalTestRows(1)
+	rows[0].Port, rows[0].Protocol = "443", "TCP"
+	frame := composeFrameForMode(
+		"bandwidth-top",
+		[]string{"view: ports | rdns: off"},
+		rows,
+		bandwidthtop.Totals{HasCumulative: true},
+		20,
+		terminalDimensions{width: 120},
+		false,
+		bandwidthtop.ViewPorts,
+	)
+	if strings.Contains(frame, "\x1b") {
+		t.Fatalf("port snapshot contains ANSI: %q", frame)
+	}
+	for _, want := range []string{"view: ports", "PORT", "PROTO", "443", "TCP"} {
+		if !strings.Contains(frame, want) {
+			t.Fatalf("port snapshot missing %q:\n%s", want, frame)
+		}
 	}
 }
 

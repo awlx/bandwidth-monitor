@@ -30,15 +30,36 @@ type Row struct {
 	Stat      Stat
 	Info      Enrichment
 	NoResolve bool
+	Port      string
+	Protocol  string
 }
 
 type Totals struct {
-	Rx RateWindows
-	Tx RateWindows
+	Rx            RateWindows
+	Tx            RateWindows
+	RxBytes       uint64
+	TxBytes       uint64
+	HasCumulative bool
 }
 
 type flowLayout struct {
 	rank, local, arrow, remote int
+	asn, provider, graph, rate int
+	showASN, showProvider      bool
+	showGraph                  bool
+}
+
+// ViewMode selects the row identity rendered by bandwidth-top.
+type ViewMode uint8
+
+const (
+	ViewHosts ViewMode = iota
+	ViewPorts
+)
+
+type portFlowLayout struct {
+	rank, local, arrow, remote int
+	port, protocol             int
 	asn, provider, graph, rate int
 	showASN, showProvider      bool
 	showGraph                  bool
@@ -70,6 +91,7 @@ func formatCompactRate(bytesPerSecond float64) string {
 	if bytesPerSecond < 0 {
 		bytesPerSecond = 0
 	}
+
 	value := bytesPerSecond * 8
 	units := []string{"b", "Kb", "Mb", "Gb", "Tb"}
 	unit := 0
@@ -86,6 +108,26 @@ func formatCompactRate(bytesPerSecond float64) string {
 		return fmt.Sprintf("%.1f%s", value, units[unit])
 	default:
 		return fmt.Sprintf("%.0f%s", value, units[unit])
+	}
+}
+
+func FormatBytes(bytes uint64) string {
+	units := []string{"B", "KiB", "MiB", "GiB", "TiB", "PiB", "EiB"}
+	value := float64(bytes)
+	unit := 0
+	for value >= 1024 && unit < len(units)-1 {
+		value /= 1024
+		unit++
+	}
+	switch {
+	case unit == 0:
+		return fmt.Sprintf("%d B", bytes)
+	case value < 10:
+		return fmt.Sprintf("%.2f %s", value, units[unit])
+	case value < 100:
+		return fmt.Sprintf("%.1f %s", value, units[unit])
+	default:
+		return fmt.Sprintf("%.0f %s", value, units[unit])
 	}
 }
 
@@ -219,10 +261,25 @@ func RenderLiveWithRowLimit(rows []Row, totals Totals, width, maxRows int) strin
 	return renderFlows(rows, totals, width, maxRows, true)
 }
 
+func RenderSnapshotForMode(rows []Row, totals Totals, width, maxRows int, mode ViewMode) string {
+	if mode == ViewPorts {
+		return renderPortFlows(rows, totals, width, maxRows, false)
+	}
+	return RenderSnapshotWithRowLimit(rows, totals, width, maxRows)
+}
+
+func RenderLiveForMode(rows []Row, totals Totals, width, maxRows int, mode ViewMode) string {
+	if mode == ViewPorts {
+		return renderPortFlows(rows, totals, width, maxRows, true)
+	}
+	return RenderLiveWithRowLimit(rows, totals, width, maxRows)
+}
+
 func renderFlows(rows []Row, totals Totals, width, maxRows int, ansi bool) string {
 	if width <= 0 {
 		width = 120
 	}
+
 	layout, structured := makeFlowLayout(width, rankWidth(maxRows))
 	maxRate := maximumDirectionalRate(rows)
 	var b strings.Builder
@@ -272,6 +329,10 @@ func renderFlows(rows []Row, totals Totals, width, maxRows int, ansi bool) strin
 	b.WriteByte('\n')
 	b.WriteString(footerLine("TOTAL", addRates(totals.Tx, totals.Rx), width, ansiBold, ansi))
 	b.WriteByte('\n')
+	if totals.HasCumulative {
+		b.WriteString(color(ansiBold, sinceStartLine(totals, width), ansi))
+		b.WriteByte('\n')
+	}
 	hint := "snapshot complete"
 	if ansi {
 		hint = "Ctrl-C / SIGTERM quit"
@@ -279,6 +340,93 @@ func renderFlows(rows []Row, totals Totals, width, maxRows int, ansi bool) strin
 	b.WriteString(color(ansiDim, Truncate(hint, width), ansi))
 	b.WriteByte('\n')
 	return b.String()
+}
+
+func renderPortFlows(rows []Row, totals Totals, width, maxRows int, ansi bool) string {
+	if width <= 0 {
+		width = 120
+	}
+	layout, structured := makePortFlowLayout(width, rankWidth(maxRows))
+	maxRate := maximumDirectionalRate(rows)
+	var b strings.Builder
+	if structured {
+		if layout.showGraph {
+			b.WriteString(color(ansiDim, portFlowLine(layout, "", "", "", "", "", "", "", "", graphRuler(maxRate, layout.graph), "", "", ""), ansi))
+			b.WriteByte('\n')
+		}
+		header := portFlowLine(layout, "#", "LOCAL", "  ", "REMOTE", "PORT", "PROTO", "ASN", "PROVIDER", "GRAPH", "2s", "10s", "40s")
+		b.WriteString(color(ansiBold, header, ansi))
+		b.WriteByte('\n')
+		for i, row := range rows {
+			rank := fmt.Sprintf("%d", i+1)
+			outBar := rateBar(row.Stat.Tx.Two, maxRate, layout.graph)
+			inBar := rateBar(row.Stat.Rx.Two, maxRate, layout.graph)
+			b.WriteString(portFlowLineStyled(layout, rank, row.LocalIP, "=>", remoteHost(row),
+				normalizedPort(row.Port), normalizedProtocol(row.Protocol),
+				formatASN(row.Info.ASN), row.Info.Provider, outBar,
+				formatCompactRate(row.Stat.Tx.Two), formatCompactRate(row.Stat.Tx.Ten),
+				formatCompactRate(row.Stat.Tx.Forty), ansiGreen, ansi))
+			b.WriteByte('\n')
+			b.WriteString(portFlowLineStyled(layout, "", "", "<=", "", "", "", "", "", inBar,
+				formatCompactRate(row.Stat.Rx.Two), formatCompactRate(row.Stat.Rx.Ten),
+				formatCompactRate(row.Stat.Rx.Forty), ansiCyan, ansi))
+			b.WriteByte('\n')
+		}
+	} else {
+		b.WriteString(Truncate("# LOCAL => REMOTE PORT PROTO 2s", width))
+		b.WriteByte('\n')
+		for i, row := range rows {
+			out := fmt.Sprintf("%d %s => %s %s %s %s %s", i+1, row.LocalIP,
+				remoteHost(row), normalizedPort(row.Port), normalizedProtocol(row.Protocol),
+				rateBar(row.Stat.Tx.Two, maxRate, max(1, width/8)),
+				formatCompactRate(row.Stat.Tx.Two))
+			in := fmt.Sprintf("  <= %s %s", rateBar(row.Stat.Rx.Two, maxRate, max(1, width/8)),
+				formatCompactRate(row.Stat.Rx.Two))
+			b.WriteString(color(ansiGreen, Truncate(out, width), ansi))
+			b.WriteByte('\n')
+			b.WriteString(color(ansiCyan, Truncate(in, width), ansi))
+			b.WriteByte('\n')
+		}
+	}
+	b.WriteString(color(ansiDim, strings.Repeat("-", width), ansi))
+	b.WriteByte('\n')
+	b.WriteString(footerLine("TX", totals.Tx, width, ansiGreen, ansi))
+	b.WriteByte('\n')
+	b.WriteString(footerLine("RX", totals.Rx, width, ansiCyan, ansi))
+	b.WriteByte('\n')
+	b.WriteString(footerLine("TOTAL", addRates(totals.Tx, totals.Rx), width, ansiBold, ansi))
+	b.WriteByte('\n')
+	if totals.HasCumulative {
+		b.WriteString(color(ansiBold, sinceStartLine(totals, width), ansi))
+		b.WriteByte('\n')
+	}
+	hint := "snapshot complete"
+	if ansi {
+		hint = "Ctrl-C / SIGTERM quit"
+	}
+	b.WriteString(color(ansiDim, Truncate(hint, width), ansi))
+	b.WriteByte('\n')
+	return b.String()
+}
+
+func sinceStartLine(totals Totals, width int) string {
+	tx := FormatBytes(totals.TxBytes)
+	rx := FormatBytes(totals.RxBytes)
+	total := FormatBytes(saturatingByteSum(totals.TxBytes, totals.RxBytes))
+	full := fmt.Sprintf("SINCE START  TX %s  RX %s  TOTAL %s", tx, rx, total)
+	if displayWidth(full) <= width {
+		return full
+	}
+	compact := fmt.Sprintf("since start TX %s RX %s TOTAL %s", tx, rx, total)
+	return Truncate(compact, width)
+}
+
+func saturatingByteSum(a, b uint64) uint64 {
+	const maxUint64 = ^uint64(0)
+	if b > maxUint64-a {
+		return maxUint64
+	}
+	return a + b
 }
 
 func rankWidth(maxRows int) int {
@@ -310,7 +458,54 @@ func makeFlowLayout(width, rank int) (flowLayout, bool) {
 	case width < flowLayoutWidth(layout):
 		return flowLayout{}, false
 	}
+
 	extra := width - flowLayoutWidth(layout)
+	growColumnsEven(&layout.local, &layout.remote, 15, &extra)
+	if layout.showProvider {
+		growColumn(&layout.provider, 16, &extra)
+	}
+	growColumnsEven(&layout.local, &layout.remote, 39, &extra)
+	if layout.showGraph {
+		growColumn(&layout.graph, 24, &extra)
+	}
+	if layout.showProvider {
+		growColumn(&layout.provider, 24, &extra)
+	}
+	if layout.showGraph {
+		growColumn(&layout.graph, 40, &extra)
+	}
+	if layout.showProvider {
+		growColumn(&layout.provider, 40, &extra)
+	}
+	return layout, true
+}
+
+func makePortFlowLayout(width, rank int) (portFlowLayout, bool) {
+	layout := portFlowLayout{
+		rank: rank, local: 7, arrow: 2, remote: 7,
+		port: 5, protocol: 8, graph: 5, rate: 6,
+	}
+	asnOnly := layout
+	asnOnly.showASN, asnOnly.asn = true, 12
+	asnGraph := asnOnly
+	asnGraph.showGraph = true
+	all := asnGraph
+	all.showProvider, all.provider = true, 8
+	graphOnly := layout
+	graphOnly.showGraph = true
+	switch {
+	case width >= portFlowLayoutWidth(all):
+		layout = all
+	case width >= portFlowLayoutWidth(asnGraph):
+		layout = asnGraph
+	case width >= portFlowLayoutWidth(asnOnly):
+		layout = asnOnly
+	case width >= portFlowLayoutWidth(graphOnly):
+		layout = graphOnly
+	case width < portFlowLayoutWidth(layout):
+		return portFlowLayout{}, false
+	}
+	extra := width - portFlowLayoutWidth(layout)
 	growColumnsEven(&layout.local, &layout.remote, 15, &extra)
 	if layout.showProvider {
 		growColumn(&layout.provider, 16, &extra)
@@ -364,6 +559,30 @@ func (layout flowLayout) widths() []int {
 	if layout.showASN {
 		widths = append(widths, layout.asn)
 	}
+
+	if layout.showProvider {
+		widths = append(widths, layout.provider)
+	}
+	if layout.showGraph {
+		widths = append(widths, layout.graph)
+	}
+	return append(widths, layout.rate, layout.rate, layout.rate)
+}
+
+func portFlowLayoutWidth(layout portFlowLayout) int {
+	widths := layout.widths()
+	total := len(widths) - 1
+	for _, width := range widths {
+		total += width
+	}
+	return total
+}
+
+func (layout portFlowLayout) widths() []int {
+	widths := []int{layout.rank, layout.local, layout.arrow, layout.remote, layout.port, layout.protocol}
+	if layout.showASN {
+		widths = append(widths, layout.asn)
+	}
 	if layout.showProvider {
 		widths = append(widths, layout.provider)
 	}
@@ -397,6 +616,7 @@ func flowLineStyled(layout flowLayout, rank, local, arrow, remote, asn, provider
 	if !ansi {
 		return flowLine(layout, rank, local, arrow, remote, asn, provider, graph, rate2, rate10, rate40)
 	}
+
 	values := []string{rank, local, arrow, remote}
 	if layout.showASN {
 		values = append(values, asn)
@@ -419,6 +639,70 @@ func flowLineStyled(layout flowLayout, rank, local, arrow, remote, asn, provider
 		cells[len(cells)-4] = color(style, cells[len(cells)-4], true)
 	}
 	return strings.Join(cells, " ")
+}
+
+func portFlowLine(layout portFlowLayout, rank, local, arrow, remote, port, protocol, asn, provider, graph, rate2, rate10, rate40 string) string {
+	values := []string{rank, local, arrow, remote, port, protocol}
+	if layout.showASN {
+		values = append(values, asn)
+	}
+	if layout.showProvider {
+		values = append(values, provider)
+	}
+	if layout.showGraph {
+		values = append(values, graph)
+	}
+	values = append(values, rate2, rate10, rate40)
+	widths := layout.widths()
+	cells := make([]string, len(values))
+	for i := range values {
+		cells[i] = fitCell(values[i], widths[i], i == 0 || i == 4 || i >= len(values)-3)
+	}
+	return strings.Join(cells, " ")
+}
+
+func portFlowLineStyled(layout portFlowLayout, rank, local, arrow, remote, port, protocol, asn, provider, graph, rate2, rate10, rate40, style string, ansi bool) string {
+	if !ansi {
+		return portFlowLine(layout, rank, local, arrow, remote, port, protocol, asn, provider, graph, rate2, rate10, rate40)
+	}
+	values := []string{rank, local, arrow, remote, port, protocol}
+	if layout.showASN {
+		values = append(values, asn)
+	}
+	if layout.showProvider {
+		values = append(values, provider)
+	}
+	if layout.showGraph {
+		values = append(values, graph)
+	}
+	values = append(values, rate2, rate10, rate40)
+	widths := layout.widths()
+	cells := make([]string, len(values))
+	for i := range values {
+		cells[i] = fitCell(values[i], widths[i], i == 0 || i == 4 || i >= len(values)-3)
+	}
+	cells[0] = color(ansiBold, cells[0], true)
+	cells[2] = color(style, cells[2], true)
+	if layout.showGraph {
+		cells[len(cells)-4] = color(style, cells[len(cells)-4], true)
+	}
+	return strings.Join(cells, " ")
+}
+
+func normalizedPort(port string) string {
+	value, err := strconv.ParseUint(port, 10, 16)
+	if err != nil {
+		return "-"
+	}
+	return strconv.FormatUint(value, 10)
+}
+
+func normalizedProtocol(protocol string) string {
+	protocol = sanitizeTerminal(protocol)
+	if protocol == "" {
+		return "IP-0"
+	}
+	return protocol
 }
 
 func fitCell(value string, width int, right bool) string {

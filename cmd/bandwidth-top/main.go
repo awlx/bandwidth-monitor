@@ -37,6 +37,7 @@ func run(args []string, stdout, stderr io.Writer) error {
 	rows := fs.Int("rows", 20, "maximum rows")
 	refresh := fs.Duration("refresh", time.Second, "refresh interval")
 	snapshot := fs.Bool("snapshot", false, "print one plain snapshot and exit")
+	ports := fs.Bool("ports", false, "aggregate by remote port and protocol (view: ports)")
 	asnPath := fs.String("asn-mmdb", discover("GeoLite2-ASN.mmdb"), "ASN MMDB path")
 	cityPath := fs.String("city-mmdb", discoverCity(), "city/country MMDB path")
 	server := fs.String("server", "", "bandwidth-monitor base URL for enrichment")
@@ -83,6 +84,10 @@ func run(args []string, stdout, stderr io.Writer) error {
 	if !*snapshot && !liveTerminal {
 		fmt.Fprintln(stderr, "bandwidth-top: non-interactive terminal; rendering one plain snapshot")
 	}
+	viewMode := bandwidthtop.ViewHosts
+	if *ports {
+		viewMode = bandwidthtop.ViewPorts
+	}
 	log.SetOutput(io.Discard)
 	dns := resolver.New()
 	dns.SetEnabled(!noResolve)
@@ -98,7 +103,7 @@ func run(args []string, stdout, stderr io.Writer) error {
 		model := newLiveModel(liveModelConfig{
 			title: title, rows: *rows, refresh: *refresh, width: *width,
 			noResolve: noResolve, tracker: tracker, enricher: enricher, resolver: dns,
-			done: done,
+			initialMode: viewMode, done: done,
 		})
 		final, programErr := tea.NewProgram(
 			model,
@@ -118,7 +123,7 @@ func run(args []string, stdout, stderr io.Writer) error {
 		return nil
 	}
 
-	return runSnapshot(stdout, tracker, enricher, title, *rows, *refresh, *width, noResolve)
+	return runSnapshot(stdout, tracker, enricher, title, *rows, *refresh, *width, noResolve, viewMode)
 }
 
 func runSnapshot(
@@ -130,6 +135,7 @@ func runSnapshot(
 	refresh time.Duration,
 	width int,
 	noResolve bool,
+	mode bandwidthtop.ViewMode,
 ) error {
 	delay := refresh
 	if delay < 1200*time.Millisecond {
@@ -148,18 +154,18 @@ func runSnapshot(
 	case <-timer.C:
 	}
 
-	viewRows, totals := snapshotRows(tracker, enricher, rows, noResolve)
+	viewRows, totals := snapshotRowsForMode(tracker, enricher, rows, noResolve, mode)
 	enricher.Wait()
 	for i := range viewRows {
 		viewRows[i].Info = enricher.Lookup(viewRows[i].Stat.IP)
 	}
 	size := snapshotDimensions(stdout, width)
 	status := enricher.SourceStatusLines(size.width)
-	status = append(status, rdnsStatus(!noResolve))
+	status = append(status, viewStatus(mode)+" | "+rdnsStatus(!noResolve))
 	if lookupStatus := lookupErrorStatus(viewRows); lookupStatus != "" {
 		status = append(status, lookupStatus)
 	}
-	_, err := fmt.Fprintln(stdout, composeFrame(title, status, viewRows, totals, rows, size, false))
+	_, err := fmt.Fprintln(stdout, composeFrameForMode(title, status, viewRows, totals, rows, size, false, mode))
 	return err
 }
 
