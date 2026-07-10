@@ -84,9 +84,15 @@ func assignedLocalNetworks(addrs []net.Addr) ([]*net.IPNet, string) {
 		if bits == 0 || ones < 0 {
 			continue
 		}
-		if bits == 32 {
+		if ip.To4() != nil {
+			if bits != 32 {
+				continue
+			}
 			ip = ip.To4()
 		} else {
+			if bits != 128 {
+				continue
+			}
 			ip = ip.To16()
 		}
 		if ip == nil {

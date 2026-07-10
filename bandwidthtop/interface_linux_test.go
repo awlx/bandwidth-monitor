@@ -24,6 +24,7 @@ func TestAssignedLocalNetworksPreserveInterfaceTopology(t *testing.T) {
 		&net.IPNet{IP: net.ParseIP("198.51.100.9"), Mask: net.CIDRMask(32, 32)},
 		&net.IPNet{IP: net.ParseIP("2001:db8:2::9"), Mask: net.CIDRMask(128, 128)},
 		&net.IPNet{IP: net.ParseIP("192.0.2.1"), Mask: net.IPMask{0xff, 0x00}},
+		&net.IPNet{IP: net.ParseIP("2001:db8:3::1"), Mask: net.CIDRMask(24, 32)},
 		testAddr("invalid"),
 	}
 	networks, local := assignedLocalNetworks(addrs)
