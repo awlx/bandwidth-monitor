@@ -15,17 +15,16 @@ contents:
       mode: 0755
 
   - src: ./env.example
-    dst: /etc/bandwidth-monitor/env
-    type: config|noreplace
+    dst: /usr/share/doc/bandwidth-monitor/env.example
     file_info:
-      mode: 0600
+      mode: 0644
 
-  - src: ./bandwidth-monitor-pkg.service
+  - src: ./packaging/bandwidth-monitor.service
     dst: /lib/systemd/system/bandwidth-monitor.service
     file_info:
       mode: 0644
 
-  - src: ./bandwidth-monitor.openrc
+  - src: ./packaging/bandwidth-monitor.openrc
     dst: /etc/init.d/bandwidth-monitor
     file_info:
       mode: 0755
@@ -33,4 +32,3 @@ contents:
 scripts:
   postinstall: ./packaging/postinstall.sh
   preremove: ./packaging/preremove.sh
-

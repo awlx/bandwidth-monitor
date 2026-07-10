@@ -1,0 +1,20 @@
+[Unit]
+Description=Bandwidth Monitor
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/var/lib/bandwidth-monitor
+EnvironmentFile=-/etc/bandwidth-monitor/env
+ExecStart=/usr/bin/bandwidth-monitor
+Restart=on-failure
+RestartSec=5
+AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+StateDirectory=bandwidth-monitor
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

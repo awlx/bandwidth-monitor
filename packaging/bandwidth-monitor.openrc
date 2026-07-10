@@ -1,0 +1,73 @@
+#!/sbin/openrc-run
+
+description="Bandwidth Monitor - network traffic monitoring"
+command="/usr/bin/bandwidth-monitor"
+command_background=true
+directory="/var/lib/bandwidth-monitor"
+pidfile="/run/bandwidth-monitor.pid"
+respawn_delay=5
+respawn_max=0
+
+: "${BANDWIDTH_MONITOR_CONFIG:=/etc/bandwidth-monitor/env}"
+
+capabilities="cap_net_raw,cap_net_admin=ep"
+
+depend() {
+	need net
+	after network-online
+}
+
+start_pre() {
+	if [ -f "$BANDWIDTH_MONITOR_CONFIG" ]; then
+		einfo "Loading configuration from $BANDWIDTH_MONITOR_CONFIG"
+		set -a
+		. "$BANDWIDTH_MONITOR_CONFIG"
+		set +a
+	else
+		ewarn "Configuration file $BANDWIDTH_MONITOR_CONFIG not found"
+	fi
+
+	if [ ! -d "$directory" ]; then
+		eerror "Working directory $directory does not exist"
+		return 1
+	fi
+}
+
+start() {
+	ebegin "Starting $description"
+
+	if command -v setcap >/dev/null 2>&1; then
+		setcap "$capabilities" "$command" 2>/dev/null || \
+			ewarn "Could not set capabilities; will run as root"
+	fi
+
+	if command -v supervise-daemon >/dev/null 2>&1; then
+		supervise-daemon "$RC_SVCNAME" --start \
+			--pidfile "$pidfile" \
+			--respawn-delay "$respawn_delay" \
+			--respawn-max "$respawn_max" \
+			--chdir "$directory" \
+			-- "$command"
+		eend $?
+		return
+	fi
+
+	start-stop-daemon --start \
+		--background \
+		--make-pidfile \
+		--pidfile "$pidfile" \
+		--chdir "$directory" \
+		--exec "$command"
+	eend $?
+}
+
+stop() {
+	ebegin "Stopping $description"
+	if command -v supervise-daemon >/dev/null 2>&1; then
+		supervise-daemon "$RC_SVCNAME" --stop --pidfile "$pidfile"
+		eend $?
+		return
+	fi
+	start-stop-daemon --stop --pidfile="$pidfile"
+	eend $?
+}

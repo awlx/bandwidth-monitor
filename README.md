@@ -273,6 +273,16 @@ Or run directly without installing:
 nix run github:awlx/bandwidth-monitor
 ```
 
+### Debian and RPM packages
+
+System packages install the binary in `/usr/bin`, service definitions in the
+platform service directories, and configuration in
+`/etc/bandwidth-monitor/env`. On first installation the configuration is
+created with mode `0600` from the packaged example. It is not managed as a
+Debian conffile: package upgrades are noninteractive and always preserve the
+administrator-owned file, including any credentials it contains. New example
+settings are available in `/usr/share/doc/bandwidth-monitor/env.example`.
+
 ### Using the Makefile
 
 ```bash

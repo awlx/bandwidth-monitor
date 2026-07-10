@@ -41,13 +41,23 @@ jobs:
         run: |
           go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest
 
+      - name: Calculate package version
+        run: |
+          VERSION="$(./packaging/package-version.sh nfpm \
+            "$GITHUB_REF_TYPE" "$GITHUB_REF_NAME" \
+            "$GITHUB_RUN_NUMBER" "$GITHUB_RUN_ATTEMPT" "$GITHUB_SHA")"
+          echo "PACKAGE_VERSION=$VERSION" >> "$GITHUB_ENV"
+
+      - name: Validate packaging
+        if: matrix.goarch == 'amd64'
+        run: ./packaging/test-packaging.sh
+
       - name: Build binary
         env:
           GOOS: linux
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: "0"
         run: |
-          VERSION="${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || github.sha }}"
           COMMIT="$(echo $GITHUB_SHA | cut -c1-7)"
           LDFLAGS="-s -w -X bandwidth-monitor/version.Commit=${COMMIT}"
           if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
@@ -55,17 +65,9 @@ jobs:
           fi
           go build -ldflags="${LDFLAGS}" -o bandwidth-monitor .
 
-      - name: Prepare packaging service file
-        run: |
-          sed -e 's|/opt/bandwidth-monitor/bandwidth-monitor|/usr/bin/bandwidth-monitor|' \
-              -e 's|EnvironmentFile=/opt/bandwidth-monitor/.env|EnvironmentFile=-/etc/bandwidth-monitor/env|' \
-              -e 's|WorkingDirectory=/opt/bandwidth-monitor|WorkingDirectory=/var/lib/bandwidth-monitor|' \
-              -e 's|ReadOnlyPaths=/opt/bandwidth-monitor||' \
-              bandwidth-monitor.service > bandwidth-monitor-pkg.service
-
       - name: Build deb
         env:
-          VERSION: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || format('0.0.0-{0}', github.sha) }}
+          VERSION: ${{ env.PACKAGE_VERSION }}
           GOARCH: ${{ matrix.pkg_arch }}
         run: |
           export VERSION="${VERSION#v}"
@@ -73,7 +75,7 @@ jobs:
 
       - name: Build rpm
         env:
-          VERSION: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || format('0.0.0-{0}', github.sha) }}
+          VERSION: ${{ env.PACKAGE_VERSION }}
           GOARCH: ${{ matrix.pkg_arch }}
         run: |
           export VERSION="${VERSION#v}"
@@ -148,12 +150,9 @@ jobs:
 
       - name: Package for OpenWrt
         run: |
-          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
-            VERSION="${{ github.ref_name }}"
-            VERSION="${VERSION#v}"
-          else
-            VERSION="0.0.0_git$(date +%Y%m%d)"
-          fi
+          VERSION="$(./packaging/package-version.sh openwrt \
+            "$GITHUB_REF_TYPE" "$GITHUB_REF_NAME" \
+            "$GITHUB_RUN_NUMBER" "$GITHUB_RUN_ATTEMPT" "$GITHUB_SHA")"
           ARCH="${{ matrix.arch }}"
           ARCH="${ARCH%-snapshot}"
           WORKSPACE="${{ github.workspace }}"
