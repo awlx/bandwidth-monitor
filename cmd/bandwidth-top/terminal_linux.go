@@ -7,21 +7,18 @@ import (
 	"io"
 	"os"
 	"strings"
-	"sync"
+	"time"
 
 	"bandwidth-monitor/bandwidthtop"
+	"bandwidth-monitor/talkers"
 
+	tea "charm.land/bubbletea/v2"
 	"golang.org/x/sys/unix"
 )
 
 const (
-	enterAlternateScreen = "\x1b[?1049h\x1b[?25l"
-	leaveAlternateScreen = "\x1b[0m\x1b[?25h\x1b[?1049l"
-	homeCursor           = "\x1b[H"
-	clearScreen          = "\x1b[2J"
-	clearToScreenEnd     = "\x1b[J"
-	defaultWidth         = 120
-	defaultHeight        = 24
+	defaultWidth  = 120
+	defaultHeight = 24
 )
 
 type terminalDimensions struct {
@@ -29,90 +26,207 @@ type terminalDimensions struct {
 	height int
 }
 
-type terminalSession struct {
-	out     io.Writer
-	live    bool
-	size    func() terminalDimensions
-	mu      sync.Mutex
-	entered bool
-	closed  bool
+type liveTracker interface {
+	DirectBandwidthSnapshot(int) ([]talkers.DirectTalkerStat, talkers.DirectRateTotals)
+	Errors() <-chan error
 }
 
-func newTerminalSession(out io.Writer, live bool, size func() terminalDimensions) *terminalSession {
-	if size == nil {
-		size = func() terminalDimensions { return terminalDimensions{defaultWidth, defaultHeight} }
-	}
-	return &terminalSession{out: out, live: live, size: size}
+type liveEnricher interface {
+	Lookup(string) bandwidthtop.Enrichment
+	SourceStatusLines(int) []string
 }
 
-func (t *terminalSession) withScreen(run func() error) (err error) {
-	if err := t.enter(); err != nil {
-		_ = t.close()
-		return err
-	}
-	defer func() {
-		closeErr := t.close()
-		if err == nil {
-			err = closeErr
-		}
-	}()
-	return run()
+type resolverControl interface {
+	SetEnabled(bool)
 }
 
-func (t *terminalSession) enter() error {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	if !t.live || t.entered {
-		return nil
-	}
-	t.entered = true
-	if _, err := io.WriteString(t.out, enterAlternateScreen); err != nil {
-		return err
-	}
-	return nil
+type liveModelConfig struct {
+	title       string
+	rows        int
+	refresh     time.Duration
+	width       int
+	noResolve   bool
+	tracker     liveTracker
+	enricher    liveEnricher
+	resolver    resolverControl
+	done        <-chan struct{}
+	initialSize terminalDimensions
 }
 
-func (t *terminalSession) draw(frame string) error {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	frame = strings.TrimRight(frame, "\n")
-	if !t.live {
-		_, err := io.WriteString(t.out, frame+"\n")
-		return err
-	}
-	if !t.entered || t.closed {
-		return fmt.Errorf("terminal screen is not active")
-	}
-	// One write keeps a frame contiguous. Reserving the final terminal column
-	// in dimensions prevents bottom-right autowrap; J erases stale old lines.
-	_, err := io.WriteString(t.out, homeCursor+clearScreen+homeCursor+frame+clearToScreenEnd)
-	return err
+type liveModel struct {
+	config    liveModelConfig
+	size      terminalDimensions
+	rows      []bandwidthtop.Row
+	totals    bandwidthtop.Totals
+	noResolve bool
+	showHelp  bool
+	err       error
+	ticks     int
 }
 
-func (t *terminalSession) close() error {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	if !t.live || !t.entered || t.closed {
-		return nil
-	}
-	t.closed = true
-	_, err := io.WriteString(t.out, leaveAlternateScreen)
-	return err
+type tickMsg time.Time
+
+type captureErrorMsg struct {
+	err error
 }
 
-func (t *terminalSession) dimensions(configuredWidth int) terminalDimensions {
-	size := t.size()
+func newLiveModel(config liveModelConfig) *liveModel {
+	size := config.initialSize
 	if size.width <= 0 {
 		size.width = defaultWidth
 	}
 	if size.height <= 0 {
 		size.height = defaultHeight
 	}
-	if configuredWidth > 0 && (!t.live || configuredWidth < size.width) {
+	return &liveModel{config: config, size: size, noResolve: config.noResolve}
+}
+
+func (m *liveModel) Init() tea.Cmd {
+	return tea.Batch(
+		tickAfter(m.config.refresh),
+		waitForCaptureError(m.config.tracker.Errors(), m.config.done),
+	)
+}
+
+func (m *liveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.KeyPressMsg:
+		return m.handleKey(msg.Keystroke())
+	case tea.WindowSizeMsg:
+		m.size = terminalDimensions{width: msg.Width, height: msg.Height}
+	case tickMsg:
+		m.rows, m.totals = snapshotRows(
+			m.config.tracker, m.config.enricher, m.config.rows, m.noResolve)
+		m.ticks++
+		return m, tickAfter(m.config.refresh)
+	case captureErrorMsg:
+		m.err = captureError(msg.err)
+		return m, tea.Quit
+	}
+	return m, nil
+}
+
+func (m *liveModel) handleKey(key string) (tea.Model, tea.Cmd) {
+	switch key {
+	case "q", "ctrl+c":
+		return m, tea.Quit
+	case "n":
+		m.noResolve = !m.noResolve
+		m.config.resolver.SetEnabled(!m.noResolve)
+	case "h", "?":
+		m.showHelp = !m.showHelp
+	}
+	return m, nil
+}
+
+func (m *liveModel) View() tea.View {
+	size := liveDimensions(m.size, m.config.width)
+	status := m.config.enricher.SourceStatusLines(size.width)
+	status = append(status, rdnsStatus(!m.noResolve)+" | h/? help | q quit")
+	if m.showHelp {
+		status = append(status, "keys: n toggle reverse DNS | q/Ctrl-C quit | h/? close help")
+	}
+	if lookupStatus := lookupErrorStatus(m.rows); lookupStatus != "" {
+		status = append(status, lookupStatus)
+	}
+	rows := make([]bandwidthtop.Row, len(m.rows))
+	copy(rows, m.rows)
+	for i := range rows {
+		rows[i].NoResolve = m.noResolve
+	}
+	view := tea.NewView(composeFrame(
+		m.config.title, status, rows, m.totals, m.config.rows, size, true))
+	view.AltScreen = true
+	return view
+}
+
+func tickAfter(delay time.Duration) tea.Cmd {
+	return tea.Tick(delay, func(now time.Time) tea.Msg { return tickMsg(now) })
+}
+
+func waitForCaptureError(errors <-chan error, done <-chan struct{}) tea.Cmd {
+	return func() tea.Msg {
+		select {
+		case err, ok := <-errors:
+			if !ok {
+				return nil
+			}
+			return captureErrorMsg{err: err}
+		case <-done:
+			return nil
+		}
+	}
+}
+
+func snapshotRows(
+	tracker interface {
+		DirectBandwidthSnapshot(int) ([]talkers.DirectTalkerStat, talkers.DirectRateTotals)
+	},
+	enricher interface {
+		Lookup(string) bandwidthtop.Enrichment
+	},
+	rowLimit int,
+	noResolve bool,
+) ([]bandwidthtop.Row, bandwidthtop.Totals) {
+	stats, rateTotals := tracker.DirectBandwidthSnapshot(rowLimit)
+	rows := make([]bandwidthtop.Row, 0, len(stats))
+	for _, stat := range stats {
+		rows = append(rows, bandwidthtop.Row{
+			LocalIP:   stat.LocalIP,
+			NoResolve: noResolve,
+			Stat: bandwidthtop.Stat{
+				IP: stat.IP, Hostname: stat.Hostname, Packets: stat.Packets,
+				Rx: bandwidthtop.RateWindows{
+					Two: stat.RxRate, Ten: stat.RxRate10, Forty: stat.RxRate40,
+				},
+				Tx: bandwidthtop.RateWindows{
+					Two: stat.TxRate, Ten: stat.TxRate10, Forty: stat.TxRate40,
+				},
+			},
+			Info: enricher.Lookup(stat.IP),
+		})
+	}
+	return rows, bandwidthtop.Totals{
+		Rx: bandwidthtop.RateWindows{
+			Two: rateTotals.RxRate, Ten: rateTotals.RxRate10, Forty: rateTotals.RxRate40,
+		},
+		Tx: bandwidthtop.RateWindows{
+			Two: rateTotals.TxRate, Ten: rateTotals.TxRate10, Forty: rateTotals.TxRate40,
+		},
+	}
+}
+
+func captureError(err error) error {
+	return fmt.Errorf("capture failed: %w (run as root or grant CAP_NET_RAW)", err)
+}
+
+func rdnsStatus(enabled bool) string {
+	if enabled {
+		return "rdns: on"
+	}
+	return "rdns: off"
+}
+
+func liveDimensions(size terminalDimensions, configuredWidth int) terminalDimensions {
+	if size.width <= 0 {
+		size.width = defaultWidth
+	}
+	if size.height <= 0 {
+		size.height = defaultHeight
+	}
+	if configuredWidth > 0 && configuredWidth < size.width {
 		size.width = configuredWidth
 	}
-	if t.live && size.width > 1 {
+	if size.width > 1 {
 		size.width--
+	}
+	return size
+}
+
+func snapshotDimensions(out io.Writer, configuredWidth int) terminalDimensions {
+	size := terminalSize(out)
+	if configuredWidth > 0 {
+		size.width = configuredWidth
 	}
 	return size
 }
@@ -231,12 +345,12 @@ func supportsLiveTerminal(out io.Writer, snapshot bool, term string) bool {
 	if snapshot || term == "" || term == "dumb" {
 		return false
 	}
-	file, ok := out.(*os.File)
+	output, ok := out.(*os.File)
 	if !ok {
 		return false
 	}
-	_, err := unix.IoctlGetTermios(int(file.Fd()), unix.TCGETS)
-	return err == nil
+	_, outputErr := unix.IoctlGetTermios(int(output.Fd()), unix.TCGETS)
+	return outputErr == nil
 }
 
 func terminalSize(out io.Writer) terminalDimensions {

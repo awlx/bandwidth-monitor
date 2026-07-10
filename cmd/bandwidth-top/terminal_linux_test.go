@@ -5,123 +5,376 @@ package main
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
+	"os"
+	"os/exec"
 	"regexp"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"bandwidth-monitor/bandwidthtop"
+	"bandwidth-monitor/talkers"
 
+	tea "charm.land/bubbletea/v2"
 	"github.com/rivo/uniseg"
+	"golang.org/x/sys/unix"
 )
 
-type recordingWriter struct {
-	writes []string
-	failAt int
+type fakeLiveTracker struct {
+	errors    chan error
+	snapshots int
+	rows      []talkers.DirectTalkerStat
+	totals    talkers.DirectRateTotals
 }
 
-func (w *recordingWriter) Write(value []byte) (int, error) {
-	w.writes = append(w.writes, string(value))
-	if w.failAt > 0 && len(w.writes) == w.failAt {
-		return 0, io.ErrClosedPipe
+func (t *fakeLiveTracker) DirectBandwidthSnapshot(int) ([]talkers.DirectTalkerStat, talkers.DirectRateTotals) {
+	t.snapshots++
+	return t.rows, t.totals
+}
+
+func (t *fakeLiveTracker) Errors() <-chan error {
+	return t.errors
+}
+
+type fakeLiveEnricher struct {
+	info bandwidthtop.Enrichment
+}
+
+func (e *fakeLiveEnricher) Lookup(string) bandwidthtop.Enrichment {
+	return e.info
+}
+
+func (e *fakeLiveEnricher) SourceStatusLines(int) []string {
+	return []string{"enrichment: ready"}
+}
+
+type fakeResolverControl struct {
+	states []bool
+}
+
+func (r *fakeResolverControl) SetEnabled(enabled bool) {
+	r.states = append(r.states, enabled)
+}
+
+func TestLiveModelKeysToggleDNSHelpAndQuit(t *testing.T) {
+	model, resolver := testLiveModel(false)
+	model.rows = terminalTestRows(1)
+	model.rows[0].Stat.Hostname = "cached.example"
+
+	updateModel(t, model, keyPress("n"))
+	if !model.noResolve || len(resolver.states) != 1 || resolver.states[0] {
+		t.Fatalf("DNS toggle state=%v calls=%v", model.noResolve, resolver.states)
 	}
-	return len(value), nil
+	if view := stripTerminalANSI(model.View().Content); !strings.Contains(view, "rdns: off") ||
+		!strings.Contains(view, "198.51.100.20") || strings.Contains(view, "cached.example") {
+		t.Fatalf("disabled DNS view is wrong:\n%s", view)
+	}
+
+	updateModel(t, model, keyPress("n"))
+	if model.noResolve || len(resolver.states) != 2 || !resolver.states[1] {
+		t.Fatalf("DNS re-enable state=%v calls=%v", model.noResolve, resolver.states)
+	}
+	if view := stripTerminalANSI(model.View().Content); !strings.Contains(view, "rdns: on") ||
+		!strings.Contains(view, "cached.example") {
+		t.Fatalf("enabled DNS view is wrong:\n%s", view)
+	}
+
+	for _, key := range []string{"h", "?"} {
+		updateModel(t, model, keyPress(key))
+		if model.showHelp != (key == "h") {
+			t.Fatalf("%s produced help=%v", key, model.showHelp)
+		}
+	}
+	for _, msg := range []tea.Msg{keyPress("q"), tea.KeyPressMsg(tea.Key{Code: 'c', Mod: tea.ModCtrl})} {
+		_, cmd := model.Update(msg)
+		if cmd == nil {
+			t.Fatalf("%v did not quit", msg)
+		}
+		if _, ok := cmd().(tea.QuitMsg); !ok {
+			t.Fatalf("%v returned %T, want QuitMsg", msg, cmd())
+		}
+	}
 }
 
-func TestLiveTerminalUsesStableAlternateScreenFrames(t *testing.T) {
-	writer := &recordingWriter{}
-	session := newTerminalSession(writer, true, nil)
-	if err := session.withScreen(func() error {
-		if err := session.draw("first\nlong stale line"); err != nil {
-			return err
+func TestLiveModelStartupNoResolveWindowAndTicks(t *testing.T) {
+	model, resolver := testLiveModel(true)
+	if !model.noResolve || len(resolver.states) != 0 {
+		t.Fatalf("startup no-resolve state=%v calls=%v", model.noResolve, resolver.states)
+	}
+	updateModel(t, model, tea.WindowSizeMsg{Width: 81, Height: 12})
+	if model.size != (terminalDimensions{width: 81, height: 12}) {
+		t.Fatalf("window size not applied: %+v", model.size)
+	}
+	_, cmd := model.Update(tickMsg(time.Now()))
+	if cmd == nil || model.ticks != 1 || model.config.tracker.(*fakeLiveTracker).snapshots != 1 {
+		t.Fatalf("tick state ticks=%d snapshots=%d cmd=%v",
+			model.ticks, model.config.tracker.(*fakeLiveTracker).snapshots, cmd)
+	}
+	view := model.View()
+	if !view.AltScreen || !strings.Contains(stripTerminalANSI(view.Content), "rdns: off") {
+		t.Fatalf("startup view is not declarative alternate screen with DNS off: %+v", view)
+	}
+}
+
+func TestLiveModelCaptureErrorQuitsWithoutInterfaceDetails(t *testing.T) {
+	model, _ := testLiveModel(false)
+	sentinel := errors.New("permission denied")
+	_, cmd := model.Update(captureErrorMsg{err: sentinel})
+	if cmd == nil || !errors.Is(model.err, sentinel) ||
+		strings.Contains(model.err.Error(), "eth0") || strings.Contains(model.err.Error(), "192.0.2.1") {
+		t.Fatalf("capture shutdown err=%v cmd=%v", model.err, cmd)
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Fatalf("capture error returned %T, want QuitMsg", cmd())
+	}
+}
+
+func TestWaitForCaptureErrorCommand(t *testing.T) {
+	errs := make(chan error, 1)
+	done := make(chan struct{})
+	sentinel := errors.New("capture stopped")
+	errs <- sentinel
+	msg := waitForCaptureError(errs, done)()
+	got, ok := msg.(captureErrorMsg)
+	if !ok || !errors.Is(got.err, sentinel) {
+		t.Fatalf("got %#v", msg)
+	}
+
+	close(done)
+	if msg := waitForCaptureError(make(chan error), done)(); msg != nil {
+		t.Fatalf("cancelled watcher returned %#v", msg)
+	}
+}
+
+func TestBubbleTeaPTYRestoresAfterQuitAndCaptureError(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		exit func(*tea.Program, *fakeLiveTracker, *os.File)
+	}{
+		{
+			name: "q",
+			exit: func(_ *tea.Program, _ *fakeLiveTracker, master *os.File) {
+				_, _ = master.WriteString("q")
+			},
+		},
+		{
+			name: "capture error",
+			exit: func(_ *tea.Program, tracker *fakeLiveTracker, _ *os.File) {
+				tracker.errors <- errors.New("capture stopped")
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			master, slave := openTestPTY(t)
+			tracker := &fakeLiveTracker{errors: make(chan error, 1)}
+			model := newLiveModel(liveModelConfig{
+				title: "bandwidth-top", rows: 20, refresh: time.Hour,
+				tracker: tracker, enricher: &fakeLiveEnricher{},
+				resolver: &fakeResolverControl{},
+				done:     make(chan struct{}),
+			})
+			program := tea.NewProgram(model,
+				tea.WithInput(slave),
+				tea.WithOutput(slave),
+				tea.WithEnvironment([]string{"TERM=xterm-256color", "TERM_PROGRAM=Apple_Terminal"}),
+				tea.WithoutSignals(),
+			)
+			result := runPTYProgram(t, program, master, slave, func() {
+				test.exit(program, tracker, master)
+			})
+			assertAlternateScreenRestored(t, result.output)
+			if test.name == "capture error" && model.err == nil {
+				t.Fatal("capture error was not retained by the final model")
+			}
+			if result.err != nil {
+				t.Fatalf("program err=%v model err=%v", result.err, model.err)
+			}
+		})
+	}
+}
+
+type panicMsg struct{}
+
+type panicModel struct {
+	panic bool
+}
+
+func (m *panicModel) Init() tea.Cmd {
+	return nil
+}
+
+func (m *panicModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if _, ok := msg.(panicMsg); ok {
+		m.panic = true
+	}
+	return m, nil
+}
+
+func (m *panicModel) View() tea.View {
+	if m.panic {
+		panic("view failed")
+	}
+	view := tea.NewView("ready")
+	view.AltScreen = true
+	return view
+}
+
+func TestBubbleTeaPTYRestoresAfterViewPanic(t *testing.T) {
+	master, slave := openTestPTY(t)
+	program := tea.NewProgram(&panicModel{},
+		tea.WithInput(nil),
+		tea.WithOutput(slave),
+		tea.WithEnvironment([]string{"TERM=xterm-256color", "TERM_PROGRAM=Apple_Terminal"}),
+		tea.WithoutSignals(),
+	)
+	result := runPTYProgram(t, program, master, slave, func() { program.Send(panicMsg{}) })
+	if !errors.Is(result.err, tea.ErrProgramPanic) {
+		t.Fatalf("got %v, want Bubble Tea panic error", result.err)
+	}
+	assertAlternateScreenRestored(t, result.output)
+}
+
+type idleModel struct{}
+
+func (idleModel) Init() tea.Cmd {
+	return nil
+}
+
+func (m idleModel) Update(tea.Msg) (tea.Model, tea.Cmd) {
+	return m, nil
+}
+
+func (idleModel) View() tea.View {
+	view := tea.NewView("waiting")
+	view.AltScreen = true
+	return view
+}
+
+func TestBubbleTeaPTYRestoresOnSIGTERM(t *testing.T) {
+	master, slave := openTestPTY(t)
+	output := make(chan string, 1)
+	go func() {
+		data, _ := io.ReadAll(master)
+		output <- string(data)
+	}()
+	command := exec.Command(os.Args[0], "-test.run=^TestBubbleTeaSIGTERMHelper$")
+	command.Stdin = slave
+	command.Stdout = slave
+	command.Stderr = slave
+	command.Env = append(os.Environ(), "BANDWIDTH_TOP_SIGTERM_HELPER=1", "TERM=xterm-256color")
+	if err := command.Start(); err != nil {
+		t.Fatal(err)
+	}
+	_ = slave.Close()
+	time.Sleep(150 * time.Millisecond)
+	if err := command.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	if err := command.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case value := <-output:
+		assertAlternateScreenRestored(t, value)
+	case <-time.After(time.Second):
+		t.Fatal("SIGTERM helper output did not close")
+	}
+}
+
+func TestBubbleTeaSIGTERMHelper(t *testing.T) {
+	if os.Getenv("BANDWIDTH_TOP_SIGTERM_HELPER") != "1" {
+		return
+	}
+	if _, err := tea.NewProgram(idleModel{},
+		tea.WithInput(os.Stdin),
+		tea.WithOutput(os.Stdout),
+		tea.WithEnvironment(os.Environ()),
+	).Run(); err != nil {
+		os.Exit(2)
+	}
+	os.Exit(0)
+}
+
+type ptyResult struct {
+	output string
+	err    error
+}
+
+func runPTYProgram(
+	t *testing.T,
+	program *tea.Program,
+	master, slave *os.File,
+	exit func(),
+) ptyResult {
+	t.Helper()
+	output := make(chan string, 1)
+	go func() {
+		data, _ := io.ReadAll(master)
+		output <- string(data)
+	}()
+	done := make(chan error, 1)
+	go func() {
+		_, err := program.Run()
+		done <- err
+	}()
+	time.Sleep(100 * time.Millisecond)
+	exit()
+	select {
+	case err := <-done:
+		_ = slave.Close()
+		select {
+		case value := <-output:
+			return ptyResult{output: value, err: err}
+		case <-time.After(time.Second):
+			t.Fatal("PTY output did not close")
 		}
-		return session.draw("second")
+	case <-time.After(3 * time.Second):
+		t.Fatal("Bubble Tea program did not exit")
+	}
+	return ptyResult{}
+}
+
+func openTestPTY(t *testing.T) (*os.File, *os.File) {
+	t.Helper()
+	master, err := os.OpenFile("/dev/ptmx", os.O_RDWR|unix.O_NOCTTY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = master.Close() })
+	if err := unix.IoctlSetPointerInt(int(master.Fd()), unix.TIOCSPTLCK, 0); err != nil {
+		t.Fatal(err)
+	}
+	number, err := unix.IoctlGetInt(int(master.Fd()), unix.TIOCGPTN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	slave, err := os.OpenFile(fmt.Sprintf("/dev/pts/%d", number), os.O_RDWR|unix.O_NOCTTY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = slave.Close() })
+	if err := unix.IoctlSetWinsize(int(slave.Fd()), unix.TIOCSWINSZ, &unix.Winsize{
+		Row: 24,
+		Col: 120,
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if len(writer.writes) != 4 {
-		t.Fatalf("got %d writes, want enter, two atomic frames, restore: %q", len(writer.writes), writer.writes)
-	}
-	if writer.writes[0] != enterAlternateScreen || writer.writes[3] != leaveAlternateScreen {
-		t.Fatalf("alternate-screen lifecycle missing: %q", writer.writes)
-	}
-	for _, frame := range writer.writes[1:3] {
-		if !strings.HasPrefix(frame, homeCursor+clearScreen+homeCursor) ||
-			!strings.HasSuffix(frame, clearToScreenEnd) {
-			t.Fatalf("frame does not redraw and clear stale remainder: %q", frame)
-		}
-		content := strings.TrimSuffix(
-			strings.TrimPrefix(frame, homeCursor+clearScreen+homeCursor),
-			clearToScreenEnd)
-		if strings.HasSuffix(content, "\n") {
-			t.Fatalf("frame has scroll-triggering trailing newline: %q", frame)
-		}
-	}
+	return master, slave
 }
 
-func TestTerminalRestoresScreenOnEveryExit(t *testing.T) {
-	sentinel := errors.New("capture failed")
-	for _, test := range []struct {
-		name string
-		err  error
-	}{
-		{name: "normal"},
-		{name: "signal"},
-		{name: "error", err: sentinel},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			writer := &recordingWriter{}
-			session := newTerminalSession(writer, true, nil)
-			got := session.withScreen(func() error { return test.err })
-			if !errors.Is(got, test.err) || len(writer.writes) != 2 ||
-				writer.writes[0] != enterAlternateScreen || writer.writes[1] != leaveAlternateScreen {
-				t.Fatalf("err=%v writes=%q", got, writer.writes)
-			}
-			if err := session.close(); err != nil || len(writer.writes) != 2 {
-				t.Fatalf("cleanup was not idempotent: err=%v writes=%q", err, writer.writes)
-			}
-		})
+func assertAlternateScreenRestored(t *testing.T, output string) {
+	t.Helper()
+	const enter = "\x1b[?1049h"
+	const leave = "\x1b[?1049l"
+	if strings.Count(output, enter) != 1 || strings.Count(output, leave) != 1 ||
+		strings.Index(output, enter) > strings.Index(output, leave) {
+		t.Fatalf("alternate screen lifecycle is unstable: %q", output)
 	}
-}
-
-func TestTerminalRestoresAfterFrameWriteError(t *testing.T) {
-	writer := &recordingWriter{failAt: 2}
-	session := newTerminalSession(writer, true, nil)
-	err := session.withScreen(func() error { return session.draw("frame") })
-	if !errors.Is(err, io.ErrClosedPipe) || len(writer.writes) != 3 ||
-		writer.writes[2] != leaveAlternateScreen {
-		t.Fatalf("err=%v writes=%q", err, writer.writes)
-	}
-}
-
-func TestTerminalRestoresAfterPanic(t *testing.T) {
-	writer := &recordingWriter{}
-	session := newTerminalSession(writer, true, nil)
-	func() {
-		defer func() {
-			if recover() == nil {
-				t.Fatal("expected panic")
-			}
-		}()
-		_ = session.withScreen(func() error {
-			panic("boom")
-		})
-	}()
-	if len(writer.writes) != 2 || writer.writes[1] != leaveAlternateScreen {
-		t.Fatalf("screen was not restored after panic: %q", writer.writes)
-	}
-}
-
-func TestTerminalAttemptsRestoreAfterEnterError(t *testing.T) {
-	writer := &recordingWriter{failAt: 1}
-	session := newTerminalSession(writer, true, nil)
-	err := session.withScreen(func() error {
-		t.Fatal("run called after enter failure")
-		return nil
-	})
-	if !errors.Is(err, io.ErrClosedPipe) || len(writer.writes) != 2 ||
-		writer.writes[1] != leaveAlternateScreen {
-		t.Fatalf("err=%v writes=%q", err, writer.writes)
+	if regexp.MustCompile(`\x1b\[[0-9;]*[ST]`).MatchString(output) {
+		t.Fatalf("alternate screen used scrolling commands: %q", output)
 	}
 }
 
@@ -186,20 +439,51 @@ func TestSnapshotAndUnsupportedTerminalsNeverAnimate(t *testing.T) {
 	if strings.Contains(frame, "\x1b") {
 		t.Fatalf("snapshot contains ANSI: %q", frame)
 	}
-	writer := &recordingWriter{}
-	session := newTerminalSession(writer, false, nil)
-	if err := session.withScreen(func() error { return session.draw(frame) }); err != nil {
-		t.Fatal(err)
-	}
-	if len(writer.writes) != 1 || strings.Contains(writer.writes[0], "\x1b") {
-		t.Fatalf("non-TTY output animated: %q", writer.writes)
-	}
 	var unsupported bytes.Buffer
 	if supportsLiveTerminal(&bytes.Buffer{}, false, "xterm-256color") ||
 		supportsLiveTerminal(&unsupported, false, "dumb") ||
 		supportsLiveTerminal(&unsupported, true, "xterm-256color") {
 		t.Fatal("unsupported, dumb, or snapshot output was treated as live")
 	}
+}
+
+func TestLiveTerminalSupportsTTYOutputWithRedirectedInput(t *testing.T) {
+	_, output := openTestPTY(t)
+	if !supportsLiveTerminal(output, false, "xterm-256color") {
+		t.Fatal("TTY output was rejected because input may be redirected")
+	}
+}
+
+func testLiveModel(noResolve bool) (*liveModel, *fakeResolverControl) {
+	resolver := &fakeResolverControl{}
+	tracker := &fakeLiveTracker{
+		errors: make(chan error),
+		rows: []talkers.DirectTalkerStat{{
+			LocalIP: "192.0.2.10",
+			TalkerStat: talkers.TalkerStat{
+				IP: "198.51.100.20", Hostname: "cached.example",
+			},
+		}},
+	}
+	return newLiveModel(liveModelConfig{
+		title: "bandwidth-top", rows: 20, refresh: time.Second,
+		noResolve: noResolve, tracker: tracker, enricher: &fakeLiveEnricher{},
+		resolver: resolver, initialSize: terminalDimensions{width: 120, height: 24},
+		done: make(chan struct{}),
+	}), resolver
+}
+
+func keyPress(key string) tea.KeyPressMsg {
+	return tea.KeyPressMsg(tea.Key{Text: key, Code: []rune(key)[0]})
+}
+
+func updateModel(t *testing.T, model *liveModel, msg tea.Msg) tea.Cmd {
+	t.Helper()
+	got, cmd := model.Update(msg)
+	if got != model {
+		t.Fatalf("update returned a different model: %T", got)
+	}
+	return cmd
 }
 
 func terminalTestRows(count int) []bandwidthtop.Row {

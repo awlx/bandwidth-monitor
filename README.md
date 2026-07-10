@@ -70,6 +70,10 @@ interface. It ranks local/remote flows with outbound and inbound lines, rolling
 2-, 10-, and 40-second rates, and total TX/RX rates. It can enrich peers with
 PTR names, ASN, provider, and location data.
 
+In an interactive terminal, press `n` to enable or disable PTR lookups, `h` or
+`?` for key help, and `q` or Ctrl-C to quit. `--no-resolve`/`-n` starts with
+PTR lookups disabled; the runtime `n` key can enable them later.
+
 Build and run it normally:
 
 ```bash

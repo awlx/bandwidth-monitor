@@ -3,6 +3,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -16,6 +17,8 @@ import (
 	"bandwidth-monitor/bandwidthtop"
 	"bandwidth-monitor/resolver"
 	"bandwidth-monitor/talkers"
+
+	tea "charm.land/bubbletea/v2"
 )
 
 func main() {
@@ -77,24 +80,59 @@ func run(args []string, stdout, stderr io.Writer) error {
 		fmt.Fprintln(stderr, "bandwidth-top:", warning)
 	}
 	liveTerminal := supportsLiveTerminal(stdout, *snapshot, os.Getenv("TERM"))
-	singleFrame := *snapshot || !liveTerminal
 	if !*snapshot && !liveTerminal {
 		fmt.Fprintln(stderr, "bandwidth-top: non-interactive terminal; rendering one plain snapshot")
 	}
-	terminal := newTerminalSession(stdout, liveTerminal, func() terminalDimensions {
-		return terminalSize(stdout)
-	})
-	dns := resolverUnlessDisabled(noResolve, resolver.New)
-	if dns != nil {
-		defer dns.Stop()
-	}
-	tracker := talkers.NewDirect(iface.Name, false, localNetworks, nil, dns)
 	log.SetOutput(io.Discard)
+	dns := resolver.New()
+	dns.SetEnabled(!noResolve)
+	defer dns.Stop()
+	tracker := talkers.NewDirect(iface.Name, false, localNetworks, nil, dns)
 	go tracker.Run()
 	defer tracker.Stop()
 
-	delay := *refresh
-	if singleFrame && delay < 1200*time.Millisecond {
+	title := fmt.Sprintf("bandwidth-top  interface=%s  refresh=%s  rates=bit/s",
+		iface.Name, refresh.String())
+	if liveTerminal {
+		done := make(chan struct{})
+		model := newLiveModel(liveModelConfig{
+			title: title, rows: *rows, refresh: *refresh, width: *width,
+			noResolve: noResolve, tracker: tracker, enricher: enricher, resolver: dns,
+			done: done,
+		})
+		final, programErr := tea.NewProgram(
+			model,
+			tea.WithOutput(stdout),
+			tea.WithEnvironment(os.Environ()),
+		).Run()
+		close(done)
+		if errors.Is(programErr, tea.ErrInterrupted) {
+			return nil
+		}
+		if programErr != nil {
+			return programErr
+		}
+		if result, ok := final.(*liveModel); ok && result.err != nil {
+			return result.err
+		}
+		return nil
+	}
+
+	return runSnapshot(stdout, tracker, enricher, title, *rows, *refresh, *width, noResolve)
+}
+
+func runSnapshot(
+	stdout io.Writer,
+	tracker *talkers.Tracker,
+	enricher *bandwidthtop.Enricher,
+	title string,
+	rows int,
+	refresh time.Duration,
+	width int,
+	noResolve bool,
+) error {
+	delay := refresh
+	if delay < 1200*time.Millisecond {
 		delay = 1200 * time.Millisecond
 	}
 	timer := time.NewTimer(delay)
@@ -102,89 +140,27 @@ func run(args []string, stdout, stderr io.Writer) error {
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
 	defer signal.Stop(signals)
-	resizes := make(chan os.Signal, 1)
-	signal.Notify(resizes, syscall.SIGWINCH)
-	defer signal.Stop(resizes)
 	select {
 	case <-signals:
 		return nil
 	case err := <-tracker.Errors():
-		return fmt.Errorf("capture %s failed: %w (run as root or grant CAP_NET_RAW)", iface.Name, err)
+		return captureError(err)
 	case <-timer.C:
 	}
 
-	return terminal.withScreen(func() error {
-		for {
-			stats, rateTotals := tracker.DirectBandwidthSnapshot(*rows)
-			viewRows := make([]bandwidthtop.Row, 0, len(stats))
-			for _, stat := range stats {
-				viewRows = append(viewRows, bandwidthtop.Row{
-					LocalIP:   stat.LocalIP,
-					NoResolve: noResolve,
-					Stat: bandwidthtop.Stat{
-						IP: stat.IP, Hostname: stat.Hostname, Packets: stat.Packets,
-						Rx: bandwidthtop.RateWindows{
-							Two: stat.RxRate, Ten: stat.RxRate10, Forty: stat.RxRate40,
-						},
-						Tx: bandwidthtop.RateWindows{
-							Two: stat.TxRate, Ten: stat.TxRate10, Forty: stat.TxRate40,
-						},
-					},
-					Info: enricher.Lookup(stat.IP),
-				})
-			}
-			totals := bandwidthtop.Totals{
-				Rx: bandwidthtop.RateWindows{
-					Two: rateTotals.RxRate, Ten: rateTotals.RxRate10, Forty: rateTotals.RxRate40,
-				},
-				Tx: bandwidthtop.RateWindows{
-					Two: rateTotals.TxRate, Ten: rateTotals.TxRate10, Forty: rateTotals.TxRate40,
-				},
-			}
-			if singleFrame {
-				enricher.Wait()
-				for i := range viewRows {
-					viewRows[i].Info = enricher.Lookup(viewRows[i].Stat.IP)
-				}
-			}
-			size := terminal.dimensions(*width)
-			title := fmt.Sprintf("bandwidth-top  interface=%s  refresh=%s  rates=bit/s",
-				iface.Name, refresh.String())
-			status := enricher.SourceStatusLines(size.width)
-			if lookupStatus := lookupErrorStatus(viewRows); lookupStatus != "" {
-				status = append(status, lookupStatus)
-			}
-			frame := composeFrame(title, status, viewRows, totals, *rows, size, liveTerminal)
-			if err := terminal.draw(frame); err != nil {
-				return err
-			}
-			if singleFrame {
-				return nil
-			}
-			timer.Reset(*refresh)
-			select {
-			case <-signals:
-				return nil
-			case err := <-tracker.Errors():
-				return fmt.Errorf("capture %s failed: %w (run as root or grant CAP_NET_RAW)", iface.Name, err)
-			case <-resizes:
-				if !timer.Stop() {
-					select {
-					case <-timer.C:
-					default:
-					}
-				}
-			case <-timer.C:
-			}
-		}
-	})
-}
-
-func resolverUnlessDisabled(disabled bool, create func() *resolver.Resolver) *resolver.Resolver {
-	if disabled {
-		return nil
+	viewRows, totals := snapshotRows(tracker, enricher, rows, noResolve)
+	enricher.Wait()
+	for i := range viewRows {
+		viewRows[i].Info = enricher.Lookup(viewRows[i].Stat.IP)
 	}
-	return create()
+	size := snapshotDimensions(stdout, width)
+	status := enricher.SourceStatusLines(size.width)
+	status = append(status, rdnsStatus(!noResolve))
+	if lookupStatus := lookupErrorStatus(viewRows); lookupStatus != "" {
+		status = append(status, lookupStatus)
+	}
+	_, err := fmt.Fprintln(stdout, composeFrame(title, status, viewRows, totals, rows, size, false))
+	return err
 }
 
 func lookupErrorStatus(rows []bandwidthtop.Row) string {
