@@ -1,25 +1,31 @@
 BINARY=bandwidth-monitor
+TOP_BINARY=bandwidth-top
 GATEWAY_BINARY=apns-gateway
 INSTALL_DIR=/opt/bandwidth-monitor
+TOP_INSTALL_DIR=/usr/local/bin
 SERVICE_FILE=bandwidth-monitor.service
 
 # Version injection: use git tag if on a tag, otherwise short commit hash.
 GIT_VERSION := $(shell git describe --tags --exact-match 2>/dev/null)
 GIT_COMMIT  := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
-LDFLAGS_VERSION := -X bandwidth-monitor/version.Commit=$(GIT_COMMIT)
+BUILD_VERSION := 0.0.0~git.$(GIT_COMMIT)
 ifneq ($(GIT_VERSION),)
-  LDFLAGS_VERSION += -X bandwidth-monitor/version.Version=$(GIT_VERSION)
+  BUILD_VERSION := $(patsubst v%,%,$(GIT_VERSION))
 endif
+LDFLAGS_VERSION := -X bandwidth-monitor/version.Commit=$(GIT_COMMIT) -X bandwidth-monitor/version.Version=$(BUILD_VERSION)
 
 GEOLITE2_CITY=GeoLite2-City.mmdb
 GEOLITE2_ASN=GeoLite2-ASN.mmdb
 GEOLITE2_CITY_URL=https://github.com/P3TERX/GeoLite.mmdb/raw/download/GeoLite2-City.mmdb
 GEOLITE2_ASN_URL=https://github.com/P3TERX/GeoLite.mmdb/raw/download/GeoLite2-ASN.mmdb
 
-.PHONY: build build-gateway run clean geoip install uninstall
+.PHONY: build build-top build-gateway run clean geoip install install-top uninstall uninstall-top
 
 build:
 	go build -ldflags="$(LDFLAGS_VERSION)" -o $(BINARY) .
+
+build-top:
+	go build -ldflags="$(LDFLAGS_VERSION)" -o $(TOP_BINARY) ./cmd/bandwidth-top
 
 build_stripped:
 	# Build and strip the binary.
@@ -56,6 +62,10 @@ install: geoip build
 	sudo systemctl restart $(BINARY)
 	@echo "Installed and started. Check: systemctl status $(BINARY)"
 
+install-top: build-top
+	sudo install -m 0755 $(TOP_BINARY) $(TOP_INSTALL_DIR)/$(TOP_BINARY)
+	@echo "Installed $(TOP_INSTALL_DIR)/$(TOP_BINARY); grant CAP_NET_RAW externally or run as root."
+
 uninstall:
 	@echo "Removing $(BINARY)..."
 	-sudo systemctl stop $(BINARY)
@@ -65,5 +75,8 @@ uninstall:
 	sudo rm -rf $(INSTALL_DIR)
 	@echo "Uninstalled."
 
+uninstall-top:
+	sudo rm -f $(TOP_INSTALL_DIR)/$(TOP_BINARY)
+
 clean:
-	rm -f $(BINARY) $(GATEWAY_BINARY)
+	rm -f $(BINARY) $(TOP_BINARY) $(GATEWAY_BINARY)

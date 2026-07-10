@@ -52,6 +52,13 @@ jobs:
         if: matrix.goarch == 'amd64'
         run: ./packaging/test-packaging.sh
 
+      - name: Test Linux packages
+        if: matrix.goarch == 'amd64'
+        run: |
+          go vet ./...
+          go test ./...
+          go test -race -v ./bandwidthtop ./cmd/bandwidth-top ./talkers
+
       - name: Build binary
         env:
           GOOS: linux
@@ -59,11 +66,9 @@ jobs:
           CGO_ENABLED: "0"
         run: |
           COMMIT="$(echo $GITHUB_SHA | cut -c1-7)"
-          LDFLAGS="-s -w -X bandwidth-monitor/version.Commit=${COMMIT}"
-          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
-            LDFLAGS="${LDFLAGS} -X bandwidth-monitor/version.Version=${{ github.ref_name }}"
-          fi
+          LDFLAGS="-s -w -X bandwidth-monitor/version.Commit=${COMMIT} -X bandwidth-monitor/version.Version=${PACKAGE_VERSION}"
           go build -ldflags="${LDFLAGS}" -o bandwidth-monitor .
+          go build -ldflags="${LDFLAGS}" -o bandwidth-top ./cmd/bandwidth-top
 
       - name: Build deb
         env:
@@ -72,11 +77,12 @@ jobs:
         run: |
           export VERSION="${VERSION#v}"
           nfpm package -p deb -f nfpm.yaml
+          nfpm package -p deb -f nfpm-top.yaml
 
       - name: Test deb install and upgrade
         if: matrix.goarch == 'amd64'
         run: |
-          package="$(find . -maxdepth 1 -name '*.deb' -print -quit)"
+          package="$(find . -maxdepth 1 -name 'bandwidth-monitor_*.deb' -print -quit)"
           test -n "$package"
 
           # Reproduce minimal systems that intentionally omit package docs.
@@ -86,6 +92,7 @@ jobs:
           sudo env DEBIAN_FRONTEND=noninteractive dpkg -i "$package"
           test -f /etc/bandwidth-monitor/env
           test -f /usr/share/bandwidth-monitor/env.example
+          test ! -e /usr/bin/bandwidth-top
           test "$(stat -c '%a' /etc/bandwidth-monitor/env)" = "600"
           ! dpkg-query -W -f='${Conffiles}\n' bandwidth-monitor |
             grep -q '/etc/bandwidth-monitor/env'
@@ -102,6 +109,29 @@ jobs:
           verify="$(dpkg -V bandwidth-monitor)"
           test -z "$verify"
 
+      - name: Test bandwidth-top deb payload and install
+        if: matrix.goarch == 'amd64'
+        run: |
+          package="$(find . -maxdepth 1 -name 'bandwidth-top_*.deb' -print -quit)"
+          test -n "$package"
+          dpkg-deb --contents "$package" |
+            awk '$1 ~ /^[-l]/ {print $NF}' | sort > /tmp/bandwidth-top-files
+          test "$(cat /tmp/bandwidth-top-files)" = "./usr/bin/bandwidth-top"
+          control_dir="$(mktemp -d)"
+          dpkg-deb --control "$package" "$control_dir"
+          test ! -e "$control_dir/preinst"
+          test ! -e "$control_dir/postinst"
+          test ! -e "$control_dir/prerm"
+          test ! -e "$control_dir/postrm"
+          test ! -e "$control_dir/conffiles"
+          sudo env DEBIAN_FRONTEND=noninteractive dpkg -i "$package"
+          test -x /usr/bin/bandwidth-top
+          test "$(dpkg-query -L bandwidth-top | grep -c '^/usr/bin/bandwidth-top$')" = "1"
+          ! dpkg-query -L bandwidth-top |
+            grep -Eq '^/etc/|^/lib/systemd/|^/usr/share/bandwidth-monitor/|^/var/'
+          test -z "$(dpkg-query -W -f='${Depends}\n' bandwidth-top)"
+          test -z "$(dpkg -V bandwidth-top)"
+
       - name: Build rpm
         env:
           VERSION: ${{ env.PACKAGE_VERSION }}
@@ -109,6 +139,7 @@ jobs:
         run: |
           export VERSION="${VERSION#v}"
           nfpm package -p rpm -f nfpm.yaml
+          nfpm package -p rpm -f nfpm-top.yaml
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -178,13 +209,16 @@ jobs:
           GOARM: ${{ matrix.goarm }}
         run: |
           COMMIT="$(echo $GITHUB_SHA | cut -c1-7)"
-          LDFLAGS="-s -w -X bandwidth-monitor/version.Commit=${COMMIT}"
-          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
-            LDFLAGS="${LDFLAGS} -X bandwidth-monitor/version.Version=${{ github.ref_name }}"
-          fi
+          VERSION="$(./packaging/package-version.sh openwrt \
+            "$GITHUB_REF_TYPE" "$GITHUB_REF_NAME" \
+            "$GITHUB_RUN_NUMBER" "$GITHUB_RUN_ATTEMPT" "$GITHUB_SHA")"
+          LDFLAGS="-s -w -X bandwidth-monitor/version.Commit=${COMMIT} -X bandwidth-monitor/version.Version=${VERSION}"
           go build -ldflags="${LDFLAGS}" -o bandwidth-monitor .
+          go build -ldflags="${LDFLAGS}" -o bandwidth-top ./cmd/bandwidth-top
           file bandwidth-monitor
+          file bandwidth-top
           echo "BINARY=${{ github.workspace }}/bandwidth-monitor" >> $GITHUB_ENV
+          echo "TOP_BINARY=${{ github.workspace }}/bandwidth-top" >> $GITHUB_ENV
 
       - name: Package for OpenWrt
         run: |
@@ -198,16 +232,23 @@ jobs:
 
           PKG_DIR=$(mktemp -d)
           BUILD_DIR=$(mktemp -d)
+          TOP_PKG_DIR=$(mktemp -d)
+          TOP_BUILD_DIR=$(mktemp -d)
           mkdir -p "$PKG_DIR/usr/bin"
           mkdir -p "$PKG_DIR/etc/bandwidth-monitor"
           mkdir -p "$PKG_DIR/etc/init.d"
+          mkdir -p "$TOP_PKG_DIR/usr/bin"
           mkdir -p "$WORKSPACE/pkg-out"
 
           cp "$BINARY" "$PKG_DIR/usr/bin/bandwidth-monitor"
+          cp "$TOP_BINARY" "$TOP_PKG_DIR/usr/bin/bandwidth-top"
           cp "$WORKSPACE/env.example" "$PKG_DIR/etc/bandwidth-monitor/env"
           cp "$WORKSPACE/packaging/openwrt-files/bandwidth-monitor.init" "$PKG_DIR/etc/init.d/bandwidth-monitor"
           chmod 755 "$PKG_DIR/usr/bin/bandwidth-monitor" "$PKG_DIR/etc/init.d/bandwidth-monitor"
+          chmod 755 "$TOP_PKG_DIR/usr/bin/bandwidth-top"
           chmod 600 "$PKG_DIR/etc/bandwidth-monitor/env"
+          test ! -e "$PKG_DIR/usr/bin/bandwidth-top"
+          test "$(find "$TOP_PKG_DIR" -type f -print)" = "$TOP_PKG_DIR/usr/bin/bandwidth-top"
 
           if [ "$PKG_FORMAT" = "apk" ]; then
             # Download apk-tools v3 static binary for creating APK v3 packages
@@ -235,6 +276,21 @@ jobs:
               -o "$APK_FILE"
             ls -lh "$APK_FILE"
             file "$APK_FILE"
+
+            TOP_APK_FILE="$WORKSPACE/pkg-out/bandwidth-top-${VERSION}-r1_${ARCH}.apk"
+            $APK mkpkg \
+              -I "name:bandwidth-top" \
+              -I "version:${VERSION}-r1" \
+              -I "description:Ad-hoc live terminal network traffic viewer" \
+              -I "url:https://github.com/awlx/bandwidth-monitor" \
+              -I "build-time:${BUILDDATE}" \
+              -I "arch:${ARCH}" \
+              -I "license:AGPL-3.0-only" \
+              -I "maintainer:Annika Wickert <awlx@users.noreply.github.com>" \
+              -F "$TOP_PKG_DIR" \
+              -o "$TOP_APK_FILE"
+            ls -lh "$TOP_APK_FILE"
+            file "$TOP_APK_FILE"
           else
             mkdir -p "$PKG_DIR/CONTROL"
             printf '%s\n' \
@@ -257,6 +313,25 @@ jobs:
             # OpenWrt ipk is a tar.gz containing debian-binary, control.tar.gz, data.tar.gz
             tar czf "$IPK_FILE" --owner=0 --group=0 ./debian-binary ./control.tar.gz ./data.tar.gz
             file "$IPK_FILE"
+
+            mkdir -p "$TOP_PKG_DIR/CONTROL"
+            printf '%s\n' \
+              "Package: bandwidth-top" \
+              "Version: ${VERSION}" \
+              "Architecture: ${ARCH}" \
+              "Maintainer: Annika Wickert <awlx@users.noreply.github.com>" \
+              "Section: net" \
+              "Description: Ad-hoc live terminal network traffic viewer" \
+              > "$TOP_PKG_DIR/CONTROL/control"
+
+            tar czf "$TOP_BUILD_DIR/control.tar.gz" -C "$TOP_PKG_DIR/CONTROL" .
+            tar czf "$TOP_BUILD_DIR/data.tar.gz" --owner=0 --group=0 -C "$TOP_PKG_DIR" usr
+            echo "2.0" > "$TOP_BUILD_DIR/debian-binary"
+
+            TOP_IPK_FILE="$WORKSPACE/pkg-out/bandwidth-top_${VERSION}_${ARCH}.ipk"
+            cd "$TOP_BUILD_DIR"
+            tar czf "$TOP_IPK_FILE" --owner=0 --group=0 ./debian-binary ./control.tar.gz ./data.tar.gz
+            file "$TOP_IPK_FILE"
           fi
 
       - name: Upload OpenWrt package
@@ -367,6 +442,8 @@ jobs:
           echo "deb [signed-by=/etc/apt/keyrings/bandwidth-monitor.gpg] https://awlx.github.io/bandwidth-monitor stable main" | sudo tee /etc/apt/sources.list.d/bandwidth-monitor.list
           sudo apt update
           sudo apt install bandwidth-monitor
+          sudo apt install bandwidth-top
+          sudo apt install bandwidth-monitor bandwidth-top
           </pre>
           </body></html>
           HTML

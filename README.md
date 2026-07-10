@@ -9,6 +9,7 @@ Single-binary deployment with an embedded web UI, optional DNS stats (AdGuard Ho
 - [Screenshots](#screenshots)
 - [Features](#features)
 - [Quick Start](#quick-start)
+- [bandwidth-top CLI](#bandwidth-top-cli)
 - [Installation](#installation)
 - [Configuration](#configuration)
 - [macOS Menu Bar Plugin](#macos-menu-bar-plugin)
@@ -144,6 +145,7 @@ Single-binary deployment with an embedded web UI, optional DNS stats (AdGuard Ho
 
 ### General
 
+- **`bandwidth-top` CLI** — separate, lightweight ANSI terminal viewer with direct single-interface AF_PACKET capture and asynchronous peer enrichment
 - **Server-Sent Events (SSE) live updates** — 1-second refresh with automatic reconnection
 - **Dark/light/auto theme** — saved to localStorage
 - **Fully embedded UI** — all HTML/CSS/JS baked into the binary via `go:embed`
@@ -182,6 +184,94 @@ Then open **http://localhost:8080**.
 
 ---
 
+## bandwidth-top CLI
+
+`bandwidth-top` is an ad-hoc live traffic viewer, similar in spirit to `iftop`.
+It captures one local interface directly; it does not require a running
+bandwidth-monitor server. Build it with `make build-top`, then run:
+
+```bash
+sudo ./bandwidth-top --interface eth0 --rows 20 --refresh 1s
+sudo ./bandwidth-top --interface eth0 --local-network 192.0.2.0/24
+./bandwidth-top --snapshot --no-public
+```
+
+When `--interface` is omitted, the lowest-metric active IPv4 or IPv6
+default-route interface is selected. ECMP nexthops are evaluated independently;
+their weights do not override route metric and deterministic interface
+tie-breaking. Capture requires root or `CAP_NET_RAW`:
+
+```bash
+sudo setcap cap_net_raw+ep /usr/bin/bandwidth-top
+```
+
+Rates are displayed in bit/s (capture accounting uses bytes/s). Each ranked flow
+uses two linked lines: `=>` for outbound traffic and `<=` for inbound traffic,
+with an iftop-style bandwidth ruler, proportional graph-lane bars, and rolling
+2s, 10s, and 40s rates. Remote IP, ASN, and provider have independent headed
+columns on the primary line; the inbound continuation leaves those cells blank
+and aligned. A shown ASN always has room for the full `AS4294967295`; narrower
+layouts truncate and then drop provider before dropping ASN, and drop optional
+columns whole rather than merging metadata into the remote host. The footer
+summarizes TX, RX, and total rates across all observed peers, including peers
+below the row limit.
+
+Each flow is one local/remote endpoint pair, counted once with direction relative
+to the actual local endpoint. Local-to-local and remote-to-remote packets are
+excluded because they have no unambiguous peer direction. Live output uses
+restrained direction colors in the terminal's alternate screen, adapts the
+pair limit on resize, and always restores the original screen and cursor.
+`--snapshot` is deterministic plain text. Redirected output, `TERM=dumb`, and
+other unsupported terminals automatically emit one plain snapshot instead of
+cursor-control animation.
+LOCAL classification uses only the selected interface's assigned unicast
+prefixes and netmasks; address categories such as RFC1918 or ULA are not local
+by themselves. Repeatable `--local-network CIDR` flags replace all
+interface-derived prefixes, which is useful for routed or bridged captures.
+
+| Option | Default | Purpose |
+|--------|---------|---------|
+| `--interface` | default route | Capture interface |
+| `--local-network` | interface prefixes | Repeatable local CIDR; supplied values replace interface prefixes |
+| `--rows` | `20` | Maximum displayed peers |
+| `--refresh` | `1s` | Refresh interval |
+| `--snapshot` | off | Print one plain snapshot and exit |
+| `--width` | terminal width | Output width; long values are truncated |
+| `--asn-mmdb` | auto | GeoLite2 ASN MMDB |
+| `--city-mmdb` | auto | GeoLite2 City/Country MMDB |
+| `--server` | gateway discovery | Explicit bandwidth-monitor base URL; suppresses discovery |
+| `--no-server-discovery` | off | Do not probe the selected default gateway |
+| `--public-url` | `https://ip.ffmuc.net/json` | Public fallback API |
+| `--no-public` | off | Disable public fallback |
+
+MMDB files are discovered in the current directory,
+`/usr/share/bandwidth-monitor`, and `/opt/bandwidth-monitor`. Enrichment fills
+missing fields in order: local MMDB, ready monitor `/api/host`, then
+ip.ffmuc.net. Lookups use a fixed worker pool and queue, validate every public
+redirect and resolved destination, and use a bounded FIFO-evicted result cache.
+At startup, the two optional MMDB readers and one monitor capability probe run
+concurrently. An explicit `--server` is probed once. Without it, the CLI makes
+one direct, no-proxy HTTP request to port 8080 on the selected default-route
+gateway; it does not scan other hosts or ports, and `--no-server-discovery`
+disables the request. The probe uses a fixed documentation IP, not a captured
+peer. A failed source is disabled with one endpoint-free warning while remaining
+sources continue; public fallback is never preflighted. Endpoint-free status
+lines show the active fallback chain plus reasoned `local MMDB`, `monitor`, and
+`public` states, so an absent local database does not imply enrichment is absent.
+Every enrichment request identifies only the packaged CLI version as
+`User-Agent: bandwidth-top/<version>`.
+
+> **Privacy:** public fallback sends each observed globally routable peer IP to
+> ip.ffmuc.net. Use `--no-public` to prevent this. Private, loopback,
+> link-local, multicast, unspecified, reserved documentation, and other
+> non-global addresses are never sent.
+>
+> Gateway discovery sends no observed peer IP. After a valid monitor response,
+> normal enrichment requests send observed peer IPs only to that discovered
+> gateway service. Use `--no-server-discovery` to prevent all gateway probing.
+
+---
+
 ## Installation
 
 ### Pre-built Packages
@@ -196,6 +286,9 @@ Pre-built packages are available from [GitHub Releases](https://github.com/awlx/
 | `.apk` | x86_64, aarch64, arm_cortex-a7_neon-vfpv4 | OpenWrt snapshot (nightly) |
 | Nix flake | any | NixOS / Nix on Linux |
 
+Each format publishes independent `bandwidth-monitor` and `bandwidth-top`
+packages. Neither depends on the other, so the CLI can be installed alone.
+
 #### Debian / Ubuntu
 
 **APT Repository (recommended):**
@@ -209,12 +302,22 @@ sudo apt update
 sudo apt install bandwidth-monitor
 ```
 
+Install only the terminal viewer, or both packages:
+
+```bash
+sudo apt install bandwidth-top
+sudo apt install bandwidth-monitor bandwidth-top
+```
+
 **Manual install:**
 
 ```bash
 sudo dpkg -i bandwidth-monitor_*.deb
 sudo vi /etc/bandwidth-monitor/env
 sudo systemctl restart bandwidth-monitor
+
+# CLI only (no service or configuration is installed)
+sudo dpkg -i bandwidth-top_*.deb
 ```
 
 #### RHEL / Fedora
@@ -223,6 +326,10 @@ sudo systemctl restart bandwidth-monitor
 sudo rpm -i bandwidth-monitor-*.rpm
 sudo vi /etc/bandwidth-monitor/env
 sudo systemctl enable --now bandwidth-monitor
+
+# CLI only, or install both RPM files together
+sudo rpm -i bandwidth-top-*.rpm
+sudo rpm -i bandwidth-monitor-*.rpm bandwidth-top-*.rpm
 ```
 
 #### OpenWrt (stable, opkg)
@@ -233,6 +340,9 @@ opkg install /tmp/bandwidth-monitor_*.ipk
 vi /etc/bandwidth-monitor/env
 /etc/init.d/bandwidth-monitor enable
 /etc/init.d/bandwidth-monitor start
+
+# CLI only (contains only /usr/bin/bandwidth-top)
+opkg install /tmp/bandwidth-top_*.ipk
 ```
 
 Optional GeoIP databases:
@@ -249,6 +359,9 @@ apk add --allow-untrusted /tmp/bandwidth-monitor-*.apk
 vi /etc/bandwidth-monitor/env
 /etc/init.d/bandwidth-monitor enable
 /etc/init.d/bandwidth-monitor start
+
+# CLI only
+apk add --allow-untrusted /tmp/bandwidth-top-*.apk
 ```
 
 #### NixOS / Nix Flake
@@ -285,13 +398,22 @@ To update the bundled GeoIP databases: `nix flake update`
 Or run directly without installing:
 ```bash
 nix run github:awlx/bandwidth-monitor
+
+# Run only the independently packaged terminal viewer
+nix run github:awlx/bandwidth-monitor#bandwidth-top
 ```
 
 ### System package layout and upgrades
 
-System packages install the binary in `/usr/bin`, service definitions in the
-platform service directories, and configuration in
-`/etc/bandwidth-monitor/env`. On first installation the configuration is
+The `bandwidth-monitor` package installs the daemon in `/usr/bin`, service
+definitions in platform service directories, and configuration in
+`/etc/bandwidth-monitor/env`. The independent `bandwidth-top` package installs
+only `/usr/bin/bandwidth-top`; it has no service, configuration, lifecycle
+scripts, state directory, dependency on the daemon package, or capability
+mutation. Run it as root or grant `CAP_NET_RAW` externally. Installing both
+packages creates no overlapping files.
+
+On first daemon installation the configuration is
 created with mode `0600` from the packaged example. It is not managed as a
 Debian conffile: package upgrades are noninteractive and always preserve the
 administrator-owned file, including any credentials it contains. Review the
@@ -304,10 +426,13 @@ for newly supported settings.
 # Build, download GeoIP DBs, install to /opt/bandwidth-monitor,
 # set up systemd service, and start
 make install
+
+# Install only the CLI to /usr/local/bin (does not grant capabilities)
+make install-top
 ```
 
 This will:
-1. Build the binary
+1. Build the daemon binary
 2. Download GeoIP databases if not present
 3. Copy everything to `/opt/bandwidth-monitor/`
 4. Create `.env` from `env.example` (if it doesn't exist)
@@ -692,6 +817,8 @@ For running the shared relay gateway yourself, see [docs/apns-gateway.md](docs/a
 
 ```text
 main.go                    Entry point, environment parsing, component wiring, routes
+cmd/bandwidth-top/         Separate Linux live terminal capture binary
+bandwidthtop/              CLI enrichment, formatting, and interface selection
 collector/                 Netlink interface stats, rates, history, VPN routing
 conntrack/                 Netlink conntrack/NAT reader
 talkers/                   AF_PACKET capture, host accounting, rolling rate/volume data
@@ -713,7 +840,7 @@ static/index.html          Dashboard shell
 static/js/                 Modular frontend core, components, and tab renderers
 webassets/                 Local asset discovery and content fingerprinting
 packaging/                 System-package services, scripts, versioning, and tests
-nfpm.yaml                  Debian/RPM package manifest
+nfpm*.yaml                 Separate daemon and CLI Debian/RPM manifests
 env.example                Canonical documented runtime configuration
 Makefile                   Build, install, and GeoIP targets
 ```
@@ -758,9 +885,11 @@ Go suite on Linux:
 
 ```bash
 go test ./...
-go test -race ./poller
+go test -race ./poller ./talkers ./bandwidthtop
 go vet ./...
 go build ./...
+GOOS=linux CGO_ENABLED=0 go build ./cmd/bandwidth-top
+go run ./cmd/bandwidth-top --help
 ```
 
 Frontend and packaging checks:
@@ -791,6 +920,7 @@ Every hardcoded external service that bandwidth-monitor or its components contac
 |---------|---------|-----------|---------|-----------|---------------|
 | **FFMUC Speed Test** | [`speed.ffmuc.net`](https://speed.ffmuc.net) | Speed Test tab | User clicks "Start Test" | HTTP GET `/downloading`, POST `/upload` (random payload) | Download payload, upload ack |
 | **FFMUC IP Check** | [`ip.ffmuc.net`](https://ip.ffmuc.net) | SwiftBar plugin | Every ~5 min (cached), **on by default** (`BW_SHOW_EXTERNAL_IP=false` to disable) | HTTPS GET (IPv4 + IPv6) | Router's public IPv4 and IPv6 address |
+| **FFMUC peer enrichment** | [`ip.ffmuc.net/json`](https://ip.ffmuc.net/json) | `bandwidth-top` | Once per uncached globally routable peer when local/server ASN fields are missing; **on by default** (`--no-public` to disable) | Observed peer IP in URL query | Country, city, provider, ASN |
 | **FFMUC IP Check** | [`anycast-v4.ffmuc.net`](https://anycast-v4.ffmuc.net), [`anycast-v6.ffmuc.net`](https://anycast-v6.ffmuc.net) | Windows tray widget | Every ~5 min (cached), **on by default** (`BW_SHOW_EXTERNAL_IP=false` to disable) | HTTPS GET (one per address family) | Router's public IPv4 and IPv6 address |
 | **FFMUC IP Check** | [`anycast-v4.ffmuc.net`](https://anycast-v4.ffmuc.net), [`anycast-v6.ffmuc.net`](https://anycast-v6.ffmuc.net) | GNOME indicator | Every ~5 min (cached), **on by default** (`--show-external-ip false` to disable) | HTTPS GET (one per address family) | Router's public IPv4 and IPv6 address |
 | **FFMUC Anycast01** | `5.1.66.255`, `2001:678:e68:f000::` | DNS Check | User clicks "Query" | DNS query for user-entered domain | DNS records |
@@ -825,7 +955,7 @@ diagnostic services above.
 | Feature | Capability required |
 |---------|-------------------|
 | Interface stats, NAT tab | `CAP_NET_ADMIN` (or root) |
-| Top talkers, SPAN mode | `CAP_NET_RAW` (or root) |
+| Top talkers, SPAN mode, `bandwidth-top` | `CAP_NET_RAW` (or root) |
 | Traceroute, Latency monitor (ICMP) | `CAP_NET_RAW` |
 | DNS check, resolver leak test | No special permissions |
 
