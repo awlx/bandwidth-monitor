@@ -28,10 +28,17 @@ type fakeLiveTracker struct {
 	snapshots int
 	rows      []talkers.DirectTalkerStat
 	totals    talkers.DirectRateTotals
+	modes     []talkers.DirectViewMode
 }
 
 func (t *fakeLiveTracker) DirectBandwidthSnapshot(int) ([]talkers.DirectTalkerStat, talkers.DirectRateTotals) {
 	t.snapshots++
+	return t.rows, t.totals
+}
+
+func (t *fakeLiveTracker) DirectBandwidthSnapshotForMode(mode talkers.DirectViewMode, _ int) ([]talkers.DirectTalkerStat, talkers.DirectRateTotals) {
+	t.snapshots++
+	t.modes = append(t.modes, mode)
 	return t.rows, t.totals
 }
 
@@ -40,10 +47,14 @@ func (t *fakeLiveTracker) Errors() <-chan error {
 }
 
 type fakeLiveEnricher struct {
-	info bandwidthtop.Enrichment
+	info    bandwidthtop.Enrichment
+	lookups map[string]int
 }
 
-func (e *fakeLiveEnricher) Lookup(string) bandwidthtop.Enrichment {
+func (e *fakeLiveEnricher) Lookup(ip string) bandwidthtop.Enrichment {
+	if e.lookups != nil {
+		e.lookups[ip]++
+	}
 	return e.info
 }
 
@@ -96,6 +107,88 @@ func TestLiveModelKeysToggleDNSHelpAndQuit(t *testing.T) {
 		if _, ok := cmd().(tea.QuitMsg); !ok {
 			t.Fatalf("%v returned %T, want QuitMsg", msg, cmd())
 		}
+	}
+}
+
+func TestLiveModelPortModeTransitionsStatusHelpAndDNS(t *testing.T) {
+	model, resolver := testLiveModel(false)
+	tracker := model.config.tracker.(*fakeLiveTracker)
+	tracker.rows = []talkers.DirectTalkerStat{
+		{
+			LocalIP: "192.0.2.10",
+			TalkerStat: talkers.TalkerStat{
+				IP: "198.51.100.20", Hostname: "cached.example",
+			},
+			Protocol: "TCP", RemotePort: 443, HasPort: true,
+		},
+		{
+			LocalIP: "192.0.2.10",
+			TalkerStat: talkers.TalkerStat{
+				IP: "198.51.100.20", Hostname: "cached.example",
+			},
+			Protocol: "UDP", RemotePort: 443, HasPort: true,
+		},
+	}
+	enricher := &fakeLiveEnricher{
+		info:    bandwidthtop.Enrichment{ASN: 64500, Provider: "Example Networks"},
+		lookups: make(map[string]int),
+	}
+	model.config.enricher = enricher
+
+	updateModel(t, model, tickMsg(time.Now()))
+	if model.mode != bandwidthtop.ViewHosts || tracker.modes[0] != talkers.DirectViewHosts {
+		t.Fatalf("default mode=%v snapshots=%v", model.mode, tracker.modes)
+	}
+	updateModel(t, model, keyPress("p"))
+	updateModel(t, model, keyPress("n"))
+	updateModel(t, model, tickMsg(time.Now()))
+	if model.mode != bandwidthtop.ViewPorts || !model.noResolve ||
+		tracker.modes[1] != talkers.DirectViewPorts ||
+		len(resolver.states) != 1 || resolver.states[0] {
+		t.Fatalf("port+DNS mode=%v noResolve=%v snapshots=%v resolver=%v",
+			model.mode, model.noResolve, tracker.modes, resolver.states)
+	}
+	portView := stripTerminalANSI(model.View().Content)
+	for _, want := range []string{"view: ports", "rdns: off", "PORT", "PROTO", "443", "TCP"} {
+		if !strings.Contains(portView, want) {
+			t.Fatalf("port view missing %q:\n%s", want, portView)
+		}
+	}
+	updateModel(t, model, keyPress("?"))
+	help := stripTerminalANSI(model.View().Content)
+	for _, want := range []string{
+		"p toggle ports", "n toggle rDNS", "q quit", "h/? close help",
+	} {
+		if !strings.Contains(help, want) {
+			t.Fatalf("help missing %q:\n%s", want, help)
+		}
+	}
+	updateModel(t, model, keyPress("p"))
+	updateModel(t, model, tickMsg(time.Now()))
+	if model.mode != bandwidthtop.ViewHosts || tracker.modes[2] != talkers.DirectViewHosts {
+		t.Fatalf("return mode=%v snapshots=%v", model.mode, tracker.modes)
+	}
+	if got := enricher.lookups["198.51.100.20"]; got != 3 {
+		t.Fatalf("duplicate enrichment within port rows: lookups=%d", got)
+	}
+}
+
+func TestLiveModelStartsInPortsWithNoResolve(t *testing.T) {
+	model, resolver := testLiveModel(true)
+	model = newLiveModel(liveModelConfig{
+		title: "bandwidth-top", rows: 20, refresh: time.Second,
+		noResolve: true, initialMode: bandwidthtop.ViewPorts,
+		tracker: model.config.tracker, enricher: model.config.enricher,
+		resolver: resolver, initialSize: terminalDimensions{width: 120, height: 24},
+		done: make(chan struct{}),
+	})
+	updateModel(t, model, tickMsg(time.Now()))
+	tracker := model.config.tracker.(*fakeLiveTracker)
+	if model.mode != bandwidthtop.ViewPorts || !model.noResolve ||
+		len(tracker.modes) != 1 || tracker.modes[0] != talkers.DirectViewPorts ||
+		len(resolver.states) != 0 {
+		t.Fatalf("startup mode=%v noResolve=%v snapshots=%v resolver=%v",
+			model.mode, model.noResolve, tracker.modes, resolver.states)
 	}
 }
 
@@ -439,11 +532,35 @@ func TestSnapshotAndUnsupportedTerminalsNeverAnimate(t *testing.T) {
 	if strings.Contains(frame, "\x1b") {
 		t.Fatalf("snapshot contains ANSI: %q", frame)
 	}
+
 	var unsupported bytes.Buffer
 	if supportsLiveTerminal(&bytes.Buffer{}, false, "xterm-256color") ||
 		supportsLiveTerminal(&unsupported, false, "dumb") ||
 		supportsLiveTerminal(&unsupported, true, "xterm-256color") {
 		t.Fatal("unsupported, dumb, or snapshot output was treated as live")
+	}
+}
+
+func TestPortSnapshotIsANSIFreeAndModeAware(t *testing.T) {
+	rows := terminalTestRows(1)
+	rows[0].Port, rows[0].Protocol = "443", "TCP"
+	frame := composeFrameForMode(
+		"bandwidth-top",
+		[]string{"view: ports | rdns: off"},
+		rows,
+		bandwidthtop.Totals{},
+		20,
+		terminalDimensions{width: 120},
+		false,
+		bandwidthtop.ViewPorts,
+	)
+	if strings.Contains(frame, "\x1b") {
+		t.Fatalf("port snapshot contains ANSI: %q", frame)
+	}
+	for _, want := range []string{"view: ports", "PORT", "PROTO", "443", "TCP"} {
+		if !strings.Contains(frame, want) {
+			t.Fatalf("port snapshot missing %q:\n%s", want, frame)
+		}
 	}
 }
 

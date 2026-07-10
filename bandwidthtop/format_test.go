@@ -484,6 +484,107 @@ func TestRemoteHostnameIsSanitizedBeforeTruncation(t *testing.T) {
 	}
 }
 
+func TestHostModeAPIIsByteCompatible(t *testing.T) {
+	rows := []Row{testFlowRow()}
+	want := RenderSnapshotWithRowLimit(rows, testTotals(), 120, 20)
+	got := RenderSnapshotForMode(rows, testTotals(), 120, 20, ViewHosts)
+	if got != want {
+		t.Fatalf("host mode changed:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+func TestPortModeDedicatedColumnsAtRepresentativeWidths(t *testing.T) {
+	row := testFlowRow()
+	row.Port = "65535"
+	row.Protocol = "TCP"
+	for _, width := range []int{80, 120, 160} {
+		got := RenderSnapshotForMode([]Row{row}, testTotals(), width, 20, ViewPorts)
+		lines := strings.Split(strings.TrimSuffix(got, "\n"), "\n")
+		header := lines[1]
+		primary := lines[2]
+		continuation := lines[3]
+		for _, heading := range []string{"LOCAL", "REMOTE", "PORT", "PROTO", "ASN", "2s", "10s", "40s"} {
+			if !strings.Contains(header, heading) {
+				t.Fatalf("width %d missing %s:\n%s", width, heading, got)
+			}
+		}
+		for _, value := range []string{"65535", "TCP", "AS64500"} {
+			if strings.Count(primary, value) != 1 || strings.Contains(continuation, value) {
+				t.Fatalf("width %d did not isolate %q:\n%s", width, value, got)
+			}
+		}
+		for _, line := range lines {
+			if displayWidth(line) > width {
+				t.Fatalf("width %d produced %d columns: %q", width, displayWidth(line), line)
+			}
+		}
+	}
+}
+
+func TestPortModeDropsOptionalColumnsWholeAndPreservesASN(t *testing.T) {
+	row := testFlowRow()
+	row.Port, row.Protocol = "443", "TCP"
+	row.Info.ASN = 1<<32 - 1
+	row.Info.Provider = "Hostile Provider With Very Wide Text"
+	for _, width := range []int{69, 74, 75, 83, 84} {
+		got := RenderSnapshotForMode([]Row{row}, testTotals(), width, 20, ViewPorts)
+		if !strings.Contains(got, "PORT") || !strings.Contains(got, "PROTO") {
+			t.Fatalf("mandatory columns missing at %d:\n%s", width, got)
+		}
+		if strings.Contains(got, "ASN") && !strings.Contains(got, "AS4294967295") {
+			t.Fatalf("ASN truncated at %d:\n%s", width, got)
+		}
+		if width < 84 && strings.Contains(got, "PROVIDER") {
+			t.Fatalf("provider retained ahead of mandatory/full ASN at %d:\n%s", width, got)
+		}
+	}
+}
+
+func TestPortModeSanitizesAndValidatesFields(t *testing.T) {
+	row := testFlowRow()
+	row.Port = "70000"
+	row.Protocol = "\x1b[31mTCP\n"
+	got := RenderSnapshotForMode([]Row{row}, testTotals(), 120, 20, ViewPorts)
+	if strings.Contains(got, "70000") || strings.Contains(got, "\x1b") || strings.Contains(got, "31m") {
+		t.Fatalf("hostile port/protocol survived:\n%q", got)
+	}
+	if !strings.Contains(got, " - ") || !strings.Contains(got, "TCP") {
+		t.Fatalf("port placeholder or protocol missing:\n%s", got)
+	}
+}
+
+func TestPortModeStableOffsetsAndBoundsAtEveryWidth(t *testing.T) {
+	row := testFlowRow()
+	row.Port, row.Protocol = "443", "TCP"
+	for width := 1; width <= 200; width++ {
+		got := RenderSnapshotForMode([]Row{row}, testTotals(), width, 99, ViewPorts)
+		lines := strings.Split(strings.TrimSuffix(got, "\n"), "\n")
+		for _, line := range lines {
+			if gotWidth := displayWidth(line); gotWidth > width {
+				t.Fatalf("width %d produced %d columns: %q", width, gotWidth, line)
+			}
+		}
+		if _, structured := makePortFlowLayout(width, rankWidth(99)); !structured {
+			continue
+		}
+		headerIndex := indexContaining(lines, "LOCAL")
+		if headerIndex < 0 || !strings.Contains(lines[headerIndex], "PORT") ||
+			!strings.Contains(lines[headerIndex], "PROTO") {
+			t.Fatalf("width %d lost structured port headings:\n%s", width, got)
+		}
+		primary, continuation := lines[headerIndex+1], lines[headerIndex+2]
+		if strings.Index(primary, "=>") != strings.Index(continuation, "<=") {
+			t.Fatalf("width %d moved direction offset:\n%s", width, got)
+		}
+		for _, heading := range []string{"REMOTE", "PORT", "PROTO", "2s"} {
+			if offset := strings.Index(lines[headerIndex], heading); offset < 0 ||
+				len(primary) <= offset || len(continuation) <= offset {
+				t.Fatalf("width %d has unstable %s column:\n%s", width, heading, got)
+			}
+		}
+	}
+}
+
 func testFlowRow() Row {
 	return Row{
 		LocalIP: "192.0.2.10",

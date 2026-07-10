@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -27,7 +28,7 @@ type terminalDimensions struct {
 }
 
 type liveTracker interface {
-	DirectBandwidthSnapshot(int) ([]talkers.DirectTalkerStat, talkers.DirectRateTotals)
+	DirectBandwidthSnapshotForMode(talkers.DirectViewMode, int) ([]talkers.DirectTalkerStat, talkers.DirectRateTotals)
 	Errors() <-chan error
 }
 
@@ -51,6 +52,7 @@ type liveModelConfig struct {
 	resolver    resolverControl
 	done        <-chan struct{}
 	initialSize terminalDimensions
+	initialMode bandwidthtop.ViewMode
 }
 
 type liveModel struct {
@@ -59,6 +61,7 @@ type liveModel struct {
 	rows      []bandwidthtop.Row
 	totals    bandwidthtop.Totals
 	noResolve bool
+	mode      bandwidthtop.ViewMode
 	showHelp  bool
 	err       error
 	ticks     int
@@ -78,7 +81,9 @@ func newLiveModel(config liveModelConfig) *liveModel {
 	if size.height <= 0 {
 		size.height = defaultHeight
 	}
-	return &liveModel{config: config, size: size, noResolve: config.noResolve}
+	return &liveModel{
+		config: config, size: size, noResolve: config.noResolve, mode: config.initialMode,
+	}
 }
 
 func (m *liveModel) Init() tea.Cmd {
@@ -95,8 +100,8 @@ func (m *liveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.size = terminalDimensions{width: msg.Width, height: msg.Height}
 	case tickMsg:
-		m.rows, m.totals = snapshotRows(
-			m.config.tracker, m.config.enricher, m.config.rows, m.noResolve)
+		m.rows, m.totals = snapshotRowsForMode(
+			m.config.tracker, m.config.enricher, m.config.rows, m.noResolve, m.mode)
 		m.ticks++
 		return m, tickAfter(m.config.refresh)
 	case captureErrorMsg:
@@ -113,6 +118,12 @@ func (m *liveModel) handleKey(key string) (tea.Model, tea.Cmd) {
 	case "n":
 		m.noResolve = !m.noResolve
 		m.config.resolver.SetEnabled(!m.noResolve)
+	case "p":
+		if m.mode == bandwidthtop.ViewPorts {
+			m.mode = bandwidthtop.ViewHosts
+		} else {
+			m.mode = bandwidthtop.ViewPorts
+		}
 	case "h", "?":
 		m.showHelp = !m.showHelp
 	}
@@ -122,9 +133,9 @@ func (m *liveModel) handleKey(key string) (tea.Model, tea.Cmd) {
 func (m *liveModel) View() tea.View {
 	size := liveDimensions(m.size, m.config.width)
 	status := m.config.enricher.SourceStatusLines(size.width)
-	status = append(status, rdnsStatus(!m.noResolve)+" | h/? help | q quit")
+	status = append(status, viewStatus(m.mode)+" | "+rdnsStatus(!m.noResolve)+" | p ports | n rDNS | h/? help | q quit")
 	if m.showHelp {
-		status = append(status, "keys: n toggle reverse DNS | q/Ctrl-C quit | h/? close help")
+		status = append(status, "keys: p toggle ports | n toggle rDNS | q quit | h/? close help")
 	}
 	if lookupStatus := lookupErrorStatus(m.rows); lookupStatus != "" {
 		status = append(status, lookupStatus)
@@ -134,8 +145,8 @@ func (m *liveModel) View() tea.View {
 	for i := range rows {
 		rows[i].NoResolve = m.noResolve
 	}
-	view := tea.NewView(composeFrame(
-		m.config.title, status, rows, m.totals, m.config.rows, size, true))
+	view := tea.NewView(composeFrameForMode(
+		m.config.title, status, rows, m.totals, m.config.rows, size, true, m.mode))
 	view.AltScreen = true
 	return view
 }
@@ -169,9 +180,46 @@ func snapshotRows(
 	noResolve bool,
 ) ([]bandwidthtop.Row, bandwidthtop.Totals) {
 	stats, rateTotals := tracker.DirectBandwidthSnapshot(rowLimit)
+	return mapSnapshotRows(stats, rateTotals, enricher, noResolve, bandwidthtop.ViewHosts)
+}
+
+func snapshotRowsForMode(
+	tracker interface {
+		DirectBandwidthSnapshotForMode(talkers.DirectViewMode, int) ([]talkers.DirectTalkerStat, talkers.DirectRateTotals)
+	},
+	enricher interface {
+		Lookup(string) bandwidthtop.Enrichment
+	},
+	rowLimit int,
+	noResolve bool,
+	mode bandwidthtop.ViewMode,
+) ([]bandwidthtop.Row, bandwidthtop.Totals) {
+	directMode := talkers.DirectViewHosts
+	if mode == bandwidthtop.ViewPorts {
+		directMode = talkers.DirectViewPorts
+	}
+	stats, rateTotals := tracker.DirectBandwidthSnapshotForMode(directMode, rowLimit)
+	return mapSnapshotRows(stats, rateTotals, enricher, noResolve, mode)
+}
+
+func mapSnapshotRows(
+	stats []talkers.DirectTalkerStat,
+	rateTotals talkers.DirectRateTotals,
+	enricher interface {
+		Lookup(string) bandwidthtop.Enrichment
+	},
+	noResolve bool,
+	mode bandwidthtop.ViewMode,
+) ([]bandwidthtop.Row, bandwidthtop.Totals) {
 	rows := make([]bandwidthtop.Row, 0, len(stats))
+	enrichmentByIP := make(map[string]bandwidthtop.Enrichment, len(stats))
 	for _, stat := range stats {
-		rows = append(rows, bandwidthtop.Row{
+		info, ok := enrichmentByIP[stat.IP]
+		if !ok {
+			info = enricher.Lookup(stat.IP)
+			enrichmentByIP[stat.IP] = info
+		}
+		row := bandwidthtop.Row{
 			LocalIP:   stat.LocalIP,
 			NoResolve: noResolve,
 			Stat: bandwidthtop.Stat{
@@ -183,9 +231,18 @@ func snapshotRows(
 					Two: stat.TxRate, Ten: stat.TxRate10, Forty: stat.TxRate40,
 				},
 			},
-			Info: enricher.Lookup(stat.IP),
-		})
+			Info: info,
+		}
+		if mode == bandwidthtop.ViewPorts {
+			row.Protocol = stat.Protocol
+			row.Port = "-"
+			if stat.HasPort {
+				row.Port = strconv.FormatUint(uint64(stat.RemotePort), 10)
+			}
+		}
+		rows = append(rows, row)
 	}
+
 	return rows, bandwidthtop.Totals{
 		Rx: bandwidthtop.RateWindows{
 			Two: rateTotals.RxRate, Ten: rateTotals.RxRate10, Forty: rateTotals.RxRate40,
@@ -194,6 +251,13 @@ func snapshotRows(
 			Two: rateTotals.TxRate, Ten: rateTotals.TxRate10, Forty: rateTotals.TxRate40,
 		},
 	}
+}
+
+func viewStatus(mode bandwidthtop.ViewMode) string {
+	if mode == bandwidthtop.ViewPorts {
+		return "view: ports"
+	}
+	return "view: hosts"
 }
 
 func captureError(err error) error {
@@ -232,6 +296,10 @@ func snapshotDimensions(out io.Writer, configuredWidth int) terminalDimensions {
 }
 
 func composeFrame(title string, status []string, rows []bandwidthtop.Row, totals bandwidthtop.Totals, maxRows int, size terminalDimensions, ansi bool) string {
+	return composeFrameForMode(title, status, rows, totals, maxRows, size, ansi, bandwidthtop.ViewHosts)
+}
+
+func composeFrameForMode(title string, status []string, rows []bandwidthtop.Row, totals bandwidthtop.Totals, maxRows int, size terminalDimensions, ansi bool, mode bandwidthtop.ViewMode) string {
 	width := size.width
 	if width <= 0 {
 		width = defaultWidth
@@ -239,7 +307,7 @@ func composeFrame(title string, status []string, rows []bandwidthtop.Row, totals
 	title = bandwidthtop.Truncate(title, width)
 	if !ansi || size.height <= 0 {
 		lines := append([]string{title}, boundedLines(status, width)...)
-		lines = append(lines, splitFrame(bandwidthtop.RenderSnapshotWithRowLimit(rows, totals, width, maxRows))...)
+		lines = append(lines, splitFrame(bandwidthtop.RenderSnapshotForMode(rows, totals, width, maxRows, mode))...)
 		return strings.Join(lines, "\n")
 	}
 
@@ -255,20 +323,24 @@ func composeFrame(title string, status []string, rows []bandwidthtop.Row, totals
 				rows = rows[:pairLimit]
 			}
 			lines := append([]string{title}, status...)
-			lines = append(lines, splitFrame(bandwidthtop.RenderLiveWithRowLimit(rows, totals, width, maxRows))...)
+			lines = append(lines, splitFrame(bandwidthtop.RenderLiveForMode(rows, totals, width, maxRows, mode))...)
 			return strings.Join(lines, "\n")
 		}
 	}
-	return composeShortFrame(title, status, rows, totals, maxRows, width, height)
+	return composeShortFrameForMode(title, status, rows, totals, maxRows, width, height, mode)
 }
 
 // Very short terminals preserve title, column identity, and TOTAL first. The
 // fallback chain, complete pairs, and TX/RX details are added as space permits.
 func composeShortFrame(title string, status []string, rows []bandwidthtop.Row, totals bandwidthtop.Totals, maxRows, width, height int) string {
+	return composeShortFrameForMode(title, status, rows, totals, maxRows, width, height, bandwidthtop.ViewHosts)
+}
+
+func composeShortFrameForMode(title string, status []string, rows []bandwidthtop.Row, totals bandwidthtop.Totals, maxRows, width, height int, mode bandwidthtop.ViewMode) string {
 	if height <= 1 {
 		return bandwidthtop.Truncate(title, width)
 	}
-	rendered := splitFrame(bandwidthtop.RenderLiveWithRowLimit(rows, totals, width, maxRows))
+	rendered := splitFrame(bandwidthtop.RenderLiveForMode(rows, totals, width, maxRows, mode))
 	headerIndex := lineContaining(rendered, "LOCAL")
 	header := ""
 	total := ""
