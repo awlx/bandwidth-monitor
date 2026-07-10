@@ -27,6 +27,92 @@ func TestTruncate(t *testing.T) {
 	}
 }
 
+func TestRemoteHostResolutionPreference(t *testing.T) {
+	tests := []struct {
+		name string
+		row  Row
+		want string
+	}{
+		{
+			name: "PTR preferred",
+			row: Row{
+				Stat: Stat{IP: "198.51.100.20", Hostname: "ptr.example"},
+				Info: Enrichment{Hostname: "enrichment.example"},
+			},
+			want: "ptr.example",
+		},
+		{
+			name: "enrichment fallback",
+			row: Row{
+				Stat: Stat{IP: "198.51.100.20"},
+				Info: Enrichment{Hostname: "enrichment.example"},
+			},
+			want: "enrichment.example",
+		},
+		{
+			name: "raw IP fallback",
+			row:  Row{Stat: Stat{IP: "198.51.100.20"}},
+			want: "198.51.100.20",
+		},
+		{
+			name: "sanitized PTR fallback",
+			row: Row{
+				Stat: Stat{IP: "198.51.100.20", Hostname: "\x1b[31m"},
+				Info: Enrichment{Hostname: "enrichment.example"},
+			},
+			want: "enrichment.example",
+		},
+		{
+			name: "sanitized hostname IP fallback",
+			row: Row{
+				Stat: Stat{IP: "198.51.100.20", Hostname: "\x1b[31m"},
+				Info: Enrichment{Hostname: "\u202e"},
+			},
+			want: "198.51.100.20",
+		},
+		{
+			name: "no resolve forces IP",
+			row: Row{
+				Stat:      Stat{IP: "198.51.100.20", Hostname: "ptr.example"},
+				Info:      Enrichment{Hostname: "enrichment.example"},
+				NoResolve: true,
+			},
+			want: "198.51.100.20",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := remoteHost(test.row); got != test.want {
+				t.Fatalf("got %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
+func TestRemoteHostnameArrivalPreservesLayout(t *testing.T) {
+	const width = 80
+	row := testFlowRow()
+	before := RenderSnapshot([]Row{row}, testTotals(), width)
+	row.Stat.Hostname = "peer-with-a-long-local-ptr-name.example"
+	after := RenderSnapshot([]Row{row}, testTotals(), width)
+
+	beforeLines := strings.Split(strings.TrimSuffix(before, "\n"), "\n")
+	afterLines := strings.Split(strings.TrimSuffix(after, "\n"), "\n")
+	if beforeLines[1] != afterLines[1] {
+		t.Fatalf("async hostname changed columns:\n%s\n%s", before, after)
+	}
+	if strings.Index(beforeLines[2], "=>") != strings.Index(afterLines[2], "=>") {
+		t.Fatalf("async hostname moved direction column:\n%s\n%s", before, after)
+	}
+	if displayWidth(beforeLines[2]) != width || displayWidth(afterLines[2]) != width {
+		t.Fatalf("async hostname changed line width: before=%d after=%d",
+			displayWidth(beforeLines[2]), displayWidth(afterLines[2]))
+	}
+	if !strings.Contains(afterLines[2], "peer-with-a-lon~") {
+		t.Fatalf("hostname was not truncated in the REMOTE cell:\n%s", after)
+	}
+}
+
 func TestRenderShowsClassicLinkedDirectionsAndDedicatedMetadata(t *testing.T) {
 	got := RenderSnapshot([]Row{testFlowRow()}, testTotals(), 160)
 	for _, want := range []string{
@@ -381,18 +467,35 @@ func TestRenderStripsTerminalAndUnicodeControls(t *testing.T) {
 	}
 }
 
+func TestRemoteHostnameIsSanitizedBeforeTruncation(t *testing.T) {
+	row := testFlowRow()
+	row.Stat.Hostname = "\x1b[31mhostname-with-a-very-long-label.example\x1b[0m"
+	got := RenderSnapshot([]Row{row}, testTotals(), 80)
+	if strings.Contains(got, "\x1b") || strings.Contains(got, "31m") {
+		t.Fatalf("terminal control sequence survived: %q", got)
+	}
+	if !strings.Contains(got, "hostname-with-a~") {
+		t.Fatalf("sanitized hostname was not truncated to the REMOTE cell:\n%s", got)
+	}
+	for _, line := range strings.Split(strings.TrimSuffix(got, "\n"), "\n") {
+		if displayWidth(line) > 80 {
+			t.Fatalf("line exceeded requested width: %q", line)
+		}
+	}
+}
+
 func testFlowRow() Row {
 	return Row{
 		LocalIP: "192.0.2.10",
 		Stat: Stat{
-			IP: "198.51.100.20", Hostname: "peer.example",
+			IP:      "198.51.100.20",
 			Tx:      RateWindows{Two: 125000, Ten: 62500, Forty: 31250},
 			Rx:      RateWindows{Two: 250000, Ten: 125000, Forty: 62500},
 			Packets: 42,
 		},
 		Info: Enrichment{
-			Hostname: "peer.example", Provider: "Example Networks",
-			Country: "Exampleland", ASN: 64500, Source: "local+monitor",
+			Provider: "Example Networks",
+			Country:  "Exampleland", ASN: 64500, Source: "local+monitor",
 		},
 	}
 }

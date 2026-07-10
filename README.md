@@ -208,10 +208,13 @@ sudo setcap cap_net_raw+ep /usr/bin/bandwidth-top
 Rates are displayed in bit/s (capture accounting uses bytes/s). Each ranked flow
 uses two linked lines: `=>` for outbound traffic and `<=` for inbound traffic,
 with an iftop-style bandwidth ruler, proportional graph-lane bars, and rolling
-2s, 10s, and 40s rates. Remote IP, ASN, and provider have independent headed
-columns on the primary line; the inbound continuation leaves those cells blank
-and aligned. A shown ASN always has room for the full `AS4294967295`; narrower
-layouts truncate and then drop provider before dropping ASN, and drop optional
+2s, 10s, and 40s rates. REMOTE prefers names from the local reverse-DNS resolver,
+then enrichment hostnames, and otherwise shows the IP; `--no-resolve`/`-n`
+disables PTR lookups and always shows IPs. Remote host, ASN, and provider have
+independent headed columns on the primary line; the inbound continuation leaves
+those cells blank and aligned. A shown ASN always has room for the full
+`AS4294967295`; narrower layouts truncate and then drop provider before dropping
+ASN, and drop optional
 columns whole rather than merging metadata into the remote host. The footer
 summarizes TX, RX, and total rates across all observed peers, including peers
 below the row limit.
@@ -236,6 +239,7 @@ interface-derived prefixes, which is useful for routed or bridged captures.
 | `--rows` | `20` | Maximum displayed peers |
 | `--refresh` | `1s` | Refresh interval |
 | `--snapshot` | off | Print one plain snapshot and exit |
+| `--no-resolve`, `-n` | off | Disable PTR lookups and show remote IPs |
 | `--width` | terminal width | Output width; long values are truncated |
 | `--asn-mmdb` | auto | GeoLite2 ASN MMDB |
 | `--city-mmdb` | auto | GeoLite2 City/Country MMDB |

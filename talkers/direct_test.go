@@ -161,6 +161,19 @@ func TestDirectPeerSortTieIsDeterministic(t *testing.T) {
 	}
 }
 
+func TestDirectSnapshotWithoutResolverDoesNotResolveHostname(t *testing.T) {
+	now := time.Unix(600, 0)
+	tracker := directAggregationTracker(now.Add(-2 * time.Second))
+	tracker.accountDirectPeer(
+		directPacket("192.168.1.20", "192.0.2.20", true, false, 100),
+		tracker.directRateRing[0],
+	)
+	got, _ := tracker.directBandwidthSnapshot(1, now)
+	if len(got) != 1 || got[0].Hostname != "" {
+		t.Fatalf("snapshot unexpectedly resolved hostname without resolver: %+v", got)
+	}
+}
+
 func directAggregationTracker(start time.Time) *Tracker {
 	_, localNet, _ := net.ParseCIDR("192.168.1.0/24")
 	tracker := &Tracker{
