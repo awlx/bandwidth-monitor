@@ -106,8 +106,14 @@ type Tracker struct {
 	buckets     []*bucket
 	current     *bucket
 	stopCh      chan struct{}
+	doneCh      chan struct{}
 	dns         *resolver.Resolver
 	geoDB       *geoip.DB
+	lifecycleMu sync.Mutex
+	workers     sync.WaitGroup
+	started     bool
+	stopped     bool
+	captureFn   func(string)
 
 	// Rate ring: short circular buffer (5s slots) for responsive rate calc.
 	// Protected by the same mu as buckets/current.
@@ -191,9 +197,11 @@ func New(devices []string, promiscuous bool, localNets []*net.IPNet, geoDB *geoi
 		lanDevices:  lanDevices,
 		buckets:     make([]*bucket, 0, 1440),
 		stopCh:      make(chan struct{}),
+		doneCh:      make(chan struct{}),
 		dns:         dns,
 		geoDB:       geoDB,
 	}
+	trk.captureFn = trk.captureDevice
 	// Initialize first rate ring slot
 	trk.rateRing[0] = &rateSlot{
 		timestamp: time.Now(),
@@ -203,6 +211,19 @@ func New(devices []string, promiscuous bool, localNets []*net.IPNet, geoDB *geoi
 }
 
 func (t *Tracker) Run() {
+	t.lifecycleMu.Lock()
+	if t.started {
+		t.lifecycleMu.Unlock()
+		panic("talkers: Tracker.Run called more than once")
+	}
+	if t.stopped {
+		t.lifecycleMu.Unlock()
+		return
+	}
+	t.started = true
+	t.lifecycleMu.Unlock()
+	defer close(t.doneCh)
+
 	devices, err := t.getDevices()
 	if err != nil {
 		log.Printf("talkers: cannot list devices: %v", err)
@@ -214,6 +235,7 @@ func (t *Tracker) Run() {
 		return
 	}
 
+	t.mu.Lock()
 	t.current = &bucket{
 		timestamp:  time.Now().Truncate(bucketSize),
 		hosts:      make(map[string]*hostAccum),
@@ -221,23 +243,56 @@ func (t *Tracker) Run() {
 		ipVerBytes: make(map[string]uint64),
 		pairs:      make(map[string]map[string]*hostAccum),
 	}
+	t.mu.Unlock()
 
-	go t.rotateBuckets()
-	go t.rotateRateRing()
-
+	t.lifecycleMu.Lock()
+	if t.stopped {
+		t.lifecycleMu.Unlock()
+		return
+	}
+	t.startWorker(t.rotateBuckets)
+	t.startWorker(t.rotateRateRing)
 	for _, dev := range devices {
 		if !t.lanDevices[dev] {
 			log.Printf("talkers: skipping capture on %s (not LAN)", dev)
 			continue
 		}
-		go t.captureDevice(dev)
+		device := dev
+		t.startWorker(func() {
+			t.captureFn(device)
+		})
 	}
+	t.lifecycleMu.Unlock()
 
 	<-t.stopCh
+	t.workers.Wait()
 }
 
+// Stop signals all tracker goroutines and waits for them to release their resources.
+// It is safe to call multiple times or concurrently.
 func (t *Tracker) Stop() {
-	close(t.stopCh)
+	t.lifecycleMu.Lock()
+	if !t.stopped {
+		close(t.stopCh)
+	}
+	t.stopped = true
+	var doneCh <-chan struct{}
+	if t.started {
+		doneCh = t.doneCh
+	}
+	t.lifecycleMu.Unlock()
+
+	if doneCh != nil {
+		<-doneCh
+	}
+}
+
+func (t *Tracker) startWorker(fn func()) {
+	t.workers.Add(1)
+	go func() {
+		defer t.workers.Done()
+		fn()
+	}()
 }
 
 func (t *Tracker) TopByVolume(n int) []TalkerStat {
