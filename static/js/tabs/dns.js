@@ -57,10 +57,10 @@
         var providerName = dns.provider_name || 'DNS';
         document.getElementById('dnsCardTitle').textContent = 'DNS \u2014 ' + providerName;
 
-        document.getElementById('dnsTotalQueries').textContent = dns.total_queries.toLocaleString();
-        document.getElementById('dnsBlocked').textContent = dns.blocked_total.toLocaleString();
-        document.getElementById('dnsBlockPct').textContent = dns.blocked_pct.toFixed(1) + '%';
-        document.getElementById('dnsLatency').textContent = dns.avg_latency_ms.toFixed(1) + ' ms';
+        document.getElementById('dnsTotalQueries').textContent = BM.formatCount(dns.total_queries);
+        document.getElementById('dnsBlocked').textContent = BM.formatCount(dns.blocked_total);
+        document.getElementById('dnsBlockPct').textContent = BM.num(dns.blocked_pct).toFixed(1) + '%';
+        document.getElementById('dnsLatency').textContent = BM.num(dns.avg_latency_ms).toFixed(1) + ' ms';
 
         // Queries time-series bar chart
         if (dns.queries_series && dns.queries_series.length) {
@@ -90,7 +90,7 @@
             function(v) { return v.toLocaleString() + ' queries'; }
         );
         fillDetailTable('dnsClientsTable', dns.top_clients || [],
-            function(c) { return c.hostname ? c.hostname + ' <span style="color:var(--text-2);font-size:11px">(' + c.ip + ')</span>' : (c.ip || 'Unknown'); },
+            function(c) { return c.hostname ? c.hostname + ' (' + c.ip + ')' : (c.ip || 'Unknown'); },
             function(c) { return c.count || 0; },
             function(v) { return v.toLocaleString(); }, 'bw'
         );
@@ -136,8 +136,8 @@
                 var latStr = u.avg_ms > 0 ? u.avg_ms.toFixed(1) + ' ms' : '—';
                 var barCls = u.avg_ms <= 20 ? 'bw' : (u.avg_ms <= 100 ? 'vol' : 'vol');
                 uh += '<tr><td class="rank-cell">' + (i + 1) + '</td>';
-                uh += '<td class="host-cell" title="' + u.address + '"><code>' + u.address + '</code></td>';
-                uh += '<td>' + (u.responses || 0).toLocaleString() + '</td>';
+                uh += '<td class="host-cell" title="' + BM.escAttr(u.address) + '"><code>' + BM.escHtml(u.address) + '</code></td>';
+                uh += '<td>' + BM.formatCount(u.responses) + '</td>';
                 uh += '<td>' + latStr + '</td>';
                 uh += '<td class="bar-cell"><div class="bar-bg"></div><div class="bar-fill ' + barCls + '" style="width:' + pct.toFixed(1) + '%"></div></td></tr>';
             }

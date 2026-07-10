@@ -29,7 +29,8 @@
             })
             .catch(function(e) {
                 if (modal.dataset.ip !== ip) return;
-                body.innerHTML = '<div style="text-align:center;padding:32px;color:var(--danger)">Failed to load: ' + e + '</div>';
+                body.innerHTML = '<div style="text-align:center;padding:32px;color:var(--danger)"></div>';
+                body.firstChild.textContent = 'Failed to load: ' + e;
             });
     };
 
@@ -92,7 +93,7 @@
         h += stat('Rate', BM.formatRate(d.rate_bytes));
         h += stat('RX Rate', BM.formatRate(d.rx_rate), 'rx');
         h += stat('TX Rate', BM.formatRate(d.tx_rate), 'tx');
-        h += stat('Packets', (d.packets || 0).toLocaleString());
+        h += stat('Packets', BM.formatCount(d.packets));
         h += stat('Connections', d.connections ? d.connections.length.toLocaleString() : '0');
         h += '</div>';
 
@@ -126,25 +127,25 @@
                 if (c.orig_src_city && c.orig_src_geo) srcInfo.push(BM.countryFlag(c.orig_src_geo) + ' ' + c.orig_src_city);
                 else if (c.orig_src_geo) srcInfo.push(BM.countryFlag(c.orig_src_geo) + ' ' + c.orig_src_geo);
                 if (c.orig_src_asn) srcInfo.push(c.orig_src_asn);
-                var srcHtml = '<div style="font-family:var(--font-mono,monospace);font-size:11px">' + srcAddr + '</div>';
-                if (srcInfo.length) srcHtml += '<div style="font-size:9px;color:var(--text-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:200px">' + srcInfo.join(' &middot; ') + '</div>';
+                var srcHtml = '<div style="font-family:var(--font-mono,monospace);font-size:11px">' + BM.escHtml(srcAddr) + '</div>';
+                if (srcInfo.length) srcHtml += '<div style="font-size:9px;color:var(--text-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:200px">' + srcInfo.map(BM.escHtml).join(' &middot; ') + '</div>';
                 var dstAddr = c.orig_dst + (c.orig_dport ? ':' + c.orig_dport : '');
                 var dstInfo = [];
                 if (c.orig_dst_host) dstInfo.push(c.orig_dst_host);
                 if (c.orig_dst_city && c.orig_dst_geo) dstInfo.push(BM.countryFlag(c.orig_dst_geo) + ' ' + c.orig_dst_city);
                 else if (c.orig_dst_geo) dstInfo.push(BM.countryFlag(c.orig_dst_geo) + ' ' + c.orig_dst_geo);
                 if (c.orig_dst_asn) dstInfo.push(c.orig_dst_asn);
-                var dstHtml = '<div style="font-family:var(--font-mono,monospace);font-size:11px">' + dstAddr + '</div>';
-                if (dstInfo.length) dstHtml += '<div style="font-size:9px;color:var(--text-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:200px">' + dstInfo.join(' &middot; ') + '</div>';
+                var dstHtml = '<div style="font-family:var(--font-mono,monospace);font-size:11px">' + BM.escHtml(dstAddr) + '</div>';
+                if (dstInfo.length) dstHtml += '<div style="font-size:9px;color:var(--text-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:200px">' + dstInfo.map(BM.escHtml).join(' &middot; ') + '</div>';
                 var familyBadge = c.family === 'ipv6' ? '<span style="font-size:9px;color:var(--text-2);background:var(--bg-2);padding:1px 4px;border-radius:3px;margin-left:4px">v6</span>' : '';
                 h += '<tr' + rowBg + '>';
-                h += '<td style="padding:6px 10px">' + (c.protocol || '').toUpperCase() + familyBadge + '</td>';
-                h += '<td style="padding:6px 10px">' + (c.state || '—') + '</td>';
+                h += '<td style="padding:6px 10px">' + BM.escHtml((c.protocol || '').toUpperCase()) + familyBadge + '</td>';
+                h += '<td style="padding:6px 10px">' + BM.escHtml(c.state || '—') + '</td>';
                 h += '<td style="padding:6px 10px">' + srcHtml + '</td>';
                 h += '<td style="padding:6px 10px">' + dstHtml + '</td>';
-                h += '<td style="padding:6px 10px">' + (c.nat_type || 'none') + '</td>';
+                h += '<td style="padding:6px 10px">' + BM.escHtml(c.nat_type || 'none') + '</td>';
                 h += '<td style="padding:6px 10px;text-align:right;font-variant-numeric:tabular-nums">' + BM.formatBytes(c.bytes || 0) + '</td>';
-                h += '<td style="padding:6px 10px;text-align:right;font-variant-numeric:tabular-nums;color:var(--text-2)">' + (c.packets ? c.packets.toLocaleString() : '—') + '</td>';
+                h += '<td style="padding:6px 10px;text-align:right;font-variant-numeric:tabular-nums;color:var(--text-2)">' + (BM.num(c.packets) > 0 ? BM.formatCount(c.packets) : '—') + '</td>';
                 h += '</tr>';
             }
             h += '</tbody></table></div>';
@@ -189,7 +190,7 @@
                     h += '<tr' + rowBg + '>';
                     h += '<td style="padding:6px 10px;white-space:nowrap;color:var(--text-2)">' + timeStr + '</td>';
                     h += '<td style="padding:6px 10px;font-family:var(--font-mono,monospace);font-size:11px">' + BM.escSvg(q.domain || '') + '</td>';
-                    h += '<td style="padding:6px 10px;color:var(--text-2)">' + (q.type || '—') + '</td>';
+                    h += '<td style="padding:6px 10px;color:var(--text-2)">' + BM.escHtml(q.type || '—') + '</td>';
                     h += '<td style="padding:6px 10px">' + resultHtml + '</td>';
                     h += '</tr>';
                 }

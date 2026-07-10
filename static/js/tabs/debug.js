@@ -113,8 +113,8 @@
             var lossClass = hop.loss_pct > 0 ? (hop.loss_pct > 10 ? ' style="color:var(--danger);font-weight:600"' : ' style="color:var(--warning)"') : '';
             var rttStr = hop.received > 0 ? hop.avg_rtt_ms.toFixed(2) + ' ms' : '—';
             if (hop.received > 1) rttStr += ' <span style="color:var(--text-2);font-size:11px">(min ' + hop.min_rtt_ms.toFixed(2) + ' / max ' + hop.max_rtt_ms.toFixed(2) + ')</span>';
-            var ipStr = hop.ip || '<span style="color:var(--text-2)">*</span>';
-            var hostStr = hop.hostname || '—';
+            var ipStr = hop.ip ? BM.escHtml(hop.ip) : '<span style="color:var(--text-2)">*</span>';
+            var hostStr = BM.escHtml(hop.hostname || '—');
 
             h += '<tr>';
             h += '<td>' + hop.ttl + '</td>';
@@ -246,7 +246,7 @@
                 h += '<td style="font-family:JetBrains Mono,monospace;font-size:12px">' + p.size + ' bytes' + (p.size === mtu ? ' ←' : '') + '</td>';
                 h += '<td style="color:' + statusColor + ';font-weight:600;font-size:12px">' + statusIcon + '</td>';
                 h += '<td style="font-variant-numeric:tabular-nums;font-size:12px">' + (p.rtt_ms > 0 ? p.rtt_ms.toFixed(2) + ' ms' : '—') + '</td>';
-                h += '<td style="font-size:11px;color:var(--text-2)">' + (p.error || '') + '</td>';
+                h += '<td style="font-size:11px;color:var(--text-2)">' + BM.escHtml(p.error || '') + '</td>';
                 h += '</tr>';
             }
             h += '</tbody></table></div>';
@@ -295,7 +295,7 @@
             if (ri.configured_resolver) {
                 h += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">';
                 h += '<span style="font-size:11px;color:var(--text-2);min-width:110px">Local resolver:</span>';
-                h += '<span style="font-family:JetBrains Mono,monospace;font-size:12px;padding:3px 8px;border-radius:4px;background:var(--bg-3);color:var(--accent)">' + ri.configured_resolver + '</span>';
+                h += '<span style="font-family:JetBrains Mono,monospace;font-size:12px;padding:3px 8px;border-radius:4px;background:var(--bg-3);color:var(--accent)">' + BM.escHtml(ri.configured_resolver) + '</span>';
                 h += '<span style="font-size:11px;color:var(--text-2)">(from /etc/resolv.conf)</span>';
                 h += '</div>';
             }
@@ -305,10 +305,10 @@
             h += '<div style="display:flex;flex-wrap:wrap;gap:4px">';
             if (ri.resolver_ips && ri.resolver_ips.length) {
                 for (var i = 0; i < ri.resolver_ips.length; i++) {
-                    h += '<span style="font-family:JetBrains Mono,monospace;font-size:12px;padding:3px 8px;border-radius:4px;background:var(--bg-3);color:var(--text-0)">' + ri.resolver_ips[i] + '</span>';
+                    h += '<span style="font-family:JetBrains Mono,monospace;font-size:12px;padding:3px 8px;border-radius:4px;background:var(--bg-3);color:var(--text-0)">' + BM.escHtml(ri.resolver_ips[i]) + '</span>';
                 }
             } else {
-                h += '<span style="font-size:12px;color:var(--warning)">' + (ri.error || 'No resolver IPs detected') + '</span>';
+                h += '<span style="font-size:12px;color:var(--warning)">' + BM.escHtml(ri.error || 'No resolver IPs detected') + '</span>';
             }
             h += '</div></div>';
             h += '<div style="font-size:10px;color:var(--text-2);margin-top:4px;margin-bottom:6px;padding-left:118px">IPs seen by authoritative DNS servers (o-o.myaddr.l.google.com, dnscheck.tools)</div>';
@@ -318,7 +318,7 @@
                 h += '<span style="font-size:11px;color:var(--text-2);min-width:110px">ECS:</span>';
                 h += '<div style="display:flex;flex-wrap:wrap;gap:4px">';
                 for (var ei = 0; ei < ri.ecs.length; ei++) {
-                    h += '<span style="font-family:JetBrains Mono,monospace;font-size:11px;padding:2px 6px;border-radius:3px;background:var(--bg-3);color:var(--text-2)">' + ri.ecs[ei] + '</span>';
+                    h += '<span style="font-family:JetBrains Mono,monospace;font-size:11px;padding:2px 6px;border-radius:3px;background:var(--bg-3);color:var(--text-2)">' + BM.escHtml(ri.ecs[ei]) + '</span>';
                 }
                 h += '</div></div>';
             }
@@ -330,7 +330,7 @@
                     var key = dcFields[di][0], label = dcFields[di][1];
                     if (dc[key]) {
                         h += '<span style="color:var(--text-2);font-size:11px">' + label + '</span>';
-                        h += '<span style="font-family:JetBrains Mono,monospace;font-size:11px;color:var(--text-0)">' + dc[key] + '</span>';
+                        h += '<span style="font-family:JetBrains Mono,monospace;font-size:11px;color:var(--text-0)">' + BM.escHtml(dc[key]) + '</span>';
                     }
                 }
                 h += '</div>';
@@ -389,7 +389,7 @@
                 var sColor = servers[ci].rcode === 'NOERROR' ? 'var(--success)' : 'var(--danger)';
                 h += '<th style="text-align:center;padding:4px 4px;font-weight:600;color:var(--text-0);border-bottom:1px solid var(--border);white-space:nowrap;font-size:10px">';
                 h += '<span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:' + sColor + ';margin-right:3px;vertical-align:middle"></span>';
-                h += shortNames[ci] + '</th>';
+                h += BM.escHtml(shortNames[ci]) + '</th>';
             }
             h += '</tr></thead><tbody>';
 
@@ -405,7 +405,7 @@
             for (var ci = 0; ci < servers.length; ci++) {
                 var rc = servers[ci].rcode || 'ERROR';
                 var rcc = rc === 'NOERROR' ? 'var(--success)' : (rc === 'NXDOMAIN' ? 'var(--danger)' : 'var(--warning)');
-                h += '<td style="text-align:center;padding:4px;font-size:10px;font-weight:600;color:' + rcc + '">' + rc + '</td>';
+                h += '<td style="text-align:center;padding:4px;font-size:10px;font-weight:600;color:' + rcc + '">' + BM.escHtml(rc) + '</td>';
             }
             h += '</tr>';
 
@@ -421,8 +421,8 @@
                     }
                 }
                 var isPartial = hasCount > 0 && hasCount < servers.length;
-                h += '<tr style="' + bg + '"><td style="padding:4px 8px;font-family:JetBrains Mono,monospace;font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:200px" title="' + rec.value + '">';
-                h += '<span style="color:var(--text-2);margin-right:4px">' + rec.type + '</span>' + rec.value + '</td>';
+                h += '<tr style="' + bg + '"><td style="padding:4px 8px;font-family:JetBrains Mono,monospace;font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:200px" title="' + BM.escAttr(rec.value) + '">';
+                h += '<span style="color:var(--text-2);margin-right:4px">' + BM.escHtml(rec.type) + '</span>' + BM.escHtml(rec.value) + '</td>';
                 for (var ci = 0; ci < servers.length; ci++) {
                     var found = false;
                     if (servers[ci].records) {
@@ -457,18 +457,18 @@
             h += '<div class="dns-check-server-header">';
             h += '<div style="display:flex;align-items:center;gap:8px">';
             h += '<span class="dns-check-server-dot" style="background:' + rcodeColor + '"></span>';
-            h += '<span style="font-size:13px;font-weight:600;color:var(--text-0)">' + srvName + '</span>';
+            h += '<span style="font-size:13px;font-weight:600;color:var(--text-0)">' + BM.escHtml(srvName) + '</span>';
             if (srv.ad) h += '<span class="dns-check-badge dnssec">DNSSEC</span>';
             if (srv.truncated) h += '<span class="dns-check-badge truncated">TRUNCATED</span>';
             h += '</div>';
             h += '<div style="display:flex;align-items:center;gap:16px">';
-            h += '<span class="dns-check-rcode" style="color:' + rcodeColor + '">' + (srv.rcode || 'ERROR') + '</span>';
+            h += '<span class="dns-check-rcode" style="color:' + rcodeColor + '">' + BM.escHtml(srv.rcode || 'ERROR') + '</span>';
             h += '<span class="dns-check-latency" style="color:' + latencyColor + '">' + latencyStr + (isFastest ? ' ⚡' : '') + '</span>';
             h += '</div>';
             h += '</div>';
 
             if (srv.error) {
-                h += '<div class="dns-check-error">' + srv.error + '</div>';
+                h += '<div class="dns-check-error">' + BM.escHtml(srv.error) + '</div>';
             }
 
             if (srv.records && srv.records.length) {
@@ -477,8 +477,8 @@
                     var rec = srv.records[ri];
                     var isUnique = allValues[rec.value] === 1 && Object.keys(allValues).length > 1;
                     h += '<div class="dns-check-record' + (isUnique ? ' unique' : '') + '">';
-                    h += '<span class="dns-check-rec-type">' + rec.type + '</span>';
-                    h += '<span class="dns-check-rec-value">' + rec.value + '</span>';
+                    h += '<span class="dns-check-rec-type">' + BM.escHtml(rec.type) + '</span>';
+                    h += '<span class="dns-check-rec-value">' + BM.escHtml(rec.value) + '</span>';
                     h += '<span class="dns-check-rec-ttl">' + (rec.ttl > 0 ? rec.ttl + 's' : '—') + '</span>';
                     h += '</div>';
                 }

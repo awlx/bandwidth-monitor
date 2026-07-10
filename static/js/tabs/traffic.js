@@ -442,7 +442,7 @@
         h += stat('TX Rate', BM.formatRate(totalTxRate), 'tx');
         h += stat('Total RX', BM.formatBytes(totalRxBytes), 'rx');
         h += stat('Total TX', BM.formatBytes(totalTxBytes), 'tx');
-        h += stat('IPs (24h)', d && d.unique_ips ? (d.unique_ips).toLocaleString() : '—');
+        h += stat('IPs (24h)', d && BM.num(d.unique_ips) > 0 ? BM.formatCount(d.unique_ips) : '—');
         el.innerHTML = h;
         if (sub && d && d.uptime_secs) {
             sub.textContent = ifaces.length + ' interfaces · up ' + BM.formatUptime(d.uptime_secs);
@@ -482,11 +482,11 @@
         var dotClass = (os === 'up') ? 'up' : (os === 'down' ? 'down' : 'unknown');
         var stateLabel = os === 'up' ? 'Up' : (os === 'down' ? 'Down' : os);
         var speedLabel = (f.speed && f.speed > 0) ? '<span style="font-size:10px;color:var(--text-2);font-weight:400;margin-right:4px">' + (f.speed >= 1000 ? (f.speed / 1000) + ' Gbit' : f.speed + ' Mbit') + '</span>' : '';
-        var badge = groupLabel ? '<span class="iface-group-badge">' + groupLabel + '</span>' : '';
-        var h = '<div class="iface-card"><div class="iface-name"><span>' + f.name + ' ' + badge + '</span><span class="iface-status">' + speedLabel + '<span class="iface-status-dot ' + dotClass + '"></span>' + stateLabel + '</span></div>';
-        h += '<div class="sparkline-wrap"><canvas class="sparkline-canvas" data-iface="' + f.name + '"></canvas></div>';
+        var badge = groupLabel ? '<span class="iface-group-badge">' + BM.escHtml(groupLabel) + '</span>' : '';
+        var h = '<div class="iface-card"><div class="iface-name"><span>' + BM.escHtml(f.name) + ' ' + badge + '</span><span class="iface-status">' + speedLabel + '<span class="iface-status-dot ' + dotClass + '"></span>' + BM.escHtml(stateLabel) + '</span></div>';
+        h += '<div class="sparkline-wrap"><canvas class="sparkline-canvas" data-iface="' + BM.escAttr(f.name) + '"></canvas></div>';
         if (f.vpn_routing) {
-            h += '<div class="vpn-routing active"><span class="iface-status-dot up"></span>Routing' + (f.vpn_routing_since ? ' since ' + f.vpn_routing_since : '') + '</div>';
+            h += '<div class="vpn-routing active"><span class="iface-status-dot up"></span>Routing' + (f.vpn_routing_since ? ' since ' + BM.escHtml(f.vpn_routing_since) : '') + '</div>';
         } else if (f.iface_type === 'vpn' && f.vpn_tracked) {
             h += '<div class="vpn-routing inactive">Not routing</div>';
         }
@@ -506,8 +506,8 @@
                 if (f.addrs[ai].indexOf(':') !== -1) v6.push(f.addrs[ai]); else v4.push(f.addrs[ai]);
             }
             h += '<div class="iface-addrs">';
-            if (v4.length) h += '<div class="iface-addr-row"><span class="iface-addr-tag v4">IPv4</span><span class="iface-addr-list">' + v4.join(', ') + '</span></div>';
-            if (v6.length) h += '<div class="iface-addr-row"><span class="iface-addr-tag v6">IPv6</span><span class="iface-addr-list">' + v6.join(', ') + '</span></div>';
+            if (v4.length) h += '<div class="iface-addr-row"><span class="iface-addr-tag v4">IPv4</span><span class="iface-addr-list">' + v4.map(BM.escHtml).join(', ') + '</span></div>';
+            if (v6.length) h += '<div class="iface-addr-row"><span class="iface-addr-tag v6">IPv6</span><span class="iface-addr-list">' + v6.map(BM.escHtml).join(', ') + '</span></div>';
             h += '</div>';
         }
         h += '</div>';
@@ -565,12 +565,12 @@
             var flag = t.country ? BM.countryFlag(t.country) + ' ' : '';
             var geo = '';
             var geoName = (t.city && t.country_name) ? t.city + ', ' + t.country_name : (t.country_name || '');
-            if (t.as_org) geo = '<span class="hostname">' + flag + BM.escSvg(geoName) + ' &middot; AS' + (t.asn || '') + ' ' + BM.escSvg(t.as_org) + '</span>';
+            if (t.as_org) geo = '<span class="hostname">' + flag + BM.escHtml(geoName) + ' &middot; AS' + BM.integer(t.asn, 0) + ' ' + BM.escHtml(t.as_org) + '</span>';
             else if (geoName) geo = '<span class="hostname">' + flag + BM.escSvg(geoName) + '</span>';
             var displayName = BM.deviceDisplayName(null, [t.ip], t.hostname);
             var host = displayName && displayName !== t.ip
-                ? '<span class="ip-cell ip-clickable" data-ip="' + t.ip + '">' + t.ip + '</span><span class="hostname">' + BM.escSvg(displayName) + '</span>' + geo
-                : '<span class="ip-cell ip-clickable" data-ip="' + t.ip + '">' + t.ip + '</span>' + geo;
+                ? '<span class="ip-cell ip-clickable" data-ip="' + BM.escAttr(t.ip) + '">' + BM.escHtml(t.ip) + '</span><span class="hostname">' + BM.escHtml(displayName) + '</span>' + geo
+                : '<span class="ip-cell ip-clickable" data-ip="' + BM.escAttr(t.ip) + '">' + BM.escHtml(t.ip) + '</span>' + geo;
             h += '<tr' + (t.country ? ' data-country="' + BM.escSvg(t.country) + '"' : '') + '><td><span class="' + BM.rankClass(i) + '">' + (i + 1) + '</span></td>';
             h += '<td>' + BM.favoriteStarHtml(t.ip) + '</td>';
             h += '<td>' + host + '</td>';
@@ -651,7 +651,7 @@
             var displayVal = formatter ? formatter(values[i]) : values[i].toLocaleString();
             h += '<div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">';
             h += '<div style="width:10px;height:10px;border-radius:2px;background:' + colors[i] + ';flex-shrink:0"></div>';
-            h += '<div><div style="font-size:13px;font-weight:600;color:var(--text-0)">' + labels[i] + '</div>';
+            h += '<div><div style="font-size:13px;font-weight:600;color:var(--text-0)">' + BM.escHtml(labels[i]) + '</div>';
             h += '<div style="font-size:11px;color:var(--text-2)">' + displayVal + ' &middot; ' + pct + '%</div></div></div>';
         }
         legendEl.innerHTML = h || '<div style="text-align:center;color:var(--text-2);font-size:12px;padding:8px">No data</div>';
@@ -694,7 +694,7 @@
             var pct = total > 0 ? ((valueFn(items[i]) / total) * 100).toFixed(1) : '0.0';
             lh += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">';
             lh += '<div style="width:8px;height:8px;border-radius:2px;background:' + chartColors[i] + ';flex-shrink:0"></div>';
-            lh += '<div style="flex:1;min-width:0"><div style="font-size:12px;font-weight:500;color:var(--text-0);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + labelFn(items[i]) + '</div>';
+            lh += '<div style="flex:1;min-width:0"><div style="font-size:12px;font-weight:500;color:var(--text-0);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + BM.escHtml(labelFn(items[i])) + '</div>';
             lh += '<div style="font-size:10px;color:var(--text-2)">' + fmtFn(valueFn(items[i])) + ' &middot; ' + pct + '%</div></div></div>';
         }
         if (rest > 0) {
@@ -717,7 +717,7 @@
         for (var i = 0; i < items.length; i++) {
             var pct = mx > 0 ? ((valueFn(items[i]) / mx) * 100).toFixed(1) : '0';
             h += '<tr><td><span class="' + BM.rankClass(i) + '">' + (i + 1) + '</span></td>';
-            h += '<td><span class="ip-cell">' + labelFn(items[i]) + '</span></td>';
+            h += '<td><span class="ip-cell">' + BM.escHtml(labelFn(items[i])) + '</span></td>';
             if (countFn) h += '<td style="white-space:nowrap;font-variant-numeric:tabular-nums">' + countFn(items[i]) + '</td>';
             h += '<td style="white-space:nowrap;font-variant-numeric:tabular-nums">' + fmtFn(valueFn(items[i])) + '</td>';
             h += '<td class="bar-cell"><div class="bar-bg"></div><div class="bar-fill ' + cls + '" style="width:' + pct + '%"></div></td></tr>';
@@ -736,7 +736,7 @@
             var it = items[i], total = (it.tx_bytes || 0) + (it.rx_bytes || 0);
             var pct = mx > 0 ? ((total / mx) * 100).toFixed(1) : '0';
             h += '<tr><td><span class="' + BM.rankClass(i) + '">' + (i + 1) + '</span></td>';
-            h += '<td><span class="ip-cell">' + labelFn(it) + '</span></td>';
+            h += '<td><span class="ip-cell">' + BM.escHtml(labelFn(it)) + '</span></td>';
             h += '<td style="white-space:nowrap;font-variant-numeric:tabular-nums">' + BM.formatBytes(it.rx_bytes || 0) + '</td>';
             h += '<td style="white-space:nowrap;font-variant-numeric:tabular-nums">' + BM.formatBytes(it.tx_bytes || 0) + '</td>';
             h += '<td style="white-space:nowrap;font-variant-numeric:tabular-nums;color:var(--rx)">' + BM.formatRate(it.rx_rate || 0) + '</td>';
@@ -762,7 +762,7 @@
             function(v) { return BM.formatBytes(v); }
         );
         fillDetailTable('countryTable', countries,
-            function(c) { return BM.countryFlag(c.country) + ' <span style="font-weight:500">' + (c.country_name || c.country) + '</span> <span class="hostname" style="display:inline">' + c.country + '</span>'; },
+            function(c) { return BM.countryFlag(c.country) + ' ' + (c.country_name || c.country) + ' (' + c.country + ')'; },
             function(c) { return c.bytes; },
             function(v) { return BM.formatBytes(v); }, 'bw',
             function(c) { return c.connections; }
@@ -799,7 +799,7 @@
             function(v) { return BM.formatBytes(v); }
         );
         fillDetailTable('asnTable', asns,
-            function(a) { return '<span style="font-weight:500">' + (a.as_org || 'Unknown') + '</span> <span class="hostname" style="display:inline">AS' + a.asn + '</span>'; },
+            function(a) { return (a.as_org || 'Unknown') + ' (AS' + a.asn + ')'; },
             function(a) { return a.bytes; },
             function(v) { return BM.formatBytes(v); }, 'vol',
             function(a) { return a.connections; }
@@ -848,9 +848,10 @@
                     var pct = mx > 0 ? (m.total_bytes / mx * 100) : 0;
                     var displayName = BM.deviceDisplayName ? BM.deviceDisplayName(null, [m.ip], m.hostname) : (m.hostname || m.ip);
                     var host = displayName && displayName !== m.ip
-                        ? '<span class="ip-cell ip-clickable" data-ip="' + m.ip + '">' + m.ip + '</span> <span class="hostname">' + BM.escSvg(displayName) + '</span>'
-                        : '<span class="ip-cell ip-clickable" data-ip="' + m.ip + '">' + m.ip + '</span>';
-                    var conns = m.connections + ' remote IP' + (m.connections === 1 ? '' : 's');
+                        ? '<span class="ip-cell ip-clickable" data-ip="' + BM.escAttr(m.ip) + '">' + BM.escHtml(m.ip) + '</span> <span class="hostname">' + BM.escHtml(displayName) + '</span>'
+                        : '<span class="ip-cell ip-clickable" data-ip="' + BM.escAttr(m.ip) + '">' + BM.escHtml(m.ip) + '</span>';
+                    var connectionCount = BM.integer(m.connections, 0);
+                    var conns = connectionCount + ' remote IP' + (connectionCount === 1 ? '' : 's');
                     var hasRemotes = m.remotes && m.remotes.length > 0;
                     h += '<div class="asn-machine-block" style="border-bottom:1px solid var(--border)">';
                     h += '<div class="asn-machine-row" data-idx="' + i + '" style="display:flex;align-items:center;gap:8px;padding:4px 0' + (hasRemotes ? ';cursor:pointer' : '') + '">';
@@ -866,8 +867,8 @@
                         m.remotes.forEach(function(rm) {
                             var rpct = rmx > 0 ? (rm.total_bytes / rmx * 100) : 0;
                             var rDisplay = rm.hostname && rm.hostname !== rm.ip
-                                ? '<span class="ip-cell ip-clickable" data-ip="' + rm.ip + '">' + rm.ip + '</span> <span class="hostname">' + BM.escSvg(rm.hostname) + '</span>'
-                                : '<span class="ip-cell ip-clickable" data-ip="' + rm.ip + '">' + rm.ip + '</span>';
+                                ? '<span class="ip-cell ip-clickable" data-ip="' + BM.escAttr(rm.ip) + '">' + BM.escHtml(rm.ip) + '</span> <span class="hostname">' + BM.escHtml(rm.hostname) + '</span>'
+                                : '<span class="ip-cell ip-clickable" data-ip="' + BM.escAttr(rm.ip) + '">' + BM.escHtml(rm.ip) + '</span>';
                             h += '<div style="display:flex;align-items:center;gap:8px;padding:2px 0;font-size:11px">';
                             h += '<div style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text-2)">' + rDisplay + '</div>';
                             h += '<div style="flex:0 0 60px;height:4px;background:var(--bg-2);border-radius:2px;overflow:hidden"><div style="width:' + Math.max(2, rpct).toFixed(1) + '%;height:100%;background:var(--text-3);border-radius:2px;opacity:0.6"></div></div>';
@@ -903,7 +904,8 @@
             })
             .catch(function(e) {
                 if (String(wrap.dataset.asn) !== String(asn.asn)) return;
-                list.innerHTML = '<div style="text-align:center;padding:16px;color:var(--danger)">Failed to load: ' + e + '</div>';
+                list.innerHTML = '<div style="text-align:center;padding:16px;color:var(--danger)"></div>';
+                list.firstChild.textContent = 'Failed to load: ' + e;
             });
     };
 
