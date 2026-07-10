@@ -64,6 +64,7 @@ jobs:
             LDFLAGS="${LDFLAGS} -X bandwidth-monitor/version.Version=${{ github.ref_name }}"
           fi
           go build -ldflags="${LDFLAGS}" -o bandwidth-monitor .
+          go build -ldflags="${LDFLAGS}" -o bandwidth-top ./cmd/bandwidth-top
 
       - name: Build deb
         env:
@@ -86,6 +87,7 @@ jobs:
           sudo env DEBIAN_FRONTEND=noninteractive dpkg -i "$package"
           test -f /etc/bandwidth-monitor/env
           test -f /usr/share/bandwidth-monitor/env.example
+          test -x /usr/bin/bandwidth-top
           test "$(stat -c '%a' /etc/bandwidth-monitor/env)" = "600"
           ! dpkg-query -W -f='${Conffiles}\n' bandwidth-monitor |
             grep -q '/etc/bandwidth-monitor/env'
@@ -174,8 +176,11 @@ jobs:
             LDFLAGS="${LDFLAGS} -X bandwidth-monitor/version.Version=${{ github.ref_name }}"
           fi
           go build -ldflags="${LDFLAGS}" -o bandwidth-monitor .
+          go build -ldflags="${LDFLAGS}" -o bandwidth-top ./cmd/bandwidth-top
           file bandwidth-monitor
+          file bandwidth-top
           echo "BINARY=${{ github.workspace }}/bandwidth-monitor" >> $GITHUB_ENV
+          echo "TOP_BINARY=${{ github.workspace }}/bandwidth-top" >> $GITHUB_ENV
 
       - name: Package for OpenWrt
         run: |
@@ -195,9 +200,10 @@ jobs:
           mkdir -p "$WORKSPACE/pkg-out"
 
           cp "$BINARY" "$PKG_DIR/usr/bin/bandwidth-monitor"
+          cp "$TOP_BINARY" "$PKG_DIR/usr/bin/bandwidth-top"
           cp "$WORKSPACE/env.example" "$PKG_DIR/etc/bandwidth-monitor/env"
           cp "$WORKSPACE/packaging/openwrt-files/bandwidth-monitor.init" "$PKG_DIR/etc/init.d/bandwidth-monitor"
-          chmod 755 "$PKG_DIR/usr/bin/bandwidth-monitor" "$PKG_DIR/etc/init.d/bandwidth-monitor"
+          chmod 755 "$PKG_DIR/usr/bin/bandwidth-monitor" "$PKG_DIR/usr/bin/bandwidth-top" "$PKG_DIR/etc/init.d/bandwidth-monitor"
           chmod 600 "$PKG_DIR/etc/bandwidth-monitor/env"
 
           if [ "$PKG_FORMAT" = "apk" ]; then

@@ -113,7 +113,9 @@ type Tracker struct {
 	workers     sync.WaitGroup
 	started     bool
 	stopped     bool
-	captureFn   func(string)
+	direct      bool
+	errCh       chan error
+	captureFn   func(string) error
 
 	// Rate ring: short circular buffer (5s slots) for responsive rate calc.
 	// Protected by the same mu as buckets/current.
@@ -122,6 +124,17 @@ type Tracker struct {
 }
 
 func New(devices []string, promiscuous bool, localNets []*net.IPNet, geoDB *geoip.DB, dns *resolver.Resolver) *Tracker {
+	return newTracker(devices, promiscuous, localNets, geoDB, dns, false)
+}
+
+// NewDirect creates a tracker that captures exactly one explicitly selected
+// interface, regardless of whether it is LAN-facing. It is intended for
+// ad-hoc tools; the server's New constructor retains LAN-only accounting.
+func NewDirect(device string, promiscuous bool, localNets []*net.IPNet, geoDB *geoip.DB, dns *resolver.Resolver) *Tracker {
+	return newTracker([]string{device}, promiscuous, localNets, geoDB, dns, true)
+}
+
+func newTracker(devices []string, promiscuous bool, localNets []*net.IPNet, geoDB *geoip.DB, dns *resolver.Resolver, direct bool) *Tracker {
 	// Build a set of the router's own interface IPs so we can resolve
 	// direction when both endpoints fall within localNets (e.g. the
 	// router's WAN IP talking to a remote host through a tunnel).
@@ -200,6 +213,8 @@ func New(devices []string, promiscuous bool, localNets []*net.IPNet, geoDB *geoi
 		doneCh:      make(chan struct{}),
 		dns:         dns,
 		geoDB:       geoDB,
+		direct:      direct,
+		errCh:       make(chan error, 1),
 	}
 	trk.captureFn = trk.captureDevice
 	// Initialize first rate ring slot
@@ -253,20 +268,30 @@ func (t *Tracker) Run() {
 	t.startWorker(t.rotateBuckets)
 	t.startWorker(t.rotateRateRing)
 	for _, dev := range devices {
-		if !t.lanDevices[dev] {
+		if !t.direct && !t.lanDevices[dev] {
 			log.Printf("talkers: skipping capture on %s (not LAN)", dev)
 			continue
 		}
 		device := dev
 		t.startWorker(func() {
-			t.captureFn(device)
+			if err := t.captureFn(device); err != nil {
+				log.Printf("talkers: capture on %s failed: %v", device, err)
+				select {
+				case t.errCh <- err:
+				default:
+				}
+			}
 		})
 	}
+
 	t.lifecycleMu.Unlock()
 
 	<-t.stopCh
 	t.workers.Wait()
 }
+
+// Errors reports capture failures without making table refreshes block.
+func (t *Tracker) Errors() <-chan error { return t.errCh }
 
 // Stop signals all tracker goroutines and waits for them to release their resources.
 // It is safe to call multiple times or concurrently.
@@ -568,11 +593,10 @@ func (t *Tracker) getDevices() ([]string, error) {
 	return names, nil
 }
 
-func (t *Tracker) captureDevice(device string) {
+func (t *Tracker) captureDevice(device string) error {
 	ring, err := packets.NewRing(device, t.promiscuous)
 	if err != nil {
-		log.Printf("talkers: cannot open ring on %s: %v", device, err)
-		return
+		return err
 	}
 	defer ring.Close()
 	log.Printf("talkers: TPACKET_V3 ring on %s", device)
@@ -599,7 +623,7 @@ func (t *Tracker) captureDevice(device string) {
 	for {
 		select {
 		case <-t.stopCh:
-			return
+			return nil
 		default:
 		}
 
@@ -1150,7 +1174,7 @@ type MachineASNStat struct {
 	TxBytes     uint64          `json:"tx_bytes"`
 	Packets     uint64          `json:"packets"`
 	Connections int             `json:"connections"` // distinct remote IPs within the ASN
-	Remotes     []ASNRemoteStat `json:"remotes"`      // per-remote-IP breakdown, sorted by bytes desc
+	Remotes     []ASNRemoteStat `json:"remotes"`     // per-remote-IP breakdown, sorted by bytes desc
 }
 
 // maxRemotesInResponse caps how many remote IPs are returned per local host
@@ -1273,7 +1297,6 @@ func (t *Tracker) TopMachinesForASN(asn uint, n int) []MachineASNStat {
 	}
 	return list
 }
-
 
 // BucketPoint is a single 1-minute data point for a host.
 type BucketPoint struct {

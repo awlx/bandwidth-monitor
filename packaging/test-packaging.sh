@@ -46,6 +46,8 @@ cmp "$tmp/expected-env" "$tmp/openwrt-env" ||
 	fail "OpenWrt init does not forward every supported runtime variable"
 
 assert_contains "$repo/nfpm.yaml" "dst: /usr/share/bandwidth-monitor/env.example"
+assert_contains "$repo/nfpm.yaml" "dst: /usr/bin/bandwidth-top"
+assert_contains "$repo/.github/workflows/release.yml" 'cp "$TOP_BINARY" "$PKG_DIR/usr/bin/bandwidth-top"'
 assert_not_contains "$repo/nfpm.yaml" "dst: /etc/bandwidth-monitor/env"
 assert_contains "$repo/nfpm.yaml" 'license: "AGPL-3.0-only"'
 assert_contains "$repo/.github/workflows/release.yml" '-I "license:AGPL-3.0-only"'
@@ -98,7 +100,9 @@ if command -v nfpm >/dev/null 2>&1; then
 		"$repo/packaging/postremove.sh" \
 		"$tmp/build/packaging/"
 	printf '#!/bin/sh\nexit 0\n' > "$tmp/build/bandwidth-monitor"
+	printf '#!/bin/sh\nexit 0\n' > "$tmp/build/bandwidth-top"
 	chmod 0755 "$tmp/build/bandwidth-monitor"
+	chmod 0755 "$tmp/build/bandwidth-top"
 	(
 		cd "$tmp/build"
 		VERSION=$newer_nfpm GOARCH=amd64 nfpm package -p deb -f nfpm.yaml -t "$tmp/package.deb" >/dev/null
@@ -112,6 +116,7 @@ if command -v nfpm >/dev/null 2>&1; then
 		dpkg-deb --contents "$tmp/package.deb" > "$tmp/deb-contents"
 		assert_contains "$tmp/deb-info" "Version: $newer_nfpm"
 		assert_contains "$tmp/deb-contents" "./usr/bin/bandwidth-monitor"
+		assert_contains "$tmp/deb-contents" "./usr/bin/bandwidth-top"
 		assert_contains "$tmp/deb-contents" "./etc/init.d/bandwidth-monitor"
 		assert_contains "$tmp/deb-contents" "./usr/share/bandwidth-monitor/env.example"
 		assert_not_contains "$tmp/deb-contents" "./etc/bandwidth-monitor/env"

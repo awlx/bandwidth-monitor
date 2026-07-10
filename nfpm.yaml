@@ -14,6 +14,11 @@ contents:
     file_info:
       mode: 0755
 
+  - src: ./bandwidth-top
+    dst: /usr/bin/bandwidth-top
+    file_info:
+      mode: 0755
+
   - src: ./env.example
     dst: /usr/share/bandwidth-monitor/env.example
     file_info:

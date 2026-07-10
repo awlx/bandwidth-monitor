@@ -31,6 +31,7 @@
 
           buildInputs = [ pkgs.libpcap ];
           nativeBuildInputs = [ pkgs.pkg-config ];
+          subPackages = [ "." "cmd/bandwidth-top" ];
 
           ldflags = [
             "-s" "-w"
