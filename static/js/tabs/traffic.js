@@ -338,15 +338,20 @@
         }
         trafficChart.data.datasets = ds;
         // Scale the y-axis to a robust (99th-percentile) max of the *currently
-        // visible* series across the whole window, so a single transient spike
-        // clips at the top instead of blowing the scale up. Hard min/max — not
-        // suggestedMax — makes that clamp hold. Sorting the whole window is too
-        // costly to run every frame, so recompute at most every 10th tick — but
-        // always immediately on an interface toggle, so the axis still drops
-        // right away when a series is hidden.
+        // visible* series across the whole window. Sorting the whole window is
+        // too costly to run every frame, so recompute it at most every 10th tick.
+        // The latest point is cheap to inspect every tick and must be allowed to
+        // grow the hard bounds immediately, or a traffic jump is clipped against
+        // the stale scale until the next percentile recompute.
         var sig = selectedIface === null ? '__all__' : selectedIface;
         var recompute = forceRescale || (sig !== _yAxisSig) || (_yAxisTick % 10 === 0);
         _yAxisTick++;
+        var latestMax = 0;
+        for (var li = 0; li < ds.length; li++) {
+            var latestPts = ds[li].data;
+            if (!latestPts.length) continue;
+            latestMax = Math.max(latestMax, Math.abs(latestPts[latestPts.length - 1].y));
+        }
         if (recompute) {
             var vals = [];
             for (var di = 0; di < ds.length; di++) {
@@ -368,6 +373,7 @@
             }
             _yAxisSig = sig;
         }
+        _yAxisMax = Math.max(_yAxisMax, latestMax * 1.15);
         if (_yAxisMax > 0) {
             trafficChart.options.scales.y.max = _yAxisMax;
             trafficChart.options.scales.y.min = -_yAxisMax;
