@@ -103,6 +103,7 @@ Common options:
 | `--rows` | `20` | Maximum displayed peers |
 | `--refresh` | `1s` | Refresh interval |
 | `--snapshot` | Off | Print one plain snapshot and exit |
+| `--no-resolve`, `-n` | Off | Disable PTR lookups and show remote IPs |
 | `--server` | Gateway discovery | Explicit Bandwidth Monitor URL |
 | `--no-server-discovery` | Off | Disable the default-gateway probe |
 | `--no-public` | Off | Disable public enrichment fallback |

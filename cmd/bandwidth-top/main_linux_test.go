@@ -7,6 +7,8 @@ import (
 	"flag"
 	"strings"
 	"testing"
+
+	"bandwidth-monitor/resolver"
 )
 
 func TestHelpDoesNotStartCapture(t *testing.T) {
@@ -18,8 +20,21 @@ func TestHelpDoesNotStartCapture(t *testing.T) {
 	if !strings.Contains(stderr.String(), "Usage: bandwidth-top") ||
 		!strings.Contains(stderr.String(), "CAP_NET_RAW") ||
 		!strings.Contains(stderr.String(), "checked once at startup") ||
-		!strings.Contains(stderr.String(), "local-network") {
+		!strings.Contains(stderr.String(), "local-network") ||
+		!strings.Contains(stderr.String(), "no-resolve") ||
+		!strings.Contains(stderr.String(), "-n") {
 		t.Fatalf("unexpected help:\n%s", stderr.String())
+	}
+}
+
+func TestNoResolveDoesNotCreateResolver(t *testing.T) {
+	created := 0
+	got := resolverUnlessDisabled(true, func() *resolver.Resolver {
+		created++
+		return nil
+	})
+	if got != nil || created != 0 {
+		t.Fatalf("resolver=%v created=%d, want nil resolver without factory use", got, created)
 	}
 }
 

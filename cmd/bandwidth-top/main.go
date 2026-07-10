@@ -40,6 +40,9 @@ func run(args []string, stdout, stderr io.Writer) error {
 	noServerDiscovery := fs.Bool("no-server-discovery", false, "disable one-time default-gateway monitor discovery")
 	publicURL := fs.String("public-url", bandwidthtop.DefaultPublicURL, "public enrichment API base URL")
 	noPublic := fs.Bool("no-public", false, "disable public enrichment fallback")
+	noResolve := false
+	fs.BoolVar(&noResolve, "no-resolve", false, "disable reverse DNS and show remote IPs")
+	fs.BoolVar(&noResolve, "n", false, "disable reverse DNS and show remote IPs (shorthand)")
 	width := fs.Int("width", 0, "output width in columns (default: terminal width)")
 	fs.Usage = func() {
 		fmt.Fprintln(stderr, "Usage: bandwidth-top [options]")
@@ -81,8 +84,10 @@ func run(args []string, stdout, stderr io.Writer) error {
 	terminal := newTerminalSession(stdout, liveTerminal, func() terminalDimensions {
 		return terminalSize(stdout)
 	})
-	dns := resolver.New()
-	defer dns.Stop()
+	dns := resolverUnlessDisabled(noResolve, resolver.New)
+	if dns != nil {
+		defer dns.Stop()
+	}
 	tracker := talkers.NewDirect(iface.Name, false, localNetworks, nil, dns)
 	log.SetOutput(io.Discard)
 	go tracker.Run()
@@ -114,7 +119,8 @@ func run(args []string, stdout, stderr io.Writer) error {
 			viewRows := make([]bandwidthtop.Row, 0, len(stats))
 			for _, stat := range stats {
 				viewRows = append(viewRows, bandwidthtop.Row{
-					LocalIP: stat.LocalIP,
+					LocalIP:   stat.LocalIP,
+					NoResolve: noResolve,
 					Stat: bandwidthtop.Stat{
 						IP: stat.IP, Hostname: stat.Hostname, Packets: stat.Packets,
 						Rx: bandwidthtop.RateWindows{
@@ -172,6 +178,13 @@ func run(args []string, stdout, stderr io.Writer) error {
 			}
 		}
 	})
+}
+
+func resolverUnlessDisabled(disabled bool, create func() *resolver.Resolver) *resolver.Resolver {
+	if disabled {
+		return nil
+	}
+	return create()
 }
 
 func lookupErrorStatus(rows []bandwidthtop.Row) string {

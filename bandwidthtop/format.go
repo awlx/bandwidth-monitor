@@ -26,9 +26,10 @@ type Stat struct {
 }
 
 type Row struct {
-	LocalIP string
-	Stat    Stat
-	Info    Enrichment
+	LocalIP   string
+	Stat      Stat
+	Info      Enrichment
+	NoResolve bool
 }
 
 type Totals struct {
@@ -479,7 +480,17 @@ func maximumDirectionalRate(rows []Row) float64 {
 }
 
 func remoteHost(row Row) string {
-	return sanitizeTerminal(row.Stat.IP)
+	ip := sanitizeTerminal(row.Stat.IP)
+	if row.NoResolve {
+		return ip
+	}
+	if hostname := sanitizeTerminal(row.Stat.Hostname); hostname != "" && hostname != ip {
+		return hostname
+	}
+	if hostname := sanitizeTerminal(row.Info.Hostname); hostname != "" && hostname != ip {
+		return hostname
+	}
+	return ip
 }
 
 func formatASN(asn uint) string {
