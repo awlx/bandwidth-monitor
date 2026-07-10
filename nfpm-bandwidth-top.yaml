@@ -1,0 +1,15 @@
+name: bandwidth-top
+arch: "${GOARCH}"
+platform: linux
+version: "${VERSION}"
+maintainer: "Annika Wickert <awlx@users.noreply.github.com>"
+description: "Ad-hoc live terminal network traffic viewer"
+vendor: "awlx"
+homepage: "https://github.com/awlx/bandwidth-monitor"
+license: "AGPL-3.0-only"
+
+contents:
+  - src: ./bandwidth-top
+    dst: /usr/bin/bandwidth-top
+    file_info:
+      mode: 0755

@@ -31,7 +31,7 @@
 
           buildInputs = [ pkgs.libpcap ];
           nativeBuildInputs = [ pkgs.pkg-config ];
-          subPackages = [ "." "cmd/bandwidth-top" ];
+          subPackages = [ "." ];
 
           ldflags = [
             "-s" "-w"
@@ -56,15 +56,38 @@
             mainProgram = "bandwidth-monitor";
           };
         };
+
+        bandwidth-top = pkgs.buildGoModule {
+          pname = "bandwidth-top";
+          version = bandwidth-monitor.version;
+          src = ./.;
+          vendorHash = null;
+          subPackages = [ "cmd/bandwidth-top" ];
+          ldflags = [
+            "-s" "-w"
+            "-X" "bandwidth-monitor/version.Version=${bandwidth-top.version}"
+          ];
+          meta = with pkgs.lib; {
+            description = "Ad-hoc live terminal network traffic viewer";
+            homepage = "https://github.com/awlx/bandwidth-monitor";
+            license = licenses.agpl3Only;
+            platforms = platforms.linux;
+            mainProgram = "bandwidth-top";
+          };
+        };
       in
       {
         packages = {
           default = bandwidth-monitor;
           bandwidth-monitor = bandwidth-monitor;
+          bandwidth-top = bandwidth-top;
         };
 
         apps.default = flake-utils.lib.mkApp {
           drv = bandwidth-monitor;
+        };
+        apps.bandwidth-top = flake-utils.lib.mkApp {
+          drv = bandwidth-top;
         };
 
         devShells.default = pkgs.mkShell {

@@ -248,6 +248,9 @@ Pre-built packages are available from [GitHub Releases](https://github.com/awlx/
 | `.apk` | x86_64, aarch64 | OpenWrt snapshot (nightly) |
 | Nix flake | any | NixOS / Nix on Linux |
 
+Each format publishes independent `bandwidth-monitor` and `bandwidth-top`
+packages. Neither depends on the other, so the CLI can be installed alone.
+
 #### Debian / Ubuntu
 
 **APT Repository (recommended):**
@@ -261,12 +264,22 @@ sudo apt update
 sudo apt install bandwidth-monitor
 ```
 
+Install only the terminal viewer, or both packages:
+
+```bash
+sudo apt install bandwidth-top
+sudo apt install bandwidth-monitor bandwidth-top
+```
+
 **Manual install:**
 
 ```bash
 sudo dpkg -i bandwidth-monitor_*.deb
 sudo vi /etc/bandwidth-monitor/env
 sudo systemctl restart bandwidth-monitor
+
+# CLI only (no service or configuration is installed)
+sudo dpkg -i bandwidth-top_*.deb
 ```
 
 #### RHEL / Fedora
@@ -275,6 +288,10 @@ sudo systemctl restart bandwidth-monitor
 sudo rpm -i bandwidth-monitor-*.rpm
 sudo vi /etc/bandwidth-monitor/env
 sudo systemctl enable --now bandwidth-monitor
+
+# CLI only, or install both RPM files together
+sudo rpm -i bandwidth-top-*.rpm
+sudo rpm -i bandwidth-monitor-*.rpm bandwidth-top-*.rpm
 ```
 
 #### OpenWrt (stable, opkg)
@@ -285,6 +302,9 @@ opkg install /tmp/bandwidth-monitor_*.ipk
 vi /etc/bandwidth-monitor/env
 /etc/init.d/bandwidth-monitor enable
 /etc/init.d/bandwidth-monitor start
+
+# CLI only (contains only /usr/bin/bandwidth-top)
+opkg install /tmp/bandwidth-top_*.ipk
 ```
 
 Optional GeoIP databases:
@@ -301,6 +321,9 @@ apk add --allow-untrusted /tmp/bandwidth-monitor-*.apk
 vi /etc/bandwidth-monitor/env
 /etc/init.d/bandwidth-monitor enable
 /etc/init.d/bandwidth-monitor start
+
+# CLI only
+apk add --allow-untrusted /tmp/bandwidth-top-*.apk
 ```
 
 #### NixOS / Nix Flake
@@ -337,14 +360,22 @@ To update the bundled GeoIP databases: `nix flake update`
 Or run directly without installing:
 ```bash
 nix run github:awlx/bandwidth-monitor
+
+# Run only the independently packaged terminal viewer
+nix run github:awlx/bandwidth-monitor#bandwidth-top
 ```
 
 ### System package layout and upgrades
 
-System packages install `bandwidth-monitor` and `bandwidth-top` in `/usr/bin`,
-service definitions in the
-platform service directories, and configuration in
-`/etc/bandwidth-monitor/env`. On first installation the configuration is
+The `bandwidth-monitor` package installs the daemon in `/usr/bin`, service
+definitions in platform service directories, and configuration in
+`/etc/bandwidth-monitor/env`. The independent `bandwidth-top` package installs
+only `/usr/bin/bandwidth-top`; it has no service, configuration, lifecycle
+scripts, state directory, dependency on the daemon package, or capability
+mutation. Run it as root or grant `CAP_NET_RAW` externally. Installing both
+packages creates no overlapping files.
+
+On first daemon installation the configuration is
 created with mode `0600` from the packaged example. It is not managed as a
 Debian conffile: package upgrades are noninteractive and always preserve the
 administrator-owned file, including any credentials it contains. Review the
@@ -357,10 +388,13 @@ for newly supported settings.
 # Build, download GeoIP DBs, install to /opt/bandwidth-monitor,
 # set up systemd service, and start
 make install
+
+# Install only the CLI to /usr/local/bin (does not grant capabilities)
+make install-top
 ```
 
 This will:
-1. Build the binary
+1. Build the daemon binary
 2. Download GeoIP databases if not present
 3. Copy everything to `/opt/bandwidth-monitor/`
 4. Create `.env` from `env.example` (if it doesn't exist)
@@ -768,7 +802,7 @@ static/index.html          Dashboard shell
 static/js/                 Modular frontend core, components, and tab renderers
 webassets/                 Local asset discovery and content fingerprinting
 packaging/                 System-package services, scripts, versioning, and tests
-nfpm.yaml                  Debian/RPM package manifest
+nfpm*.yaml                 Separate daemon and CLI Debian/RPM manifests
 env.example                Canonical documented runtime configuration
 Makefile                   Build, install, and GeoIP targets
 ```

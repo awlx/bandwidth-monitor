@@ -2,6 +2,7 @@ BINARY=bandwidth-monitor
 TOP_BINARY=bandwidth-top
 GATEWAY_BINARY=apns-gateway
 INSTALL_DIR=/opt/bandwidth-monitor
+TOP_INSTALL_DIR=/usr/local/bin
 SERVICE_FILE=bandwidth-monitor.service
 
 # Version injection: use git tag if on a tag, otherwise short commit hash.
@@ -17,7 +18,7 @@ GEOLITE2_ASN=GeoLite2-ASN.mmdb
 GEOLITE2_CITY_URL=https://github.com/P3TERX/GeoLite.mmdb/raw/download/GeoLite2-City.mmdb
 GEOLITE2_ASN_URL=https://github.com/P3TERX/GeoLite.mmdb/raw/download/GeoLite2-ASN.mmdb
 
-.PHONY: build build-top build-gateway run clean geoip install uninstall
+.PHONY: build build-top build-gateway run clean geoip install install-top uninstall uninstall-top
 
 build:
 	go build -ldflags="$(LDFLAGS_VERSION)" -o $(BINARY) .
@@ -50,7 +51,6 @@ install: geoip build
 	@echo "Installing to $(INSTALL_DIR)..."
 	sudo mkdir -p $(INSTALL_DIR)
 	sudo cp $(BINARY) $(INSTALL_DIR)/
-	sudo cp $(TOP_BINARY) $(INSTALL_DIR)/
 	sudo cp $(GEOLITE2_CITY) $(GEOLITE2_ASN) $(INSTALL_DIR)/
 	@if [ ! -f $(INSTALL_DIR)/.env ]; then \
 		sudo cp env.example $(INSTALL_DIR)/.env; \
@@ -63,6 +63,10 @@ install: geoip build
 	sudo systemctl restart $(BINARY)
 	@echo "Installed and started. Check: systemctl status $(BINARY)"
 
+install-top: build-top
+	sudo install -m 0755 $(TOP_BINARY) $(TOP_INSTALL_DIR)/$(TOP_BINARY)
+	@echo "Installed $(TOP_INSTALL_DIR)/$(TOP_BINARY); grant CAP_NET_RAW externally or run as root."
+
 uninstall:
 	@echo "Removing $(BINARY)..."
 	-sudo systemctl stop $(BINARY)
@@ -71,6 +75,9 @@ uninstall:
 	sudo systemctl daemon-reload
 	sudo rm -rf $(INSTALL_DIR)
 	@echo "Uninstalled."
+
+uninstall-top:
+	sudo rm -f $(TOP_INSTALL_DIR)/$(TOP_BINARY)
 
 clean:
 	rm -f $(BINARY) $(TOP_BINARY) $(GATEWAY_BINARY)
