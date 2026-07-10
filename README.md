@@ -196,7 +196,9 @@ sudo ./bandwidth-top --interface eth0 --rows 20 --refresh 1s
 ```
 
 When `--interface` is omitted, the lowest-metric active IPv4 or IPv6
-default-route interface is selected. Capture requires root or `CAP_NET_RAW`:
+default-route interface is selected. ECMP nexthops are evaluated independently;
+their weights do not override route metric and deterministic interface
+tie-breaking. Capture requires root or `CAP_NET_RAW`:
 
 ```bash
 sudo setcap cap_net_raw+ep /usr/bin/bandwidth-top
@@ -205,7 +207,10 @@ sudo setcap cap_net_raw+ep /usr/bin/bandwidth-top
 Rates are displayed in bit/s (capture accounting uses bytes/s). The full table
 shows remote/local IP, hostname, RX, TX, total rate, packets, ASN, provider,
 country, and enrichment source; narrow widths use a stable reduced column set.
-Use `--snapshot` for plain, non-ANSI output.
+Each row is one local/remote endpoint pair, counted once with RX/TX relative to
+the actual local endpoint. Local-to-local and remote-to-remote packets are
+excluded because they have no unambiguous peer direction. Use `--snapshot` for
+plain, non-ANSI output.
 
 | Option | Default | Purpose |
 |--------|---------|---------|

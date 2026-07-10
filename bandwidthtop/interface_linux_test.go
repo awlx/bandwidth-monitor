@@ -71,6 +71,53 @@ func TestDefaultInterfaceSkipsDownMissingLoopbackAndNonDefault(t *testing.T) {
 	}
 }
 
+func TestDefaultInterfaceSupportsIPv4Multipath(t *testing.T) {
+	routes := []vnl.Route{{
+		Priority: 20,
+		MultiPath: []*vnl.NexthopInfo{
+			{LinkIndex: 2, Hops: 0},
+			{LinkIndex: 3, Hops: 8},
+			{LinkIndex: 4, Hops: 1},
+		},
+	}}
+	got, err := selectDefaultInterface(routes, interfaceLookup(map[int]*net.Interface{
+		2: {Index: 2, Name: "down0"},
+		3: {Index: 3, Name: "wan1", Flags: net.FlagUp},
+		4: {Index: 4, Name: "wan0", Flags: net.FlagUp},
+	}))
+	if err != nil || got.Name != "wan0" {
+		t.Fatalf("got %+v, %v", got, err)
+	}
+}
+
+func TestDefaultInterfaceSupportsIPv6MultipathAndRouteMetric(t *testing.T) {
+	_, ipv6Default, _ := net.ParseCIDR("::/0")
+	routes := []vnl.Route{
+		{
+			Priority: 50,
+			Dst:      ipv6Default,
+			MultiPath: []*vnl.NexthopInfo{
+				nil,
+				{LinkIndex: 8, Hops: 0},
+			},
+		},
+		{
+			Priority: 10,
+			Dst:      ipv6Default,
+			MultiPath: []*vnl.NexthopInfo{
+				{LinkIndex: 9, Hops: 20},
+			},
+		},
+	}
+	got, err := selectDefaultInterface(routes, interfaceLookup(map[int]*net.Interface{
+		8: {Index: 8, Name: "wan0", Flags: net.FlagUp},
+		9: {Index: 9, Name: "wan6", Flags: net.FlagUp},
+	}))
+	if err != nil || got.Name != "wan6" {
+		t.Fatalf("got %+v, %v", got, err)
+	}
+}
+
 func interfaceLookup(interfaces map[int]*net.Interface) func(int) (*net.Interface, error) {
 	return func(index int) (*net.Interface, error) {
 		if iface := interfaces[index]; iface != nil {

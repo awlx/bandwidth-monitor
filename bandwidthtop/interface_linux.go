@@ -57,20 +57,33 @@ func selectDefaultInterface(routes []vnl.Route, lookup func(int) (*net.Interface
 	var best *net.Interface
 	bestMetric := int(^uint(0) >> 1)
 	for _, route := range routes {
-		if !isDefaultRoute(route) || route.LinkIndex <= 0 {
+		if !isDefaultRoute(route) {
 			continue
 		}
-		iface, err := lookup(route.LinkIndex)
-		if err != nil || iface == nil || iface.Flags&net.FlagUp == 0 ||
-			iface.Flags&net.FlagLoopback != 0 {
-			continue
+		indexes := make([]int, 0, 1+len(route.MultiPath))
+		if route.LinkIndex > 0 {
+			indexes = append(indexes, route.LinkIndex)
 		}
-		if best == nil || route.Priority < bestMetric ||
-			(route.Priority == bestMetric && (iface.Name < best.Name ||
-				(iface.Name == best.Name && iface.Index < best.Index))) {
-			copy := *iface
-			best = &copy
-			bestMetric = route.Priority
+		for _, nexthop := range route.MultiPath {
+			if nexthop != nil && nexthop.LinkIndex > 0 {
+				indexes = append(indexes, nexthop.LinkIndex)
+			}
+		}
+		for _, index := range indexes {
+			iface, err := lookup(index)
+			if err != nil || iface == nil || iface.Flags&net.FlagUp == 0 ||
+				iface.Flags&net.FlagLoopback != 0 {
+				continue
+			}
+			// Nexthop Hops is a weight, not route preference, so it does not
+			// participate in selection. Metric, name, then index are stable.
+			if best == nil || route.Priority < bestMetric ||
+				(route.Priority == bestMetric && (iface.Name < best.Name ||
+					(iface.Name == best.Name && iface.Index < best.Index))) {
+				copy := *iface
+				best = &copy
+				bestMetric = route.Priority
+			}
 		}
 	}
 	if best == nil {

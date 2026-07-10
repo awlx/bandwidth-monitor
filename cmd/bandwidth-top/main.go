@@ -53,7 +53,7 @@ func run(args []string, stdout, stderr io.Writer) error {
 		return fmt.Errorf("rows and refresh must be positive")
 	}
 
-	iface, localNets, localIP, err := bandwidthtop.SelectInterface(*ifaceName)
+	iface, localNets, _, err := bandwidthtop.SelectInterface(*ifaceName)
 	if err != nil {
 		return err
 	}
@@ -95,11 +95,11 @@ func run(args []string, stdout, stderr io.Writer) error {
 
 	firstFrame := true
 	for {
-		stats := tracker.TopByBandwidth(*rows)
+		stats := tracker.DirectTopByBandwidth(*rows)
 		viewRows := make([]bandwidthtop.Row, 0, len(stats))
 		for _, stat := range stats {
 			viewRows = append(viewRows, bandwidthtop.Row{
-				LocalIP: localIP,
+				LocalIP: stat.LocalIP,
 				Stat: bandwidthtop.Stat{
 					IP: stat.IP, Hostname: stat.Hostname, RxRate: stat.RxRate,
 					TxRate: stat.TxRate, RateBytes: stat.RateBytes, Packets: stat.Packets,

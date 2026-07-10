@@ -266,13 +266,53 @@ func TestPrivateAndReservedIPsNeverSchedulePublicLookup(t *testing.T) {
 	e := testEnricher(t, Config{PublicURL: server.URL, AllowHTTP: true})
 	for _, ip := range []string{
 		"10.0.0.1", "127.0.0.1", "169.254.1.1", "192.0.2.1",
-		"198.51.100.1", "203.0.113.1", "::", "2001:db8::1", "ff02::1",
+		"198.51.100.1", "203.0.113.1", "::", "64:ff9b:1::c000:0201",
+		"2001:db8::1", "2002:c000:0201::1", "ff02::1",
 	} {
 		e.Lookup(ip)
 	}
 	e.Wait()
 	if calls.Load() != 0 {
 		t.Fatalf("public service called %d times", calls.Load())
+	}
+}
+
+func TestPublicEligibilityRejectsSpecialUseTranslationAndTunnelRanges(t *testing.T) {
+	for _, ip := range []string{
+		"192.31.196.1",
+		"192.52.193.1",
+		"192.88.99.1",
+		"192.175.48.1",
+		"64:ff9b::c000:201",
+		"64:ff9b:1::a00:1",
+		"100::1",
+		"100:0:0:1::1",
+		"2001::1",
+		"2001:2::1",
+		"2001:20::1",
+		"2002:c000:201::1",
+		"2620:4f:8000::1",
+		"3fff::1",
+		"5f00::1",
+	} {
+		if publicEligible(net.ParseIP(ip)) {
+			t.Errorf("accepted special-use address %s", ip)
+		}
+	}
+	if !publicEligible(net.ParseIP("1.1.1.1")) ||
+		!publicEligible(net.ParseIP("2606:4700:4700::1111")) {
+		t.Fatal("rejected ordinary public unicast address")
+	}
+}
+
+func TestPublicDestinationRejectsLocalUseNAT64Resolution(t *testing.T) {
+	u, _ := url.Parse("https://service.example/query")
+	err := validatePublicDestination(context.Background(), u, false,
+		func(context.Context, string) ([]net.IP, error) {
+			return []net.IP{net.ParseIP("64:ff9b:1::a00:1")}, nil
+		})
+	if err == nil {
+		t.Fatal("accepted local-use NAT64 destination embedding a private IPv4 address")
 	}
 }
 
