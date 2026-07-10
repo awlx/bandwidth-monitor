@@ -56,6 +56,10 @@ assert_not_contains "$repo/nfpm-top.yaml" "depends:"
 assert_contains "$repo/.github/workflows/release.yml" 'cp "$TOP_BINARY" "$TOP_PKG_DIR/usr/bin/bandwidth-top"'
 assert_contains "$repo/.github/workflows/release.yml" 'bandwidth-top_${VERSION}_${ARCH}.ipk'
 assert_contains "$repo/.github/workflows/release.yml" 'bandwidth-top-${VERSION}-r1_${ARCH}.apk'
+assert_contains "$repo/.github/workflows/release.yml" 'bandwidth-monitor/version.Version=${PACKAGE_VERSION}'
+assert_contains "$repo/.github/workflows/release.yml" 'bandwidth-monitor/version.Version=${VERSION}'
+assert_contains "$repo/Makefile" 'bandwidth-monitor/version.Version=$(BUILD_VERSION)'
+assert_contains "$repo/flake.nix" 'bandwidth-monitor/version.Version=${bandwidth-top.version}'
 assert_contains "$repo/packaging/openwrt-Makefile" "define Package/bandwidth-top"
 assert_contains "$repo/packaging/openwrt-Makefile" '$(GO_PKG_BUILD_BIN_DIR)/bandwidth-monitor $(1)/usr/bin/bandwidth-monitor'
 assert_contains "$repo/packaging/openwrt-Makefile" '$(GO_PKG_BUILD_BIN_DIR)/bandwidth-top $(1)/usr/bin/bandwidth-top'

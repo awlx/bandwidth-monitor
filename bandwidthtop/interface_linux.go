@@ -6,6 +6,9 @@ import (
 	"bytes"
 	"fmt"
 	"net"
+	"sort"
+	"strconv"
+	"strings"
 
 	vnl "github.com/vishvananda/netlink"
 )
@@ -56,25 +59,96 @@ func SelectCaptureInterface(name string) (*CaptureInterface, error) {
 	if err != nil {
 		return nil, err
 	}
-	var nets []*net.IPNet
-	local := ""
-	for _, addr := range addrs {
-		ip, network, err := net.ParseCIDR(addr.String())
-		if err != nil {
-			continue
-		}
-		network.IP = ip
-		nets = append(nets, network)
-		if local == "" && !ip.IsLinkLocalUnicast() {
-			local = ip.String()
-		}
-	}
+	nets, local := assignedLocalNetworks(addrs)
 	if local == "" {
 		return nil, fmt.Errorf("interface %q has no usable IP address", iface.Name)
 	}
+
 	return &CaptureInterface{
 		Interface: iface, LocalNets: nets, LocalIP: local, Gateway: gateway,
 	}, nil
+}
+
+func assignedLocalNetworks(addrs []net.Addr) ([]*net.IPNet, string) {
+	type assignedNetwork struct {
+		ip      net.IP
+		network *net.IPNet
+	}
+	var assigned []assignedNetwork
+	for _, addr := range addrs {
+		ip, mask := assignedIPAndMask(addr)
+		if ip == nil || ip.IsUnspecified() || ip.IsMulticast() {
+			continue
+		}
+		ones, bits := mask.Size()
+		if bits == 0 || ones < 0 {
+			continue
+		}
+		if bits == 32 {
+			ip = ip.To4()
+		} else {
+			ip = ip.To16()
+		}
+		if ip == nil {
+			continue
+		}
+		assigned = append(assigned, assignedNetwork{
+			ip:      ip,
+			network: &net.IPNet{IP: ip.Mask(mask), Mask: append(net.IPMask(nil), mask...)},
+		})
+	}
+	sort.Slice(assigned, func(i, j int) bool {
+		left4, right4 := assigned[i].ip.To4(), assigned[j].ip.To4()
+		if (left4 != nil) != (right4 != nil) {
+			return left4 != nil
+		}
+		if comparison := bytes.Compare(assigned[i].ip, assigned[j].ip); comparison != 0 {
+			return comparison < 0
+		}
+		leftPrefix, _ := assigned[i].network.Mask.Size()
+		rightPrefix, _ := assigned[j].network.Mask.Size()
+		return leftPrefix < rightPrefix
+	})
+	networks := make([]*net.IPNet, 0, len(assigned))
+	local := ""
+	for _, entry := range assigned {
+		networks = append(networks, entry.network)
+		if local == "" && !entry.ip.IsLinkLocalUnicast() {
+			local = entry.ip.String()
+		}
+	}
+	if local == "" && len(assigned) > 0 {
+		local = assigned[0].ip.String()
+	}
+	return networks, local
+}
+
+func assignedIPAndMask(addr net.Addr) (net.IP, net.IPMask) {
+	if network, ok := addr.(*net.IPNet); ok {
+		return append(net.IP(nil), network.IP...), append(net.IPMask(nil), network.Mask...)
+	}
+	raw := addr.String()
+	slash := strings.LastIndexByte(raw, '/')
+	if slash < 0 {
+		return nil, nil
+	}
+	host := raw[:slash]
+	if zone := strings.LastIndexByte(host, '%'); zone >= 0 {
+		host = host[:zone]
+	}
+	ip := net.ParseIP(host)
+	prefix, err := strconv.Atoi(raw[slash+1:])
+	if err != nil || ip == nil {
+		return nil, nil
+	}
+	bits := 128
+	if ip.To4() != nil {
+		bits = 32
+	}
+	if prefix < 0 || prefix > bits {
+		return nil, nil
+	}
+	return ip, net.CIDRMask(prefix, bits)
 }
 
 func selectDefaultInterface(routes []vnl.Route, lookup func(int) (*net.Interface, error)) (*net.Interface, error) {

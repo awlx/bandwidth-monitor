@@ -806,8 +806,8 @@ func (t *Tracker) captureDevice(device string) error {
 			batch = append(batch, parsedPkt{
 				srcStr:    srcStr,
 				dstStr:    dstStr,
-				srcLocal:  netutil.IsLocal(srcIP, t.localNets),
-				dstLocal:  netutil.IsLocal(dstIP, t.localNets),
+				srcLocal:  t.packetIPIsLocal(srcIP),
+				dstLocal:  t.packetIPIsLocal(dstIP),
 				srcSelf:   srcSelf,
 				dstSelf:   dstSelf,
 				srcLoopLL: srcIP.IsLoopback() || srcIP.IsLinkLocalUnicast(),
@@ -847,6 +847,21 @@ func (t *Tracker) captureDevice(device string) error {
 		}
 		t.mu.Unlock()
 	}
+}
+
+func (t *Tracker) packetIPIsLocal(ip net.IP) bool {
+	if !t.direct {
+		return netutil.IsLocal(ip, t.localNets)
+	}
+	if ip == nil {
+		return false
+	}
+	for _, network := range t.localNets {
+		if network != nil && network.Contains(ip) {
+			return true
+		}
+	}
+	return false
 }
 
 // accountDirectPeer records a packet once under its remote endpoint. Direction

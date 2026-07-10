@@ -192,6 +192,7 @@ bandwidth-monitor server. Build it with `make build-top`, then run:
 
 ```bash
 sudo ./bandwidth-top --interface eth0 --rows 20 --refresh 1s
+sudo ./bandwidth-top --interface eth0 --local-network 192.0.2.0/24
 ./bandwidth-top --snapshot --no-public
 ```
 
@@ -206,19 +207,26 @@ sudo setcap cap_net_raw+ep /usr/bin/bandwidth-top
 
 Rates are displayed in bit/s (capture accounting uses bytes/s). Each ranked flow
 uses two linked lines: `=>` for outbound traffic and `<=` for inbound traffic,
-with proportional bars and rolling 2s, 10s, and 40s rates. The footer summarizes
-TX, RX, and total rates across all observed peers, including peers below the row
-limit. Wide layouts include hostname, ASN, provider, country, and enrichment
-source; normal and narrow layouts truncate predictably.
+with an iftop-style bandwidth ruler, proportional graph-lane bars, and rolling
+2s, 10s, and 40s rates. Remote IP, ASN, and provider have independent headed
+columns on the primary line; the inbound continuation leaves those cells blank
+and aligned. Narrow layouts shrink or drop whole optional columns rather than
+merging metadata into the remote host. The footer summarizes TX, RX, and total
+rates across all observed peers, including peers below the row limit.
 
 Each flow is one local/remote endpoint pair, counted once with direction relative
 to the actual local endpoint. Local-to-local and remote-to-remote packets are
 excluded because they have no unambiguous peer direction. Live output uses
 restrained direction colors; `--snapshot` is deterministic plain text.
+LOCAL classification uses only the selected interface's assigned unicast
+prefixes and netmasks; address categories such as RFC1918 or ULA are not local
+by themselves. Repeatable `--local-network CIDR` flags replace all
+interface-derived prefixes, which is useful for routed or bridged captures.
 
 | Option | Default | Purpose |
 |--------|---------|---------|
 | `--interface` | default route | Capture interface |
+| `--local-network` | interface prefixes | Repeatable local CIDR; supplied values replace interface prefixes |
 | `--rows` | `20` | Maximum displayed peers |
 | `--refresh` | `1s` | Refresh interval |
 | `--snapshot` | off | Print one plain snapshot and exit |
@@ -241,8 +249,11 @@ one direct, no-proxy HTTP request to port 8080 on the selected default-route
 gateway; it does not scan other hosts or ports, and `--no-server-discovery`
 disables the request. The probe uses a fixed documentation IP, not a captured
 peer. A failed source is disabled with one endpoint-free warning while remaining
-sources continue; public fallback is never preflighted. The title reports
-concise `geo`, `asn`, `monitor`, and `public` source state.
+sources continue; public fallback is never preflighted. Endpoint-free status
+lines show the active fallback chain plus reasoned `local MMDB`, `monitor`, and
+`public` states, so an absent local database does not imply enrichment is absent.
+Every enrichment request identifies only the packaged CLI version as
+`User-Agent: bandwidth-top/<version>`.
 
 > **Privacy:** public fallback sends each observed globally routable peer IP to
 > ip.ffmuc.net. Use `--no-public` to prevent this. Private, loopback,

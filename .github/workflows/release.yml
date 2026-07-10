@@ -59,10 +59,7 @@ jobs:
           CGO_ENABLED: "0"
         run: |
           COMMIT="$(echo $GITHUB_SHA | cut -c1-7)"
-          LDFLAGS="-s -w -X bandwidth-monitor/version.Commit=${COMMIT}"
-          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
-            LDFLAGS="${LDFLAGS} -X bandwidth-monitor/version.Version=${{ github.ref_name }}"
-          fi
+          LDFLAGS="-s -w -X bandwidth-monitor/version.Commit=${COMMIT} -X bandwidth-monitor/version.Version=${PACKAGE_VERSION}"
           go build -ldflags="${LDFLAGS}" -o bandwidth-monitor .
           go build -ldflags="${LDFLAGS}" -o bandwidth-top ./cmd/bandwidth-top
 
@@ -196,10 +193,10 @@ jobs:
           GOMIPS: ${{ matrix.gomips }}
         run: |
           COMMIT="$(echo $GITHUB_SHA | cut -c1-7)"
-          LDFLAGS="-s -w -X bandwidth-monitor/version.Commit=${COMMIT}"
-          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
-            LDFLAGS="${LDFLAGS} -X bandwidth-monitor/version.Version=${{ github.ref_name }}"
-          fi
+          VERSION="$(./packaging/package-version.sh openwrt \
+            "$GITHUB_REF_TYPE" "$GITHUB_REF_NAME" \
+            "$GITHUB_RUN_NUMBER" "$GITHUB_RUN_ATTEMPT" "$GITHUB_SHA")"
+          LDFLAGS="-s -w -X bandwidth-monitor/version.Commit=${COMMIT} -X bandwidth-monitor/version.Version=${VERSION}"
           go build -ldflags="${LDFLAGS}" -o bandwidth-monitor .
           go build -ldflags="${LDFLAGS}" -o bandwidth-top ./cmd/bandwidth-top
           file bandwidth-monitor

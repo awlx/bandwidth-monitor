@@ -31,6 +31,8 @@ func run(args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("bandwidth-top", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	ifaceName := fs.String("interface", "", "capture interface (default: lowest-metric default route)")
+	var localNetworkFlags bandwidthtop.LocalNetworkFlags
+	fs.Var(&localNetworkFlags, "local-network", "local CIDR override (repeatable; replaces interface prefixes)")
 	rows := fs.Int("rows", 20, "maximum rows")
 	refresh := fs.Duration("refresh", time.Second, "refresh interval")
 	snapshot := fs.Bool("snapshot", false, "print one plain snapshot and exit")
@@ -59,6 +61,7 @@ func run(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 	iface := selected.Interface
+	localNetworks := bandwidthtop.EffectiveLocalNetworks(selected.LocalNets, localNetworkFlags.Networks())
 	monitorURL, monitorDiscovery := bandwidthtop.MonitorServerURL(
 		*server, *noServerDiscovery, selected.Gateway, iface.Name)
 	enricher, err := bandwidthtop.NewEnricherWithDatabases(bandwidthtop.Config{
@@ -74,7 +77,7 @@ func run(args []string, stdout, stderr io.Writer) error {
 	}
 	dns := resolver.New()
 	defer dns.Stop()
-	tracker := talkers.NewDirect(iface.Name, false, selected.LocalNets, nil, dns)
+	tracker := talkers.NewDirect(iface.Name, false, localNetworks, nil, dns)
 	log.SetOutput(io.Discard)
 	go tracker.Run()
 	defer tracker.Stop()
@@ -136,9 +139,12 @@ func run(args []string, stdout, stderr io.Writer) error {
 			fmt.Fprint(stdout, "\x1b[H\x1b[2J")
 		}
 		frameWidth := outputWidth(stdout, *width)
-		title := fmt.Sprintf("bandwidth-top  interface=%s  refresh=%s  rates=bit/s  sources=%s",
-			iface.Name, refresh.String(), enricher.SourceSummary())
+		title := fmt.Sprintf("bandwidth-top  interface=%s  refresh=%s  rates=bit/s",
+			iface.Name, refresh.String())
 		fmt.Fprintln(stdout, bandwidthtop.Truncate(title, frameWidth))
+		for _, status := range enricher.SourceStatusLines(frameWidth) {
+			fmt.Fprintln(stdout, status)
+		}
 		if *snapshot {
 			fmt.Fprint(stdout, bandwidthtop.RenderSnapshot(viewRows, totals, frameWidth))
 		} else {

@@ -7,6 +7,8 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/rivo/uniseg"
 )
 
 type RateWindows struct {
@@ -35,8 +37,9 @@ type Totals struct {
 }
 
 type flowLayout struct {
-	rank, local, arrow, remote, bar int
-	rate, packets                   int
+	rank, local, arrow, remote int
+	asn, provider, graph, rate int
+	showASN, showProvider      bool
 }
 
 const (
@@ -96,14 +99,17 @@ func Truncate(s string, width int) string {
 		return "~"
 	}
 	var out strings.Builder
+	rest := s
+	state := -1
 	used := 0
-	for _, r := range s {
-		runeWidth := terminalRuneWidth(r)
-		if used+runeWidth > width-1 {
+	for len(rest) > 0 {
+		cluster, next, clusterWidth, nextState := uniseg.FirstGraphemeClusterInString(rest, state)
+		if used+clusterWidth > width-1 {
 			break
 		}
-		out.WriteRune(r)
-		used += runeWidth
+		out.WriteString(cluster)
+		used += clusterWidth
+		rest, state = next, nextState
 	}
 	out.WriteByte('~')
 	return out.String()
@@ -211,36 +217,34 @@ func renderFlows(rows []Row, totals Totals, width int, ansi bool) string {
 	maxRate := maximumDirectionalRate(rows)
 	var b strings.Builder
 	if structured {
-		header := flowLine(layout, "#", "LOCAL", "  ", "REMOTE PEER", "RATE", "2s", "10s", "40s", "PKTS")
-		b.WriteString(color(ansiBold, header, ansi))
+		b.WriteString(color(ansiDim, flowLine(layout, "", "", "", "", "", "", graphRuler(maxRate, layout.graph), "", "", ""), ansi))
 		b.WriteByte('\n')
-		b.WriteString(color(ansiDim, strings.Repeat("-", width), ansi))
+		header := flowLine(layout, "#", "LOCAL", "  ", "REMOTE", "ASN", "PROVIDER", "GRAPH", "2s", "10s", "40s")
+		b.WriteString(color(ansiBold, header, ansi))
 		b.WriteByte('\n')
 		for i, row := range rows {
 			rank := fmt.Sprintf("%d", i+1)
-			outRemote := remoteIdentity(row)
-			inRemote := remoteMetadata(row)
-			outBar := rateBar(row.Stat.Tx.Two, maxRate, layout.bar)
-			inBar := rateBar(row.Stat.Rx.Two, maxRate, layout.bar)
-			b.WriteString(flowLineStyled(layout, rank, row.LocalIP, "=>", outRemote, outBar,
+			outBar := rateBar(row.Stat.Tx.Two, maxRate, layout.graph)
+			inBar := rateBar(row.Stat.Rx.Two, maxRate, layout.graph)
+			b.WriteString(flowLineStyled(layout, rank, row.LocalIP, "=>", remoteHost(row),
+				formatASN(row.Info.ASN), row.Info.Provider, outBar,
 				formatCompactRate(row.Stat.Tx.Two), formatCompactRate(row.Stat.Tx.Ten),
-				formatCompactRate(row.Stat.Tx.Forty), strconv.FormatUint(row.Stat.Packets, 10),
+				formatCompactRate(row.Stat.Tx.Forty),
 				ansiGreen, ansi))
 			b.WriteByte('\n')
-			b.WriteString(flowLineStyled(layout, "|", row.LocalIP, "<=", inRemote, inBar,
+			b.WriteString(flowLineStyled(layout, "", "", "<=", "", "", "", inBar,
 				formatCompactRate(row.Stat.Rx.Two), formatCompactRate(row.Stat.Rx.Ten),
-				formatCompactRate(row.Stat.Rx.Forty), "", ansiCyan, ansi))
+				formatCompactRate(row.Stat.Rx.Forty), ansiCyan, ansi))
 			b.WriteByte('\n')
 		}
 	} else {
-		b.WriteString(Truncate("# FLOWS  2s rate", width))
+		b.WriteString(Truncate("# LOCAL => REMOTE 2s", width))
 		b.WriteByte('\n')
 		for i, row := range rows {
 			out := fmt.Sprintf("%d %s => %s %s %s", i+1, row.LocalIP,
-				remoteIdentity(row), rateBar(row.Stat.Tx.Two, maxRate, max(1, width/8)),
+				remoteHost(row), rateBar(row.Stat.Tx.Two, maxRate, max(1, width/8)),
 				formatCompactRate(row.Stat.Tx.Two))
-			in := fmt.Sprintf("| %s <= %s %s %s", row.LocalIP,
-				remoteMetadata(row), rateBar(row.Stat.Rx.Two, maxRate, max(1, width/8)),
+			in := fmt.Sprintf("  <= %s %s", rateBar(row.Stat.Rx.Two, maxRate, max(1, width/8)),
 				formatCompactRate(row.Stat.Rx.Two))
 			b.WriteString(color(ansiGreen, Truncate(out, width), ansi))
 			b.WriteByte('\n')
@@ -266,62 +270,121 @@ func renderFlows(rows []Row, totals Totals, width int, ansi bool) string {
 }
 
 func makeFlowLayout(width int) (flowLayout, bool) {
-	layout := flowLayout{rank: 2, local: 6, arrow: 2, remote: 6, bar: 1, rate: 6, packets: 6}
-	if flowLayoutWidth(layout) > width {
+	layout := flowLayout{rank: 2, local: 7, arrow: 2, remote: 7, graph: 5, rate: 6}
+	switch {
+	case width >= 65:
+		layout.showASN = true
+		layout.asn = 7
+		layout.showProvider = true
+		layout.provider = 8
+	case width >= 56:
+		layout.showASN = true
+		layout.asn = 7
+	case width < 48:
 		return flowLayout{}, false
 	}
-	for extra := width - flowLayoutWidth(layout); extra > 0; extra-- {
-		switch {
-		case layout.bar < 8:
-			layout.bar++
-		case layout.local < 15:
-			layout.local++
-		case layout.remote < 24:
-			layout.remote++
-		case layout.bar < 20:
-			layout.bar++
-		case layout.local < 25:
-			layout.local++
-		case layout.remote < 64:
-			layout.remote++
-		default:
-			extra = 0
-		}
+	extra := width - flowLayoutWidth(layout)
+	growColumnsEven(&layout.local, &layout.remote, 15, &extra)
+	growColumn(&layout.graph, 10, &extra)
+	if layout.showProvider {
+		growColumn(&layout.provider, 12, &extra)
+	}
+	growColumnsEven(&layout.local, &layout.remote, 39, &extra)
+	growColumn(&layout.graph, 24, &extra)
+	if layout.showProvider {
+		growColumn(&layout.provider, 24, &extra)
+	}
+	growColumn(&layout.graph, 40, &extra)
+	if layout.showProvider {
+		growColumn(&layout.provider, 40, &extra)
 	}
 	return layout, true
 }
 
+func growColumn(column *int, limit int, extra *int) {
+	amount := min(limit-*column, *extra)
+	if amount > 0 {
+		*column += amount
+		*extra -= amount
+	}
+}
+
+func growColumnsEven(left, right *int, limit int, extra *int) {
+	for *extra > 0 && (*left < limit || *right < limit) {
+		if *left <= *right && *left < limit || *right >= limit {
+			*left++
+		} else {
+			*right++
+		}
+		*extra--
+	}
+}
+
 func flowLayoutWidth(layout flowLayout) int {
-	return layout.rank + layout.local + layout.arrow + layout.remote +
-		layout.bar + 3*layout.rate + layout.packets + 8
+	widths := layout.widths()
+	total := len(widths) - 2
+	for _, width := range widths {
+		total += width
+	}
+	return total
 }
 
-func flowLine(layout flowLayout, rank, local, arrow, remote, bar, rate2, rate10, rate40, packets string) string {
-	widths := []int{layout.rank, layout.local, layout.arrow, layout.remote, layout.bar,
-		layout.rate, layout.rate, layout.rate, layout.packets}
-	values := []string{rank, local, arrow, remote, bar, rate2, rate10, rate40, packets}
+func (layout flowLayout) widths() []int {
+	widths := []int{layout.rank, layout.local, layout.arrow, layout.remote}
+	if layout.showASN {
+		widths = append(widths, layout.asn)
+	}
+	if layout.showProvider {
+		widths = append(widths, layout.provider)
+	}
+	return append(widths, layout.graph, layout.rate, layout.rate, layout.rate)
+}
+
+func flowLine(layout flowLayout, rank, local, arrow, remote, asn, provider, graph, rate2, rate10, rate40 string) string {
+	values := []string{rank, local, arrow, remote}
+	if layout.showASN {
+		values = append(values, asn)
+	}
+	if layout.showProvider {
+		values = append(values, provider)
+	}
+	values = append(values, graph, rate2, rate10, rate40)
+	widths := layout.widths()
 	cells := make([]string, len(values))
 	for i := range values {
-		cells[i] = fitCell(values[i], widths[i], i >= 5)
+		cells[i] = fitCell(values[i], widths[i], i >= len(values)-3)
 	}
-	return strings.Join(cells, " ")
+	return joinFlowCells(cells)
 }
 
-func flowLineStyled(layout flowLayout, rank, local, arrow, remote, bar, rate2, rate10, rate40, packets, style string, ansi bool) string {
+func flowLineStyled(layout flowLayout, rank, local, arrow, remote, asn, provider, graph, rate2, rate10, rate40, style string, ansi bool) string {
 	if !ansi {
-		return flowLine(layout, rank, local, arrow, remote, bar, rate2, rate10, rate40, packets)
+		return flowLine(layout, rank, local, arrow, remote, asn, provider, graph, rate2, rate10, rate40)
 	}
-	widths := []int{layout.rank, layout.local, layout.arrow, layout.remote, layout.bar,
-		layout.rate, layout.rate, layout.rate, layout.packets}
-	values := []string{rank, local, arrow, remote, bar, rate2, rate10, rate40, packets}
+	values := []string{rank, local, arrow, remote}
+	if layout.showASN {
+		values = append(values, asn)
+	}
+	if layout.showProvider {
+		values = append(values, provider)
+	}
+	values = append(values, graph, rate2, rate10, rate40)
+	widths := layout.widths()
 	cells := make([]string, len(values))
 	for i := range values {
-		cells[i] = fitCell(values[i], widths[i], i >= 5)
+		cells[i] = fitCell(values[i], widths[i], i >= len(values)-3)
 	}
 	cells[0] = color(ansiBold, cells[0], true)
 	cells[2] = color(style, cells[2], true)
-	cells[4] = color(style, cells[4], true)
-	return strings.Join(cells, " ")
+	cells[len(cells)-4] = color(style, cells[len(cells)-4], true)
+	return joinFlowCells(cells)
+}
+
+func joinFlowCells(cells []string) string {
+	if len(cells) < 2 {
+		return strings.Join(cells, " ")
+	}
+	return cells[0] + cells[1] + " " + strings.Join(cells[2:], " ")
 }
 
 func fitCell(value string, width int, right bool) string {
@@ -342,7 +405,35 @@ func rateBar(rate, maximum float64, width int) string {
 		filled = int(math.Ceil(rate / maximum * float64(width)))
 		filled = max(1, min(width, filled))
 	}
-	return strings.Repeat("#", filled) + strings.Repeat(".", width-filled)
+	return strings.Repeat("#", filled) + strings.Repeat(" ", width-filled)
+}
+
+func graphRuler(maximum float64, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	label := formatCompactRate(maximum)
+	if width < displayWidth(label)+1 {
+		label = formatScaleRate(maximum)
+	}
+	if width < displayWidth(label)+2 {
+		if width < displayWidth(label)+1 {
+			return strings.Repeat("-", width)
+		}
+		return "0" + label
+	}
+	return "0" + strings.Repeat("-", width-displayWidth(label)-1) + label
+}
+
+func formatScaleRate(bytesPerSecond float64) string {
+	value := math.Max(0, bytesPerSecond*8)
+	units := []string{"b", "K", "M", "G", "T"}
+	unit := 0
+	for value >= 1000 && unit < len(units)-1 {
+		value /= 1000
+		unit++
+	}
+	return strconv.FormatFloat(value, 'g', 2, 64) + units[unit]
 }
 
 func maximumDirectionalRate(rows []Row) float64 {
@@ -354,36 +445,15 @@ func maximumDirectionalRate(rows []Row) float64 {
 	return maximum
 }
 
-func remoteIdentity(row Row) string {
-	return strings.TrimSpace(strings.Join(nonEmpty(row.Stat.IP,
-		first(row.Info.Hostname, row.Stat.Hostname)), " "))
+func remoteHost(row Row) string {
+	return sanitizeTerminal(row.Stat.IP)
 }
 
-func remoteMetadata(row Row) string {
-	asn := ""
-	if row.Info.ASN != 0 {
-		asn = fmt.Sprintf("AS%d", row.Info.ASN)
+func formatASN(asn uint) string {
+	if asn == 0 {
+		return ""
 	}
-	source := row.Info.Source
-	if row.Info.Err != "" {
-		if source == "" {
-			source = "error"
-		} else {
-			source += "!"
-		}
-	}
-	meta := strings.Join(nonEmpty(asn, row.Info.Provider, row.Info.Country, source), " / ")
-	return strings.TrimSpace(strings.Join(nonEmpty(row.Stat.IP, meta), " "))
-}
-
-func nonEmpty(values ...string) []string {
-	out := make([]string, 0, len(values))
-	for _, value := range values {
-		if value = sanitizeTerminal(value); value != "" {
-			out = append(out, value)
-		}
-	}
-	return out
+	return fmt.Sprintf("AS%d", asn)
 }
 
 func footerLine(label string, rates RateWindows, width int, style string, ansi bool) string {
@@ -414,33 +484,7 @@ func color(code, value string, enabled bool) string {
 }
 
 func displayWidth(s string) int {
-	width := 0
-	for _, r := range s {
-		width += terminalRuneWidth(r)
-	}
-	return width
-}
-
-func terminalRuneWidth(r rune) int {
-	if unicode.Is(unicode.Mn, r) || unicode.Is(unicode.Me, r) {
-		return 0
-	}
-	switch {
-	case r >= 0x1100 && r <= 0x115f,
-		r >= 0x2329 && r <= 0x232a,
-		r >= 0x2e80 && r <= 0xa4cf,
-		r >= 0xac00 && r <= 0xd7a3,
-		r >= 0xf900 && r <= 0xfaff,
-		r >= 0xfe10 && r <= 0xfe19,
-		r >= 0xfe30 && r <= 0xfe6f,
-		r >= 0xff00 && r <= 0xff60,
-		r >= 0xffe0 && r <= 0xffe6,
-		r >= 0x1f300 && r <= 0x1faff,
-		r >= 0x20000 && r <= 0x3fffd:
-		return 2
-	default:
-		return 1
-	}
+	return uniseg.StringWidth(s)
 }
 
 func max(a, b int) int {

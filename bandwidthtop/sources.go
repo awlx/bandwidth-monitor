@@ -37,7 +37,7 @@ func OpenLocalDatabases(cityPath, asnPath string) *LocalDatabases {
 }
 
 func openLocalDatabases(cityPath, asnPath string, opener localDBOpener) *LocalDatabases {
-	dbs := &LocalDatabases{cityState: "off", asnState: "off"}
+	dbs := &LocalDatabases{cityState: "not configured", asnState: "not configured"}
 	var cityResult, asnResult localOpenResult
 	var wait sync.WaitGroup
 	if cityPath != "" {
@@ -62,14 +62,14 @@ func openLocalDatabases(cityPath, asnPath string, opener localDBOpener) *LocalDa
 
 func checkedLocalDatabase(path string, result localOpenResult, name string, warnings *[]string) (localDatabase, string) {
 	if path == "" {
-		return nil, "off"
+		return nil, "not configured"
 	}
 	if result.err != nil || result.db == nil || !result.db.Available() {
 		if result.db != nil {
 			result.db.Close()
 		}
 		*warnings = append(*warnings, name+" MMDB disabled: database could not be opened")
-		return nil, "disabled"
+		return nil, "unavailable"
 	}
 	return result.db, "ready"
 }
@@ -88,11 +88,20 @@ func (d *LocalDatabases) Close() {
 	})
 }
 
-func (d *LocalDatabases) summary() string {
-	if d == nil {
-		return "geo:off asn:off"
+func (d *LocalDatabases) status() (string, bool) {
+	if d == nil || d.cityState == "not configured" && d.asnState == "not configured" {
+		return "not configured", false
 	}
-	return "geo:" + d.cityState + " asn:" + d.asnState
+	if d.cityState == "ready" && d.asnState == "ready" {
+		return "ready", true
+	}
+	if d.cityState == "ready" {
+		return "partially ready (city ready, ASN " + d.asnState + ")", true
+	}
+	if d.asnState == "ready" {
+		return "partially ready (city " + d.cityState + ", ASN ready)", true
+	}
+	return "unavailable", false
 }
 
 func newEnricherWithDatabases(cfg Config, cityPath, asnPath string, opener localDBOpener) (*Enricher, error) {

@@ -81,7 +81,7 @@ func TestFailedMonitorProbeDisablesPeerRequestsAndWarnsOnce(t *testing.T) {
 	if len(warnings) != 1 || warnings[0] != "monitor enrichment disabled: startup readiness probe failed" {
 		t.Fatalf("unexpected warnings: %v", warnings)
 	}
-	if got := e.SourceSummary(); !stringsContainsAll(got, "monitor:disabled", "public:off") {
+	if got := e.SourceSummary(); !stringsContainsAll(got, "monitor: unavailable", "public: disabled by flag") {
 		t.Fatalf("unexpected source status %q", got)
 	}
 }
@@ -166,7 +166,8 @@ func TestInvalidOptionalDatabaseLeavesOtherLocalSourceReady(t *testing.T) {
 		warnings[0] != "city/country MMDB disabled: database could not be opened" {
 		t.Fatalf("unexpected warnings: %v", warnings)
 	}
-	if got := e.SourceSummary(); !stringsContainsAll(got, "geo:disabled", "asn:ready") {
+	if got := e.SourceSummary(); !stringsContainsAll(got,
+		"enrichment: local MMDB", "local MMDB: partially ready", "city unavailable", "ASN ready") {
 		t.Fatalf("unexpected source status %q", got)
 	}
 }
@@ -236,7 +237,7 @@ func TestGatewayDiscoveryProbeEnablesPeerRequestsExactlyOnce(t *testing.T) {
 	if queries[0] != monitorProbeIP || queries[1] == monitorProbeIP || queries[2] == monitorProbeIP {
 		t.Fatalf("unexpected query sequence %v", queries)
 	}
-	if !strings.Contains(e.SourceSummary(), "monitor:gateway") {
+	if !strings.Contains(e.SourceSummary(), "monitor: discovered") {
 		t.Fatalf("unexpected source status %q", e.SourceSummary())
 	}
 }
@@ -291,7 +292,7 @@ func TestGatewayDiscoveryFailureInvalidResponseAndRedirectDisableOnce(t *testing
 				warnings[0] != "gateway monitor discovery unavailable: startup probe failed" {
 				t.Fatalf("unexpected warnings: %v", warnings)
 			}
-			if !strings.Contains(e.SourceSummary(), "monitor:disabled") {
+			if !strings.Contains(e.SourceSummary(), "monitor: unavailable") {
 				t.Fatalf("unexpected source status %q", e.SourceSummary())
 			}
 		})
@@ -339,9 +340,132 @@ func TestDisabledGatewayDiscoveryHasNoProbe(t *testing.T) {
 		t.Fatal(err)
 	}
 	e.Close()
-	if calls.Load() != 0 || !strings.Contains(e.SourceSummary(), "monitor:off") {
+	if calls.Load() != 0 || !strings.Contains(e.SourceSummary(), "monitor: disabled by flag") {
 		t.Fatalf("calls=%d status=%q", calls.Load(), e.SourceSummary())
 	}
+}
+
+func TestSourceSummaryDescribesEveryFallbackCombination(t *testing.T) {
+	tests := []struct {
+		name                   string
+		local, monitor, public bool
+		want                   string
+	}{
+		{"none", false, false, false, "enrichment: none"},
+		{"local", true, false, false, "enrichment: local MMDB"},
+		{"monitor", false, true, false, "enrichment: monitor"},
+		{"public", false, false, true, "enrichment: public fallback"},
+		{"local monitor", true, true, false, "enrichment: local MMDB -> monitor"},
+		{"local public", true, false, true, "enrichment: local MMDB -> public"},
+		{"monitor public", false, true, true, "enrichment: monitor -> public"},
+		{"all", true, true, true, "enrichment: local MMDB -> monitor -> public"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			e := &Enricher{
+				cfg:          Config{DisablePublic: !test.public},
+				monitorState: "not discovered",
+			}
+			if test.local {
+				e.localDBs = &LocalDatabases{cityState: "ready", asnState: "not configured"}
+			}
+			if test.monitor {
+				e.cfg.ServerURL = "https://example.com"
+				e.monitorState = "configured"
+			}
+			if got := strings.SplitN(e.SourceSummary(), ";", 2)[0]; got != test.want {
+				t.Fatalf("got %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
+func TestSourceSummaryUsesReasonedSourceStates(t *testing.T) {
+	tests := []struct {
+		name          string
+		local         *LocalDatabases
+		monitorState  string
+		disablePublic bool
+		want          []string
+	}{
+		{
+			name:         "not configured and not discovered",
+			monitorState: "not discovered",
+			want:         []string{"local MMDB: not configured", "monitor: not discovered", "public: enabled"},
+		},
+		{
+			name:         "local unavailable and discovery unavailable",
+			local:        &LocalDatabases{cityState: "unavailable", asnState: "not configured"},
+			monitorState: "unavailable", disablePublic: true,
+			want: []string{"local MMDB: unavailable", "monitor: unavailable", "public: disabled by flag"},
+		},
+		{
+			name:         "local ready and monitor discovered",
+			local:        &LocalDatabases{cityState: "ready", asnState: "ready"},
+			monitorState: "discovered",
+			want:         []string{"local MMDB: ready", "monitor: discovered", "public: enabled"},
+		},
+		{
+			name:         "monitor disabled explicitly",
+			monitorState: "disabled by flag",
+			want:         []string{"monitor: disabled by flag"},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			e := &Enricher{
+				cfg:      Config{DisablePublic: test.disablePublic},
+				localDBs: test.local, monitorState: test.monitorState,
+			}
+			for _, want := range test.want {
+				if !strings.Contains(e.SourceSummary(), want) {
+					t.Fatalf("summary %q missing %q", e.SourceSummary(), want)
+				}
+			}
+		})
+	}
+}
+
+func TestSourceStatusLinesWrapWholeStatesAtNarrowWidths(t *testing.T) {
+	e := &Enricher{
+		cfg:          Config{DisablePublic: true},
+		localDBs:     &LocalDatabases{cityState: "unavailable", asnState: "not configured"},
+		monitorState: "disabled by flag",
+	}
+	lines := e.SourceStatusLines(32)
+	if len(lines) != 4 {
+		t.Fatalf("got %d lines, want chain plus three source states: %q", len(lines), lines)
+	}
+	for _, line := range lines {
+		if displayWidth(line) > 32 {
+			t.Fatalf("line exceeds width: %q", line)
+		}
+	}
+	for _, want := range []string{
+		"local MMDB: unavailable",
+		"monitor: disabled by flag",
+		"public: disabled by flag",
+	} {
+		if !containsString(lines, want) {
+			t.Fatalf("narrow lines %q split or dropped %q", lines, want)
+		}
+	}
+	for width := 1; width <= 100; width++ {
+		for _, line := range e.SourceStatusLines(width) {
+			if displayWidth(line) > width {
+				t.Fatalf("width %d produced %d columns: %q", width, displayWidth(line), line)
+			}
+		}
+	}
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 type fakeLocalDatabase struct {

@@ -64,6 +64,7 @@ type Enricher struct {
 	cfg             Config
 	monitorClient   *http.Client
 	publicClient    *http.Client
+	userAgent       string
 	lookupIP        func(context.Context, string) ([]net.IP, error)
 	localDBs        *LocalDatabases
 	sourceMu        sync.RWMutex
@@ -129,6 +130,7 @@ func NewEnricher(cfg Config) (*Enricher, error) {
 		}
 	}
 
+	userAgent := UserAgent()
 	monitorClient := cloneHTTPClient(cfg.HTTPClient)
 	if cfg.MonitorDiscovery {
 		monitorTransport := cloneTransport(monitorClient.Transport)
@@ -136,6 +138,18 @@ func NewEnricher(cfg Config) (*Enricher, error) {
 		monitorClient.Transport = monitorTransport
 		monitorClient.CheckRedirect = func(*http.Request, []*http.Request) error {
 			return http.ErrUseLastResponse
+		}
+	} else {
+		previous := monitorClient.CheckRedirect
+		monitorClient.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+			req.Header.Set("User-Agent", userAgent)
+			if previous != nil {
+				return previous(req, via)
+			}
+			if len(via) >= 10 {
+				return errors.New("too many monitor enrichment redirects")
+			}
+			return nil
 		}
 	}
 	publicClient := cloneHTTPClient(cfg.HTTPClient)
@@ -145,6 +159,7 @@ func NewEnricher(cfg Config) (*Enricher, error) {
 	transport.DialContext = publicDialContext(cfg.AllowHTTP, lookupIP)
 	publicClient.Transport = schemeRoundTripper{base: transport}
 	publicClient.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		req.Header.Set("User-Agent", userAgent)
 		if len(via) >= 5 {
 			return errors.New("too many public enrichment redirects")
 		}
@@ -155,25 +170,26 @@ func NewEnricher(cfg Config) (*Enricher, error) {
 		cfg:           cfg,
 		monitorClient: monitorClient,
 		publicClient:  publicClient,
+		userAgent:     userAgent,
 		lookupIP:      lookupIP,
 		cache:         make(map[string]cacheEntry, cfg.CacheSize),
 		order:         make([]string, 0, cfg.CacheSize),
 		jobs:          make(chan string, cfg.QueueSize),
 		stopCh:        make(chan struct{}),
-		monitorState:  "unavailable",
+		monitorState:  "not discovered",
 	}
 	if cfg.DisableMonitorDiscovery {
-		e.monitorState = "off"
+		e.monitorState = "disabled by flag"
 	}
 	if cfg.ServerURL != "" {
-		e.monitorState = "ready"
+		e.monitorState = "configured"
 		if cfg.MonitorDiscovery {
-			e.monitorState = "gateway"
+			e.monitorState = "discovered"
 		}
 		if !cfg.skipMonitorProbe {
 			if _, err := e.fetch(monitorProbeIP, cfg.ServerURL, true); err != nil {
 				e.cfg.ServerURL = ""
-				e.monitorState = "disabled"
+				e.monitorState = "unavailable"
 				warning := "monitor enrichment disabled: startup readiness probe failed"
 				if cfg.MonitorDiscovery {
 					warning = "gateway monitor discovery unavailable: startup probe failed"
@@ -376,15 +392,65 @@ func (e *Enricher) StartupWarnings() []string {
 func (e *Enricher) SourceSummary() string {
 	e.sourceMu.RLock()
 	defer e.sourceMu.RUnlock()
-	local := "geo:off asn:off"
-	if e.localDBs != nil {
-		local = e.localDBs.summary()
+	chain, details := e.sourceStatus()
+	return chain + "; " + strings.Join(details, " | ")
+}
+
+// SourceStatusLines returns endpoint-free status lines without splitting a
+// source label across columns. Narrow displays wrap whole source states.
+func (e *Enricher) SourceStatusLines(width int) []string {
+	e.sourceMu.RLock()
+	defer e.sourceMu.RUnlock()
+	chain, details := e.sourceStatus()
+	lines := []string{Truncate(chain, width)}
+	current := ""
+	for _, detail := range details {
+		candidate := detail
+		if current != "" {
+			candidate = current + " | " + detail
+		}
+		if current != "" && displayWidth(candidate) > width {
+			lines = append(lines, Truncate(current, width))
+			current = detail
+		} else {
+			current = candidate
+		}
 	}
-	public := "public:ready"
-	if e.cfg.DisablePublic {
-		public = "public:off"
+	if current != "" {
+		lines = append(lines, Truncate(current, width))
 	}
-	return local + " monitor:" + e.monitorState + " " + public
+	return lines
+}
+
+func (e *Enricher) sourceStatus() (string, []string) {
+	localState, localReady := e.localDBs.status()
+	monitorReady := e.cfg.ServerURL != ""
+	publicReady := !e.cfg.DisablePublic
+	chain := make([]string, 0, 3)
+	if localReady {
+		chain = append(chain, "local MMDB")
+	}
+	if monitorReady {
+		chain = append(chain, "monitor")
+	}
+	if publicReady {
+		chain = append(chain, "public")
+	}
+	chainSummary := "enrichment: none"
+	if len(chain) == 1 && chain[0] == "public" {
+		chainSummary = "enrichment: public fallback"
+	} else if len(chain) > 0 {
+		chainSummary = "enrichment: " + strings.Join(chain, " -> ")
+	}
+	publicState := "enabled"
+	if !publicReady {
+		publicState = "disabled by flag"
+	}
+	return chainSummary, []string{
+		"local MMDB: " + localState,
+		"monitor: " + e.monitorState,
+		"public: " + publicState,
+	}
 }
 
 // Lookup returns cached data immediately and schedules at most one bounded
@@ -597,6 +663,7 @@ func (e *Enricher) fetch(ip, base string, monitor bool) (Enrichment, error) {
 	if err != nil {
 		return Enrichment{}, err
 	}
+	req.Header.Set("User-Agent", e.userAgent)
 	client := e.publicClient
 	if monitor {
 		client = e.monitorClient

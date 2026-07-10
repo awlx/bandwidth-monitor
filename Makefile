@@ -8,10 +8,11 @@ SERVICE_FILE=bandwidth-monitor.service
 # Version injection: use git tag if on a tag, otherwise short commit hash.
 GIT_VERSION := $(shell git describe --tags --exact-match 2>/dev/null)
 GIT_COMMIT  := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
-LDFLAGS_VERSION := -X bandwidth-monitor/version.Commit=$(GIT_COMMIT)
+BUILD_VERSION := 0.0.0~git.$(GIT_COMMIT)
 ifneq ($(GIT_VERSION),)
-  LDFLAGS_VERSION += -X bandwidth-monitor/version.Version=$(GIT_VERSION)
+  BUILD_VERSION := $(patsubst v%,%,$(GIT_VERSION))
 endif
+LDFLAGS_VERSION := -X bandwidth-monitor/version.Commit=$(GIT_COMMIT) -X bandwidth-monitor/version.Version=$(BUILD_VERSION)
 
 GEOLITE2_CITY=GeoLite2-City.mmdb
 GEOLITE2_ASN=GeoLite2-ASN.mmdb

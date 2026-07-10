@@ -73,6 +73,65 @@ func TestDirectPeerAggregationExcludesAmbiguousEndpointClasses(t *testing.T) {
 	}
 }
 
+func TestDirectLocalClassificationUsesOnlyCapturePrefixes(t *testing.T) {
+	tracker := directTrackerWithNetworks(
+		"192.168.1.0/24",
+		"203.0.113.16/28",
+		"2001:db8:1::/64",
+		"198.51.100.9/32",
+		"2001:db8:2::9/128",
+	)
+	cases := []struct {
+		ip    string
+		local bool
+	}{
+		{"192.168.1.20", true},
+		{"10.0.0.1", false},
+		{"192.168.2.20", false},
+		{"203.0.113.20", true},
+		{"203.0.113.40", false},
+		{"2001:db8:1::20", true},
+		{"fd00::20", false},
+		{"fe80::20", false},
+		{"198.51.100.9", true},
+		{"198.51.100.10", false},
+		{"2001:db8:2::9", true},
+		{"2001:db8:2::10", false},
+	}
+	for _, test := range cases {
+		if got := tracker.packetIPIsLocal(net.ParseIP(test.ip)); got != test.local {
+			t.Fatalf("%s local=%v, want %v", test.ip, got, test.local)
+		}
+	}
+	empty := &Tracker{direct: true}
+	if empty.packetIPIsLocal(net.ParseIP("192.168.1.20")) {
+		t.Fatal("direct capture fell back to RFC1918 locality with no prefixes")
+	}
+}
+
+func TestDirectAggregationUsesTopologyClassification(t *testing.T) {
+	now := time.Unix(350, 0)
+	tracker := directTrackerWithNetworks("192.168.1.0/24")
+	tracker.current = &bucket{
+		hosts: make(map[string]*hostAccum), protoBytes: make(map[string]uint64),
+		ipVerBytes: make(map[string]uint64), pairs: make(map[string]map[string]*hostAccum),
+	}
+	tracker.directRateRing[0] = &directRateSlot{
+		timestamp: now.Add(-2 * time.Second),
+		peers:     make(map[directPairKey]*hostAccum),
+	}
+	slot := tracker.directRateRing[0]
+	tracker.accountDirectPeer(classifiedDirectPacket(tracker, "192.168.1.20", "10.0.0.5", 100), slot)
+	tracker.accountDirectPeer(classifiedDirectPacket(tracker, "10.0.0.5", "192.168.1.20", 200), slot)
+	tracker.accountDirectPeer(classifiedDirectPacket(tracker, "10.0.0.5", "192.168.2.20", 300), slot)
+	tracker.accountDirectPeer(classifiedDirectPacket(tracker, "192.168.1.20", "192.168.1.30", 400), slot)
+	got, _ := tracker.directBandwidthSnapshot(10, now)
+	if len(got) != 1 {
+		t.Fatalf("got %d rows, want one topology-defined pair: %+v", len(got), got)
+	}
+	assertDirectStat(t, got[0], "192.168.1.20", "10.0.0.5", 200, 100, 2)
+}
+
 func TestDirectPeerTopNSortsByCombinedTwoSecondRate(t *testing.T) {
 	now := time.Unix(400, 0)
 	tracker := directAggregationTracker(now.Add(-2 * time.Second))
@@ -114,11 +173,30 @@ func directAggregationTracker(start time.Time) *Tracker {
 			pairs:      make(map[string]map[string]*hostAccum),
 		},
 	}
+
 	tracker.directRateRing[0] = &directRateSlot{
 		timestamp: start,
 		peers:     make(map[directPairKey]*hostAccum),
 	}
 	return tracker
+}
+
+func directTrackerWithNetworks(cidrs ...string) *Tracker {
+	networks := make([]*net.IPNet, 0, len(cidrs))
+	for _, cidr := range cidrs {
+		_, network, err := net.ParseCIDR(cidr)
+		if err != nil {
+			panic(err)
+		}
+		networks = append(networks, network)
+	}
+	return &Tracker{direct: true, localNets: networks}
+}
+
+func classifiedDirectPacket(tracker *Tracker, src, dst string, wireLen uint64) *parsedPkt {
+	srcIP := net.ParseIP(src)
+	dstIP := net.ParseIP(dst)
+	return directPacket(src, dst, tracker.packetIPIsLocal(srcIP), tracker.packetIPIsLocal(dstIP), wireLen)
 }
 
 func directPacket(src, dst string, srcLocal, dstLocal bool, wireLen uint64) *parsedPkt {

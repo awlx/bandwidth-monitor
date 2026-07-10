@@ -24,18 +24,98 @@ func TestTruncate(t *testing.T) {
 	}
 }
 
-func TestRenderShowsLinkedDirectionsRollingRatesAndMetadata(t *testing.T) {
+func TestRenderShowsClassicLinkedDirectionsAndDedicatedMetadata(t *testing.T) {
 	got := RenderSnapshot([]Row{testFlowRow()}, testTotals(), 160)
 	for _, want := range []string{
 		"=>", "<=", "2s", "10s", "40s", "AS64500",
-		"Example Networks", "Exampleland", "PKTS", "42", "TX", "RX", "TOTAL",
+		"ASN", "PROVIDER", "Example Networks", "TX", "RX", "TOTAL",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("output missing %q:\n%s", want, got)
 		}
 	}
-	if strings.Count(got, "192.0.2.10") != 2 {
-		t.Fatalf("local endpoint not linked across two rows:\n%s", got)
+	if strings.Count(got, "192.0.2.10") != 1 ||
+		strings.Count(got, "198.51.100.20") != 1 ||
+		strings.Count(got, "AS64500") != 1 ||
+		strings.Count(got, "Example Networks") != 1 {
+		t.Fatalf("pair metadata should appear only on the primary line:\n%s", got)
+	}
+	if strings.Contains(got, "Exampleland") || strings.Contains(got, "local+monitor") {
+		t.Fatalf("optional metadata was merged into the flow screen:\n%s", got)
+	}
+}
+
+func TestRenderSnapshotLayoutsAtRepresentativeWidths(t *testing.T) {
+	for _, width := range []int{80, 120, 160} {
+		got := RenderSnapshot([]Row{testFlowRow()}, testTotals(), width)
+		lines := strings.Split(strings.TrimSuffix(got, "\n"), "\n")
+		if len(lines) < 5 {
+			t.Fatalf("width %d produced incomplete snapshot:\n%s", width, got)
+		}
+		header := lines[1]
+		primary := lines[2]
+		continuation := lines[3]
+		for _, heading := range []string{"LOCAL", "REMOTE", "ASN", "PROVIDER", "GRAPH", "2s", "10s", "40s"} {
+			if !strings.Contains(header, heading) {
+				t.Fatalf("width %d missing dedicated %s column:\n%s", width, heading, got)
+			}
+		}
+		for _, value := range []string{"198.51", "AS64500", "Example"} {
+			if !strings.Contains(primary, value) || strings.Contains(continuation, value) {
+				t.Fatalf("width %d did not isolate %q to primary line:\n%s", width, value, got)
+			}
+		}
+		for _, heading := range []string{"REMOTE", "ASN", "PROVIDER", "GRAPH", "2s"} {
+			index := strings.Index(header, heading)
+			if index < 0 || len(primary) <= index || len(continuation) <= index {
+				t.Fatalf("width %d has unstable %s alignment:\n%s", width, heading, got)
+			}
+		}
+		remoteStart := strings.Index(header, "REMOTE")
+		graphStart := strings.Index(header, "GRAPH")
+		if strings.TrimSpace(continuation[remoteStart:graphStart]) != "" {
+			t.Fatalf("width %d continuation metadata columns are not blank:\n%s", width, got)
+		}
+		if strings.Index(lines[0], "0") != graphStart {
+			t.Fatalf("width %d ruler is not aligned with graph lane:\n%s", width, got)
+		}
+		if strings.Index(primary, "=>") != strings.Index(continuation, "<=") {
+			t.Fatalf("width %d arrows are not rigidly aligned:\n%s", width, got)
+		}
+	}
+}
+
+func TestRenderDropsOptionalColumnsWithoutMerging(t *testing.T) {
+	asnOnly := RenderSnapshot([]Row{testFlowRow()}, testTotals(), 63)
+	if !strings.Contains(asnOnly, "ASN") || strings.Contains(asnOnly, "PROVIDER") ||
+		strings.Contains(asnOnly, "Example") {
+		t.Fatalf("63-column layout did not drop provider wholesale:\n%s", asnOnly)
+	}
+
+	hostsOnly := RenderSnapshot([]Row{testFlowRow()}, testTotals(), 54)
+	if strings.Contains(hostsOnly, "ASN") || strings.Contains(hostsOnly, "PROVIDER") ||
+		strings.Contains(hostsOnly, "AS64500") || strings.Contains(hostsOnly, "Example") {
+		t.Fatalf("54-column layout merged optional metadata:\n%s", hostsOnly)
+	}
+}
+
+func TestRenderPreservesCommonIPWidthsAndGraphHeading(t *testing.T) {
+	ipv4 := RenderSnapshot([]Row{testFlowRow()}, testTotals(), 80)
+	if !strings.Contains(ipv4, "192.0.2.10") || !strings.Contains(ipv4, "198.51.100.20") {
+		t.Fatalf("80-column layout truncated common IPv4 endpoints:\n%s", ipv4)
+	}
+	row := testFlowRow()
+	row.LocalIP = "2001:db8:abcd:1234:5678:9abc:def0:1234"
+	row.Stat.IP = "2001:db8:1234:5678:9abc:def0:1234:5678"
+	ipv6 := RenderSnapshot([]Row{row}, testTotals(), 160)
+	if !strings.Contains(ipv6, row.LocalIP) || !strings.Contains(ipv6, row.Stat.IP) {
+		t.Fatalf("160-column layout truncated IPv6 endpoints:\n%s", ipv6)
+	}
+	for _, width := range []int{48, 56, 65} {
+		lines := strings.Split(RenderSnapshot([]Row{testFlowRow()}, testTotals(), width), "\n")
+		if len(lines) < 2 || !strings.Contains(lines[1], "GRAPH") {
+			t.Fatalf("width %d truncated graph heading:\n%s", width, strings.Join(lines, "\n"))
+		}
 	}
 }
 
@@ -52,13 +132,13 @@ func TestRenderAggregatesUseSuppliedAllPeerTotals(t *testing.T) {
 }
 
 func TestRateBarScalesAndShowsEveryNonzeroRate(t *testing.T) {
-	if got := rateBar(0, 100, 10); got != ".........." {
+	if got := rateBar(0, 100, 10); got != "          " {
 		t.Fatalf("zero bar %q", got)
 	}
-	if got := rateBar(1, 100, 10); got != "#........." {
+	if got := rateBar(1, 100, 10); got != "#         " {
 		t.Fatalf("small nonzero bar %q", got)
 	}
-	if got := rateBar(50, 100, 10); got != "#####....." {
+	if got := rateBar(50, 100, 10); got != "#####     " {
 		t.Fatalf("half bar %q", got)
 	}
 	if got := rateBar(100, 100, 10); got != "##########" {
@@ -107,6 +187,28 @@ func TestRenderHandlesWideRunesWithinBounds(t *testing.T) {
 				t.Fatalf("width %d produced %d columns: %q", width, count, line)
 			}
 		}
+		if width >= 80 && (!strings.Contains(got, "ASN") || !strings.Contains(got, "PROVIDER")) {
+			t.Fatalf("width %d lost dedicated metadata headings:\n%s", width, got)
+		}
+	}
+}
+
+func TestRenderMeasuresEmojiGraphemeWidths(t *testing.T) {
+	if got := displayWidth("❤️"); got != 2 {
+		t.Fatalf("VS16 emoji width=%d, want 2", got)
+	}
+	if got := displayWidth("👍🏽"); got != 2 {
+		t.Fatalf("modified emoji width=%d, want 2", got)
+	}
+	row := testFlowRow()
+	row.Info.Provider = "Network 👍🏽 ❤️ Provider"
+	for width := 1; width <= 160; width++ {
+		got := RenderSnapshot([]Row{row}, testTotals(), width)
+		for _, line := range strings.Split(strings.TrimSuffix(got, "\n"), "\n") {
+			if count := displayWidth(line); count > width {
+				t.Fatalf("width %d produced %d columns: %q", width, count, line)
+			}
+		}
 	}
 }
 
@@ -127,6 +229,9 @@ func TestRenderStripsTerminalAndUnicodeControls(t *testing.T) {
 		if r != '\n' && (unicode.IsControl(r) || unicode.In(r, unicode.Cf)) {
 			t.Fatalf("control rune %U survived sanitization", r)
 		}
+	}
+	if strings.Count(got, "redgreen") > 2 {
+		t.Fatalf("sanitized values bled into continuation columns: %q", got)
 	}
 }
 

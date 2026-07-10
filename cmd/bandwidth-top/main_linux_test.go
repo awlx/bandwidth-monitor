@@ -17,8 +17,17 @@ func TestHelpDoesNotStartCapture(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "Usage: bandwidth-top") ||
 		!strings.Contains(stderr.String(), "CAP_NET_RAW") ||
-		!strings.Contains(stderr.String(), "checked once at startup") {
+		!strings.Contains(stderr.String(), "checked once at startup") ||
+		!strings.Contains(stderr.String(), "local-network") {
 		t.Fatalf("unexpected help:\n%s", stderr.String())
+	}
+}
+
+func TestInvalidLocalNetworkFailsBeforeCapture(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	err := run([]string{"--local-network", "not-a-cidr"}, &stdout, &stderr)
+	if err == nil || !strings.Contains(err.Error(), "invalid local network") {
+		t.Fatalf("got %v", err)
 	}
 }
 

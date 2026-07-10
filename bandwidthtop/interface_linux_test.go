@@ -10,6 +10,81 @@ import (
 	vnl "github.com/vishvananda/netlink"
 )
 
+type testAddr string
+
+func (a testAddr) Network() string { return "test" }
+func (a testAddr) String() string  { return string(a) }
+
+func TestAssignedLocalNetworksPreserveInterfaceTopology(t *testing.T) {
+	addrs := []net.Addr{
+		&net.IPNet{IP: net.ParseIP("192.168.1.7"), Mask: net.CIDRMask(24, 32)},
+		&net.IPNet{IP: net.ParseIP("203.0.113.18"), Mask: net.CIDRMask(27, 32)},
+		testAddr("2001:db8:1::7/64"),
+		testAddr("fe80::1%eth0/64"),
+		&net.IPNet{IP: net.ParseIP("198.51.100.9"), Mask: net.CIDRMask(32, 32)},
+		&net.IPNet{IP: net.ParseIP("2001:db8:2::9"), Mask: net.CIDRMask(128, 128)},
+		&net.IPNet{IP: net.ParseIP("192.0.2.1"), Mask: net.IPMask{0xff, 0x00}},
+		testAddr("invalid"),
+	}
+	networks, local := assignedLocalNetworks(addrs)
+	if local != "192.168.1.7" || len(networks) != 6 {
+		t.Fatalf("local=%q networks=%v", local, networks)
+	}
+	cases := []struct {
+		ip    string
+		local bool
+	}{
+		{"192.168.1.20", true},
+		{"192.168.2.20", false},
+		{"10.0.0.1", false},
+		{"203.0.113.20", true},
+		{"203.0.113.40", false},
+		{"2001:db8:1::20", true},
+		{"fd00::1", false},
+		{"fe80::20", true},
+		{"198.51.100.9", true},
+		{"198.51.100.10", false},
+		{"2001:db8:2::9", true},
+		{"2001:db8:2::10", false},
+	}
+	for _, test := range cases {
+		found := false
+		for _, network := range networks {
+			found = found || network.Contains(net.ParseIP(test.ip))
+		}
+		if found != test.local {
+			t.Fatalf("%s local=%v, want %v (networks %v)", test.ip, found, test.local, networks)
+		}
+	}
+}
+
+func TestAssignedLocalNetworksAcceptLinkLocalOnlyInterface(t *testing.T) {
+	networks, local := assignedLocalNetworks([]net.Addr{testAddr("fe80::1%eth0/64")})
+	if local != "fe80::1" || len(networks) != 1 || !networks[0].Contains(net.ParseIP("fe80::2")) {
+		t.Fatalf("local=%q networks=%v", local, networks)
+	}
+}
+
+func TestAssignedLocalNetworkSelectionIsOrderIndependent(t *testing.T) {
+	first := []net.Addr{
+		testAddr("2001:db8:2::2/64"),
+		testAddr("192.0.2.20/24"),
+		testAddr("192.0.2.10/24"),
+	}
+	second := []net.Addr{first[2], first[0], first[1]}
+	firstNetworks, firstLocal := assignedLocalNetworks(first)
+	secondNetworks, secondLocal := assignedLocalNetworks(second)
+	if firstLocal != "192.0.2.10" || secondLocal != firstLocal ||
+		len(firstNetworks) != len(secondNetworks) {
+		t.Fatalf("first=%q %v second=%q %v", firstLocal, firstNetworks, secondLocal, secondNetworks)
+	}
+	for i := range firstNetworks {
+		if firstNetworks[i].String() != secondNetworks[i].String() {
+			t.Fatalf("network order differs: %v vs %v", firstNetworks, secondNetworks)
+		}
+	}
+}
+
 func TestDefaultInterfaceChoosesLowestMetricAcrossFamilies(t *testing.T) {
 	_, ipv6Default, _ := net.ParseCIDR("::/0")
 	routes := []vnl.Route{
