@@ -100,8 +100,7 @@ func (m *liveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.size = terminalDimensions{width: msg.Width, height: msg.Height}
 	case tickMsg:
-		m.rows, m.totals = snapshotRowsForMode(
-			m.config.tracker, m.config.enricher, m.config.rows, m.noResolve, m.mode)
+		m.refreshSnapshot()
 		m.ticks++
 		return m, tickAfter(m.config.refresh)
 	case captureErrorMsg:
@@ -124,10 +123,16 @@ func (m *liveModel) handleKey(key string) (tea.Model, tea.Cmd) {
 		} else {
 			m.mode = bandwidthtop.ViewPorts
 		}
+		m.refreshSnapshot()
 	case "h", "?":
 		m.showHelp = !m.showHelp
 	}
 	return m, nil
+}
+
+func (m *liveModel) refreshSnapshot() {
+	m.rows, m.totals = snapshotRowsForMode(
+		m.config.tracker, m.config.enricher, m.config.rows, m.noResolve, m.mode)
 }
 
 func (m *liveModel) View() tea.View {

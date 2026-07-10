@@ -140,10 +140,13 @@ func TestLiveModelPortModeTransitionsStatusHelpAndDNS(t *testing.T) {
 		t.Fatalf("default mode=%v snapshots=%v", model.mode, tracker.modes)
 	}
 	updateModel(t, model, keyPress("p"))
+	if tracker.modes[1] != talkers.DirectViewPorts {
+		t.Fatalf("port toggle did not refresh immediately: snapshots=%v", tracker.modes)
+	}
 	updateModel(t, model, keyPress("n"))
 	updateModel(t, model, tickMsg(time.Now()))
 	if model.mode != bandwidthtop.ViewPorts || !model.noResolve ||
-		tracker.modes[1] != talkers.DirectViewPorts ||
+		tracker.modes[2] != talkers.DirectViewPorts ||
 		len(resolver.states) != 1 || resolver.states[0] {
 		t.Fatalf("port+DNS mode=%v noResolve=%v snapshots=%v resolver=%v",
 			model.mode, model.noResolve, tracker.modes, resolver.states)
@@ -164,11 +167,14 @@ func TestLiveModelPortModeTransitionsStatusHelpAndDNS(t *testing.T) {
 		}
 	}
 	updateModel(t, model, keyPress("p"))
+	if tracker.modes[3] != talkers.DirectViewHosts {
+		t.Fatalf("host toggle did not refresh immediately: snapshots=%v", tracker.modes)
+	}
 	updateModel(t, model, tickMsg(time.Now()))
-	if model.mode != bandwidthtop.ViewHosts || tracker.modes[2] != talkers.DirectViewHosts {
+	if model.mode != bandwidthtop.ViewHosts || tracker.modes[4] != talkers.DirectViewHosts {
 		t.Fatalf("return mode=%v snapshots=%v", model.mode, tracker.modes)
 	}
-	if got := enricher.lookups["198.51.100.20"]; got != 3 {
+	if got := enricher.lookups["198.51.100.20"]; got != 5 {
 		t.Fatalf("duplicate enrichment within port rows: lookups=%d", got)
 	}
 }
