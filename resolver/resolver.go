@@ -41,6 +41,7 @@ type cacheEntry struct {
 type Resolver struct {
 	mu      sync.RWMutex
 	cache   map[string]cacheEntry
+	enabled bool
 	sem     chan struct{} // limits concurrent lookups
 	negTTL  time.Duration
 	minTTL  time.Duration
@@ -62,6 +63,7 @@ func New() *Resolver {
 
 	r := &Resolver{
 		cache:   make(map[string]cacheEntry, 256),
+		enabled: true,
 		sem:     make(chan struct{}, DefaultConcurrent),
 		negTTL:  DefaultNegTTL,
 		minTTL:  DefaultMinTTL,
@@ -76,6 +78,21 @@ func New() *Resolver {
 
 // Stop terminates the cache pruning goroutine.
 func (r *Resolver) Stop() { r.Runner.Stop() }
+
+// SetEnabled controls whether new PTR lookups may start. Cached entries and
+// the pruning goroutine are retained while lookups are disabled.
+func (r *Resolver) SetEnabled(enabled bool) {
+	r.mu.Lock()
+	r.enabled = enabled
+	r.mu.Unlock()
+}
+
+// Enabled reports whether new PTR lookups may start.
+func (r *Resolver) Enabled() bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.enabled
+}
 
 const pruneInterval = 5 * time.Minute
 
@@ -100,6 +117,10 @@ func (r *Resolver) LookupAddr(ip string) string {
 	// Fast path: check cache under read lock.
 	now := time.Now()
 	r.mu.RLock()
+	if !r.enabled {
+		r.mu.RUnlock()
+		return ""
+	}
 	entry, ok := r.cache[ip]
 	r.mu.RUnlock()
 	if ok && now.Before(entry.expires) {
@@ -113,6 +134,9 @@ func (r *Resolver) LookupAddr(ip string) string {
 // cache.  The result is still stored in the cache so subsequent LookupAddr
 // calls benefit from it.
 func (r *Resolver) LookupAddrFresh(ip string) string {
+	if !r.Enabled() {
+		return ""
+	}
 	return r.resolve(ip)
 }
 
@@ -133,6 +157,12 @@ func ptrName(ip string) (string, error) {
 // resolve does the actual PTR lookup via miekg/dns and caches with the real TTL.
 func (r *Resolver) resolve(ip string) string {
 	now := time.Now()
+	r.mu.RLock()
+	enabled := r.enabled
+	r.mu.RUnlock()
+	if !enabled {
+		return ""
+	}
 
 	ptr, err := ptrName(ip)
 	if err != nil {
@@ -201,6 +231,10 @@ func (r *Resolver) resolve(ip string) string {
 func (r *Resolver) LookupAddrAsync(ip string) string {
 	now := time.Now()
 	r.mu.RLock()
+	if !r.enabled {
+		r.mu.RUnlock()
+		return ip
+	}
 	entry, ok := r.cache[ip]
 	r.mu.RUnlock()
 	if ok && now.Before(entry.expires) {
@@ -214,6 +248,10 @@ func (r *Resolver) LookupAddrAsync(ip string) string {
 	// lookups for the same address.
 	r.mu.Lock()
 	// Double-check after write lock.
+	if !r.enabled {
+		r.mu.Unlock()
+		return ip
+	}
 	if entry, ok := r.cache[ip]; ok && now.Before(entry.expires) {
 		r.mu.Unlock()
 		if entry.hostname != "" {
