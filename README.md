@@ -188,8 +188,7 @@ Then open **http://localhost:8080**.
 
 `bandwidth-top` is an ad-hoc live traffic viewer, similar in spirit to `iftop`.
 It captures one local interface directly; it does not require a running
-bandwidth-monitor server. Build it with `make build-top` or as part of
-`make build`, then run:
+bandwidth-monitor server. Build it with `make build-top`, then run:
 
 ```bash
 sudo ./bandwidth-top --interface eth0 --rows 20 --refresh 1s

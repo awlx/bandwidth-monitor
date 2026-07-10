@@ -73,15 +73,13 @@ jobs:
         run: |
           export VERSION="${VERSION#v}"
           nfpm package -p deb -f nfpm.yaml
-          nfpm package -p deb -f nfpm-bandwidth-top.yaml
+          nfpm package -p deb -f nfpm-top.yaml
 
       - name: Test deb install and upgrade
         if: matrix.goarch == 'amd64'
         run: |
           package="$(find . -maxdepth 1 -name 'bandwidth-monitor_*.deb' -print -quit)"
-          top_package="$(find . -maxdepth 1 -name 'bandwidth-top_*.deb' -print -quit)"
           test -n "$package"
-          test -n "$top_package"
 
           # Reproduce minimal systems that intentionally omit package docs.
           echo 'path-exclude=/usr/share/doc/*' |
@@ -97,13 +95,6 @@ jobs:
           verify="$(dpkg -V bandwidth-monitor)"
           test -z "$verify"
 
-          sudo env DEBIAN_FRONTEND=noninteractive dpkg -i "$top_package"
-          test -x /usr/bin/bandwidth-top
-          test "$(dpkg-query -L bandwidth-top | grep -c '^/usr/bin/bandwidth-top$')" = "1"
-          ! dpkg-query -L bandwidth-top | grep -Eq '^/etc/|^/lib/systemd/|^/usr/share/bandwidth-monitor/'
-          verify="$(dpkg -V bandwidth-monitor)"
-          test -z "$verify"
-
           sudo sh -c "printf '\n# locally-managed-setting\n' >> /etc/bandwidth-monitor/env"
           before="$(sudo sha256sum /etc/bandwidth-monitor/env | awk '{print $1}')"
           sudo env DEBIAN_FRONTEND=noninteractive dpkg -i "$package"
@@ -114,6 +105,29 @@ jobs:
           verify="$(dpkg -V bandwidth-monitor)"
           test -z "$verify"
 
+      - name: Test bandwidth-top deb payload and install
+        if: matrix.goarch == 'amd64'
+        run: |
+          package="$(find . -maxdepth 1 -name 'bandwidth-top_*.deb' -print -quit)"
+          test -n "$package"
+          dpkg-deb --contents "$package" |
+            awk '$1 ~ /^[-l]/ {print $NF}' | sort > /tmp/bandwidth-top-files
+          test "$(cat /tmp/bandwidth-top-files)" = "./usr/bin/bandwidth-top"
+          control_dir="$(mktemp -d)"
+          dpkg-deb --control "$package" "$control_dir"
+          test ! -e "$control_dir/preinst"
+          test ! -e "$control_dir/postinst"
+          test ! -e "$control_dir/prerm"
+          test ! -e "$control_dir/postrm"
+          test ! -e "$control_dir/conffiles"
+          sudo env DEBIAN_FRONTEND=noninteractive dpkg -i "$package"
+          test -x /usr/bin/bandwidth-top
+          test "$(dpkg-query -L bandwidth-top | grep -c '^/usr/bin/bandwidth-top$')" = "1"
+          ! dpkg-query -L bandwidth-top |
+            grep -Eq '^/etc/|^/lib/systemd/|^/usr/share/bandwidth-monitor/|^/var/'
+          test -z "$(dpkg-query -W -f='${Depends}\n' bandwidth-top)"
+          test -z "$(dpkg -V bandwidth-top)"
+
       - name: Build rpm
         env:
           VERSION: ${{ env.PACKAGE_VERSION }}
@@ -121,7 +135,7 @@ jobs:
         run: |
           export VERSION="${VERSION#v}"
           nfpm package -p rpm -f nfpm.yaml
-          nfpm package -p rpm -f nfpm-bandwidth-top.yaml
+          nfpm package -p rpm -f nfpm-top.yaml
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4

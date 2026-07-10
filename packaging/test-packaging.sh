@@ -47,10 +47,12 @@ cmp "$tmp/expected-env" "$tmp/openwrt-env" ||
 
 assert_contains "$repo/nfpm.yaml" "dst: /usr/share/bandwidth-monitor/env.example"
 assert_not_contains "$repo/nfpm.yaml" "dst: /usr/bin/bandwidth-top"
-assert_contains "$repo/nfpm-bandwidth-top.yaml" "name: bandwidth-top"
-assert_contains "$repo/nfpm-bandwidth-top.yaml" "dst: /usr/bin/bandwidth-top"
-assert_not_contains "$repo/nfpm-bandwidth-top.yaml" "/etc/"
-assert_not_contains "$repo/nfpm-bandwidth-top.yaml" "scripts:"
+assert_contains "$repo/nfpm-top.yaml" "name: bandwidth-top"
+assert_contains "$repo/nfpm-top.yaml" "dst: /usr/bin/bandwidth-top"
+assert_not_contains "$repo/nfpm-top.yaml" "/etc/"
+assert_not_contains "$repo/nfpm-top.yaml" "/var/"
+assert_not_contains "$repo/nfpm-top.yaml" "scripts:"
+assert_not_contains "$repo/nfpm-top.yaml" "depends:"
 assert_contains "$repo/.github/workflows/release.yml" 'cp "$TOP_BINARY" "$TOP_PKG_DIR/usr/bin/bandwidth-top"'
 assert_contains "$repo/.github/workflows/release.yml" 'bandwidth-top_${VERSION}_${ARCH}.ipk'
 assert_contains "$repo/.github/workflows/release.yml" 'bandwidth-top-${VERSION}-r1_${ARCH}.apk'
@@ -101,7 +103,7 @@ retry_openwrt_number=${retry_openwrt##*_git}
 
 if command -v nfpm >/dev/null 2>&1; then
 	mkdir -p "$tmp/build/packaging"
-	cp "$repo/nfpm.yaml" "$repo/nfpm-bandwidth-top.yaml" "$repo/env.example" "$tmp/build/"
+	cp "$repo/nfpm.yaml" "$repo/nfpm-top.yaml" "$repo/env.example" "$tmp/build/"
 	cp "$repo/packaging/bandwidth-monitor.service" \
 		"$repo/packaging/bandwidth-monitor.openrc" \
 		"$repo/packaging/preinstall.sh" \
@@ -117,8 +119,8 @@ if command -v nfpm >/dev/null 2>&1; then
 		cd "$tmp/build"
 		VERSION=$newer_nfpm GOARCH=amd64 nfpm package -p deb -f nfpm.yaml -t "$tmp/package.deb" >/dev/null
 		VERSION=$newer_nfpm GOARCH=amd64 nfpm package -p rpm -f nfpm.yaml -t "$tmp/package.rpm" >/dev/null
-		VERSION=$newer_nfpm GOARCH=amd64 nfpm package -p deb -f nfpm-bandwidth-top.yaml -t "$tmp/top-package.deb" >/dev/null
-		VERSION=$newer_nfpm GOARCH=amd64 nfpm package -p rpm -f nfpm-bandwidth-top.yaml -t "$tmp/top-package.rpm" >/dev/null
+		VERSION=$newer_nfpm GOARCH=amd64 nfpm package -p deb -f nfpm-top.yaml -t "$tmp/top-package.deb" >/dev/null
+		VERSION=$newer_nfpm GOARCH=amd64 nfpm package -p rpm -f nfpm-top.yaml -t "$tmp/top-package.rpm" >/dev/null
 	)
 	[ -s "$tmp/package.deb" ] || fail "nfpm did not build a Debian package"
 	[ -s "$tmp/package.rpm" ] || fail "nfpm did not build an RPM package"

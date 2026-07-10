@@ -22,7 +22,6 @@ GEOLITE2_ASN_URL=https://github.com/P3TERX/GeoLite.mmdb/raw/download/GeoLite2-AS
 
 build:
 	go build -ldflags="$(LDFLAGS_VERSION)" -o $(BINARY) .
-	go build -ldflags="$(LDFLAGS_VERSION)" -o $(TOP_BINARY) ./cmd/bandwidth-top
 
 build-top:
 	go build -ldflags="$(LDFLAGS_VERSION)" -o $(TOP_BINARY) ./cmd/bandwidth-top
@@ -30,7 +29,6 @@ build-top:
 build_stripped:
 	# Build and strip the binary.
 	go build -ldflags="-s -w $(LDFLAGS_VERSION)" -o $(BINARY) .
-	go build -ldflags="-s -w $(LDFLAGS_VERSION)" -o $(TOP_BINARY) ./cmd/bandwidth-top
 
 # The Live Activity push relay — a separate, minimal binary meant to run on any ordinary host (not
 # the router). See apnsgateway/main.go and docs/apns-gateway.md.
