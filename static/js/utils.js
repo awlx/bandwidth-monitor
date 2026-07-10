@@ -68,41 +68,60 @@
 
     /* Reusable SSE-style stream reader for POST endpoints that return
      * Server-Sent Events (e.g. speed test, traceroute, MTU discovery).
+     * onDone is called only for a clean EOF; HTTP, fetch, and read failures
+     * are passed to onError.
      * opts: { url, method, onMessage(parsed), onDone(), onError(err) } */
     BM.streamSSE = function(opts) {
         var method = opts.method || 'POST';
-        fetch(opts.url, { method: method }).then(function(resp) {
-            if (!resp.ok && opts.onError) {
-                if (resp.status === 409) { opts.onError('already running'); return; }
-                opts.onError('HTTP ' + resp.status);
-                return;
+        return fetch(opts.url, { method: method }).then(function(resp) {
+            if (!resp.ok) {
+                var httpError = new Error(resp.status === 409 ? 'Already running' : 'HTTP ' + resp.status);
+                httpError.status = resp.status;
+                throw httpError;
             }
+            if (!resp.body) throw new Error('Response body is not readable');
+
             var reader = resp.body.getReader();
             var decoder = new TextDecoder();
             var buffer = '';
 
+            function processLines(lines) {
+                for (var i = 0; i < lines.length; i++) {
+                    var line = lines[i].trim();
+                    if (!line.startsWith('data:')) continue;
+                    try {
+                        var p = JSON.parse(line.substring(5).trim());
+                        if (opts.onMessage) opts.onMessage(p);
+                    } catch(e) {}
+                }
+            }
+
             function processChunk() {
                 return reader.read().then(function(result) {
                     if (result.done) {
-                        if (opts.onDone) opts.onDone();
+                        buffer += decoder.decode();
+                        if (buffer) processLines([buffer]);
                         return;
                     }
                     buffer += decoder.decode(result.value, { stream: true });
                     var lines = buffer.split('\n');
                     buffer = lines.pop();
-                    for (var i = 0; i < lines.length; i++) {
-                        var line = lines[i].trim();
-                        if (!line.startsWith('data: ')) continue;
-                        try {
-                            var p = JSON.parse(line.substring(6));
-                            if (opts.onMessage) opts.onMessage(p);
-                        } catch(e) {}
-                    }
+                    processLines(lines);
                     return processChunk();
                 });
             }
-            processChunk().catch(function() { if (opts.onDone) opts.onDone(); });
-        }).catch(function(e) { if (opts.onError) opts.onError(e); });
+
+            return processChunk();
+        }).then(function() {
+            if (opts.onDone) opts.onDone();
+        }).catch(function(e) {
+            if (opts.onError) opts.onError(e);
+        });
+    };
+
+    BM.describeStreamError = function(err) {
+        if (err && err.message) return err.message;
+        return String(err || 'Connection error');
     };
 
     // Doughnut chart helpers
