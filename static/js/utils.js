@@ -4,7 +4,21 @@
     'use strict';
     var BM = window.BM = window.BM || {};
 
+    BM.num = function(value, fallback) {
+        var n = Number(value);
+        return Number.isFinite(n) ? n : (fallback === undefined ? 0 : fallback);
+    };
+
+    BM.integer = function(value, fallback) {
+        return Math.trunc(BM.num(value, fallback));
+    };
+
+    BM.formatCount = function(value) {
+        return BM.integer(value, 0).toLocaleString();
+    };
+
     BM.formatBytes = function(bytes, dec) {
+        bytes = BM.num(bytes, 0);
         if (dec === undefined) dec = 1;
         if (bytes === 0) return '0 B';
         var k = 1024, s = ['B','KB','MB','GB','TB'];
@@ -13,6 +27,7 @@
     };
 
     BM.formatRate = function(bps) {
+        bps = BM.num(bps, 0);
         var mbps = (bps * 8) / 1e6;
         if (mbps < 0.01 && mbps > 0) return mbps.toFixed(4) + ' Mbit/s';
         if (mbps < 1) return mbps.toFixed(2) + ' Mbit/s';
@@ -21,6 +36,7 @@
     };
 
     BM.formatPPS = function(pps) {
+        pps = BM.num(pps, 0);
         if (pps === 0) return '0 pps';
         if (pps < 1000) return pps.toFixed(0) + ' pps';
         if (pps < 1e6) return (pps / 1000).toFixed(1) + ' Kpps';
@@ -28,6 +44,7 @@
     };
 
     BM.formatUptime = function(secs) {
+        secs = BM.num(secs, 0);
         if (!secs || secs <= 0) return '—';
         var d = Math.floor(secs / 86400);
         var h = Math.floor((secs % 86400) / 3600);
@@ -45,9 +62,17 @@
 
     BM.rankClass = function(i) { return i === 0 ? 'rank rank-1' : 'rank'; };
 
-    BM.escSvg = function(s) {
-        return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    BM.escHtml = function(s) {
+        return String(s == null ? '' : s)
+            .replace(/&/g,'&amp;')
+            .replace(/</g,'&lt;')
+            .replace(/>/g,'&gt;')
+            .replace(/"/g,'&quot;')
+            .replace(/'/g,'&#39;');
     };
+
+    BM.escAttr = BM.escHtml;
+    BM.escSvg = BM.escHtml;
 
     /* Escapes a string for safe embedding as a single-quoted JS string
      * literal inside an inline onclick="..." HTML attribute, e.g.
@@ -60,6 +85,8 @@
             .replace(/'/g, "\\'")
             .replace(/\n/g, '\\n')
             .replace(/\r/g, '')
+            .replace(/\u2028/g, '\\u2028')
+            .replace(/\u2029/g, '\\u2029')
             .replace(/&/g, '&amp;')
             .replace(/"/g, '&quot;')
             .replace(/</g, '&lt;')
@@ -172,7 +199,7 @@
         for (var i = 0; i < items.length; i++) {
             var pct = ((vals[i] / total) * 100).toFixed(1);
             lh += '<div class="breakdown-legend-item"><span class="breakdown-legend-swatch" style="background:' + BM.doughnutColors[i % BM.doughnutColors.length] + '"></span>';
-            lh += '<div style="flex:1;min-width:0"><div style="font-size:12px;font-weight:500;color:var(--text-0);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + labels[i] + '</div>';
+            lh += '<div style="flex:1;min-width:0"><div style="font-size:12px;font-weight:500;color:var(--text-0);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + BM.escHtml(labels[i]) + '</div>';
             lh += '<div style="font-size:11px;color:var(--text-2)">' + fmtFn(vals[i]) + ' · ' + pct + '%</div></div></div>';
         }
         legendEl.innerHTML = lh;
@@ -189,7 +216,7 @@
         for (var i = 0; i < items.length; i++) {
             var v = valueFn(items[i]);
             var pct = maxVal > 0 ? ((v / maxVal) * 100).toFixed(1) : '0';
-            h += '<tr><td>' + BM.rankClass(i) + '</td><td>' + labelFn(items[i]) + '</td>';
+            h += '<tr><td>' + BM.rankClass(i) + '</td><td>' + BM.escHtml(labelFn(items[i])) + '</td>';
             h += '<td>' + fmtFn(v) + '</td>';
             h += '<td class="bar-cell"><div class="bar-bg"></div><div class="bar-fill ' + cls + '" style="width:' + pct + '%"></div></td></tr>';
         }
@@ -209,7 +236,7 @@
         for (var i = 0; i < items.length; i++) {
             var it = items[i]; var total = (it.tx_bytes||0) + (it.rx_bytes||0);
             var pct = maxTotal > 0 ? ((total / maxTotal) * 100).toFixed(1) : '0';
-            h += '<tr><td>' + labelFn(it) + '</td><td>' + BM.formatBytes(it.rx_bytes||0) + '</td><td>' + BM.formatBytes(it.tx_bytes||0) + '</td>';
+            h += '<tr><td>' + BM.escHtml(labelFn(it)) + '</td><td>' + BM.formatBytes(it.rx_bytes||0) + '</td><td>' + BM.formatBytes(it.tx_bytes||0) + '</td>';
             h += '<td>' + BM.formatBytes(total) + '</td>';
             h += '<td class="bar-cell"><div class="bar-bg"></div><div class="bar-fill bw" style="width:' + pct + '%"></div></td></tr>';
         }

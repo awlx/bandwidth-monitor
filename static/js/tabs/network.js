@@ -131,15 +131,15 @@
             var displayName = BM.deviceDisplayName(n.mac, n.ips, n.hostname);
             h += '<tr>';
             h += '<td>' + BM.favoriteStarHtml(favKey) + '</td>';
-            h += '<td><span class="net-type-badge net-type-' + n.type + '">' + typeIcon + ' ' + typeLabel + '</span></td>';
-            h += '<td>' + (displayName || '<span style="color:var(--text-2)">—</span>') + '</td>';
+            h += '<td><span class="net-type-badge net-type-' + BM.escAttr(n.type) + '">' + typeIcon + ' ' + BM.escHtml(typeLabel) + '</span></td>';
+            h += '<td>' + (displayName ? BM.escHtml(displayName) : '<span style="color:var(--text-2)">—</span>') + '</td>';
             h += '<td style="font-family:JetBrains Mono,monospace;font-size:12px">' + formatClickableIPs(n.ips) + '</td>';
-            h += '<td style="font-family:JetBrains Mono,monospace;font-size:12px">' + (n.mac || '—') + '</td>';
-            h += '<td>' + (n.iface || '—') + '</td>';
-            h += '<td>' + (n.ssid || '—') + '</td>';
-            h += '<td>' + (sigStr || '—') + '</td>';
-            h += '<td>' + (n.state || '—') + '</td>';
-            h += '<td><span style="font-size:11px">' + (n.source || '—') + '</span></td>';
+            h += '<td style="font-family:JetBrains Mono,monospace;font-size:12px">' + BM.escHtml(n.mac || '—') + '</td>';
+            h += '<td>' + BM.escHtml(n.iface || '—') + '</td>';
+            h += '<td>' + BM.escHtml(n.ssid || '—') + '</td>';
+            h += '<td>' + BM.escHtml(sigStr || '—') + '</td>';
+            h += '<td>' + BM.escHtml(n.state || '—') + '</td>';
+            h += '<td><span style="font-size:11px">' + BM.escHtml(n.source || '—') + '</span></td>';
             h += '</tr>';
         }
         tb.innerHTML = h;
@@ -149,7 +149,7 @@
     function formatClickableIPs(ips) {
         if (!ips || !ips.length) return '—';
         return ips.map(function(ip) {
-            return '<span class="ip-clickable" data-ip="' + ip + '">' + ip + '</span>';
+            return '<span class="ip-clickable" data-ip="' + BM.escAttr(ip) + '">' + BM.escHtml(ip) + '</span>';
         }).join('<br>');
     }
 
@@ -468,7 +468,7 @@
             if (label.length > 20) label = label.substring(0, 18) + '…';
             svgHtml += '<text x="' + pos.x + '" y="' + (pos.y + r + 14) + '" text-anchor="middle" font-size="11" fill="' + textCol + '">' + BM.escSvg(label) + '</text>';
             var typeLabel = node.device_class || node.type;
-            svgHtml += '<text x="' + pos.x + '" y="' + (pos.y + r + 26) + '" text-anchor="middle" font-size="9" fill="' + textCol2 + '">' + typeLabel + '</text>';
+            svgHtml += '<text x="' + pos.x + '" y="' + (pos.y + r + 26) + '" text-anchor="middle" font-size="9" fill="' + textCol2 + '">' + BM.escSvg(typeLabel) + '</text>';
             svgHtml += '</g>';
         }
 

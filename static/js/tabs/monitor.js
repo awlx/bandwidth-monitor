@@ -84,7 +84,7 @@
                     d += 'Z';
                     svg += '<path d="' + d + '" fill="' + fill + '" fill-opacity="' + fo + '" stroke="' + stroke + '" stroke-width="' + sw + '"';
                     if (traffic) {
-                        svg += ' filter="url(#glow)" class="map-tip country-clickable" style="cursor:pointer" data-cc="' + cc + '" data-tip="' + BM.countryFlag(cc) + ' ' + (traffic.country_name || cc) + ': ' + BM.formatBytes(traffic.bytes) + ' (' + traffic.connections + ' IPs) \u2014 click to find in Top Talkers"';
+                        svg += ' filter="url(#glow)" class="map-tip country-clickable" style="cursor:pointer" data-cc="' + BM.escAttr(cc) + '" data-tip="' + BM.escAttr(BM.countryFlag(cc) + ' ' + (traffic.country_name || cc) + ': ' + BM.formatBytes(traffic.bytes) + ' (' + traffic.connections + ' IPs) \u2014 click to find in Top Talkers') + '"';
                     }
                     svg += '/>';
                 }
@@ -140,7 +140,7 @@
                     var rxMy = my + perpY * sep;
                     var rxPath = 'M' + dest[0] + ',' + dest[1] + ' Q' + rxMx.toFixed(1) + ',' + rxMy.toFixed(1) + ' ' + center[0] + ',' + center[1];
                     var rxTip = host + asInfo + ' \u2192 \u2193 ' + BM.formatRate(rxRate);
-                    svg += '<path d="' + rxPath + '" fill="none" stroke="transparent" stroke-width="8" style="cursor:pointer" class="map-tip" data-tip="' + rxTip + '"/>';
+                    svg += '<path d="' + rxPath + '" fill="none" stroke="transparent" stroke-width="8" style="cursor:pointer" class="map-tip" data-tip="' + BM.escAttr(rxTip) + '"/>';
                     svg += '<path d="' + rxPath + '" fill="none" stroke="' + rxColor + '" stroke-width="' + rxSw + '" stroke-dasharray="6,4" opacity="' + rxOp + '" stroke-linecap="round" style="pointer-events:none"><animate attributeName="stroke-dashoffset" from="0" to="-20" dur="' + dur + 's" repeatCount="indefinite"/></path>';
                 }
 
@@ -152,7 +152,7 @@
                     var txMy = my - perpY * sep;
                     var txPath = 'M' + center[0] + ',' + center[1] + ' Q' + txMx.toFixed(1) + ',' + txMy.toFixed(1) + ' ' + dest[0] + ',' + dest[1];
                     var txTip = host + asInfo + ' \u2192 \u2191 ' + BM.formatRate(txRate);
-                    svg += '<path d="' + txPath + '" fill="none" stroke="transparent" stroke-width="8" style="cursor:pointer" class="map-tip" data-tip="' + txTip + '"/>';
+                    svg += '<path d="' + txPath + '" fill="none" stroke="transparent" stroke-width="8" style="cursor:pointer" class="map-tip" data-tip="' + BM.escAttr(txTip) + '"/>';
                     svg += '<path d="' + txPath + '" fill="none" stroke="' + txColor + '" stroke-width="' + txSw + '" stroke-dasharray="6,4" opacity="' + txOp + '" stroke-linecap="round" style="pointer-events:none"><animate attributeName="stroke-dashoffset" from="0" to="-20" dur="' + dur + 's" repeatCount="indefinite"/></path>';
                 }
 
@@ -284,8 +284,8 @@
                     var pct = mx > 0 ? (t.total_bytes / mx * 100) : 0;
                     var displayName = BM.deviceDisplayName ? BM.deviceDisplayName(null, [t.ip], t.hostname) : (t.hostname || t.ip);
                     var host = displayName && displayName !== t.ip
-                        ? '<span class="ip-cell ip-clickable" data-ip="' + t.ip + '">' + t.ip + '</span> <span class="hostname">' + BM.escSvg(displayName) + '</span>'
-                        : '<span class="ip-cell ip-clickable" data-ip="' + t.ip + '">' + t.ip + '</span>';
+                        ? '<span class="ip-cell ip-clickable" data-ip="' + BM.escAttr(t.ip) + '">' + BM.escHtml(t.ip) + '</span> <span class="hostname">' + BM.escHtml(displayName) + '</span>'
+                        : '<span class="ip-cell ip-clickable" data-ip="' + BM.escAttr(t.ip) + '">' + BM.escHtml(t.ip) + '</span>';
                     var geo = t.as_org ? '<span class="hostname">AS' + (t.asn || '') + ' ' + BM.escSvg(t.as_org) + '</span>' : '';
                     h += '<div style="display:flex;align-items:center;gap:8px;padding:4px 0;border-bottom:1px solid var(--border)">';
                     h += '<span class="' + BM.rankClass(i) + '" style="flex:0 0 auto">' + (i + 1) + '</span>';
@@ -304,7 +304,8 @@
             })
             .catch(function(e) {
                 if (wrap.dataset.cc !== cc) return;
-                list.innerHTML = '<div style="text-align:center;padding:16px;color:var(--danger)">Failed to load: ' + e + '</div>';
+                list.innerHTML = '<div style="text-align:center;padding:16px;color:var(--danger)"></div>';
+                list.firstChild.textContent = 'Failed to load: ' + e;
             });
     };
 
@@ -401,11 +402,11 @@
 
             h += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">';
             h += '<div>';
-            h += '<div style="font-weight:600;font-size:14px">' + t.name + '</div>';
+            h += '<div style="font-weight:600;font-size:14px">' + BM.escHtml(t.name) + '</div>';
             h += '<div style="font-size:10px;color:var(--text-2);font-family:var(--font-mono, monospace)">';
-            if (hasV4) h += '<span style="background:var(--bg-1);padding:1px 4px;border-radius:3px;margin-right:4px">v4 ' + t.ipv4 + '</span>';
-            if (hasV6) h += '<span style="background:var(--bg-1);padding:1px 4px;border-radius:3px">v6 ' + t.ipv6 + '</span>';
-            if (!hasV4 && !hasV6 && t.ip) h += t.ip;
+            if (hasV4) h += '<span style="background:var(--bg-1);padding:1px 4px;border-radius:3px;margin-right:4px">v4 ' + BM.escHtml(t.ipv4) + '</span>';
+            if (hasV6) h += '<span style="background:var(--bg-1);padding:1px 4px;border-radius:3px">v6 ' + BM.escHtml(t.ipv6) + '</span>';
+            if (!hasV4 && !hasV6 && t.ip) h += BM.escHtml(t.ip);
             h += '</div>';
             h += '</div>';
             h += '<div style="display:flex;align-items:center;gap:6px">';

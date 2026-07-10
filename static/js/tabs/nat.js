@@ -71,11 +71,11 @@
         document.getElementById('natNoData').style.display = 'none';
         document.getElementById('natHasData').style.display = '';
 
-        document.getElementById('natTotal').textContent = (ct.total || 0).toLocaleString();
-        document.getElementById('natMax').textContent = (ct.max || 0).toLocaleString();
-        document.getElementById('natUsagePct').textContent = (ct.usage_pct || 0).toFixed(1) + '%';
-        document.getElementById('natIPv4').textContent = (ct.ipv4 || 0).toLocaleString();
-        document.getElementById('natIPv6').textContent = (ct.ipv6 || 0).toLocaleString();
+        document.getElementById('natTotal').textContent = BM.formatCount(ct.total);
+        document.getElementById('natMax').textContent = BM.formatCount(ct.max);
+        document.getElementById('natUsagePct').textContent = BM.num(ct.usage_pct).toFixed(1) + '%';
+        document.getElementById('natIPv4').textContent = BM.formatCount(ct.ipv4);
+        document.getElementById('natIPv6').textContent = BM.formatCount(ct.ipv6);
 
         // Protocol doughnut
         var protocols = ct.protocols || {};
@@ -155,15 +155,15 @@
             var host = hosts[i];
             var val = useBytes ? (host.bytes || 0) : host.connections;
             var pct = ((val / mx) * 100).toFixed(1);
-            var display = useBytes ? BM.formatBytes(val) : val.toLocaleString();
+            var display = useBytes ? BM.formatBytes(val) : BM.formatCount(val);
             var flag = host.country ? BM.countryFlag(host.country) + ' ' : '';
             var geo = '';
             var geoName = (host.city && host.country_name) ? host.city + ', ' + host.country_name : (host.country_name || '');
-            if (host.as_org) geo = '<span class="hostname">' + flag + geoName + ' &middot; AS' + (host.asn || '') + ' ' + host.as_org + '</span>';
-            else if (geoName) geo = '<span class="hostname">' + flag + geoName + '</span>';
+            if (host.as_org) geo = '<span class="hostname">' + flag + BM.escHtml(geoName) + ' &middot; AS' + BM.integer(host.asn, 0) + ' ' + BM.escHtml(host.as_org) + '</span>';
+            else if (geoName) geo = '<span class="hostname">' + flag + BM.escHtml(geoName) + '</span>';
             var cell = host.hostname
-                ? '<span class="ip-cell ip-clickable" data-ip="' + host.ip + '">' + host.ip + '</span><span class="hostname">' + host.hostname + '</span>' + geo
-                : '<span class="ip-cell ip-clickable" data-ip="' + host.ip + '">' + host.ip + '</span>' + geo;
+                ? '<span class="ip-cell ip-clickable" data-ip="' + BM.escAttr(host.ip) + '">' + BM.escHtml(host.ip) + '</span><span class="hostname">' + BM.escHtml(host.hostname) + '</span>' + geo
+                : '<span class="ip-cell ip-clickable" data-ip="' + BM.escAttr(host.ip) + '">' + BM.escHtml(host.ip) + '</span>' + geo;
             h += '<tr><td><span class="' + BM.rankClass(i) + '">' + (i + 1) + '</span></td>';
             h += '<td>' + cell + '</td>';
             h += '<td style="font-variant-numeric:tabular-nums">' + display + '</td>';
@@ -221,28 +221,28 @@
             var replDstHL = (e.repl_dst !== e.orig_src) ? ' style="color:var(--rx);font-weight:600"' : '';
 
             function ipCell(addr, host, geo, city, asn, hlStyle) {
-                var s = '<td' + (hlStyle || '') + '><div style="font-family:JetBrains Mono,monospace;font-size:11px;white-space:nowrap">' + addr + '</div>';
+                var s = '<td' + (hlStyle || '') + '><div style="font-family:JetBrains Mono,monospace;font-size:11px;white-space:nowrap">' + BM.escHtml(addr) + '</div>';
                 var info = [];
                 if (host) info.push(host);
                 if (city && geo) info.push(BM.countryFlag(geo) + ' ' + city + ', ' + geo);
                 else if (geo) info.push(BM.countryFlag(geo) + ' ' + geo);
                 if (asn) info.push(asn);
-                if (info.length) s += '<div style="font-size:9px;color:var(--text-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:220px">' + info.join(' · ') + '</div>';
+                if (info.length) s += '<div style="font-size:9px;color:var(--text-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:220px">' + info.map(BM.escHtml).join(' · ') + '</div>';
                 s += '</td>';
                 return s;
             }
 
             h += '<tr>';
-            h += '<td style="font-size:12px;font-weight:500">' + (e.protocol || '').toUpperCase() + '</td>';
-            h += '<td>' + (e.state ? '<span class="nat-state-badge ' + stateClass + '">' + e.state + '</span>' : '<span style="color:var(--text-2)">—</span>') + '</td>';
+            h += '<td style="font-size:12px;font-weight:500">' + BM.escHtml((e.protocol || '').toUpperCase()) + '</td>';
+            h += '<td>' + (e.state ? '<span class="nat-state-badge ' + stateClass + '">' + BM.escHtml(e.state) + '</span>' : '<span style="color:var(--text-2)">—</span>') + '</td>';
             h += ipCell(origSrc, e.orig_src_host, e.orig_src_geo, e.orig_src_city, e.orig_src_asn, '');
             h += ipCell(origDst, e.orig_dst_host, e.orig_dst_geo, e.orig_dst_city, e.orig_dst_asn, '');
-            h += '<td style="font-family:JetBrains Mono,monospace;font-size:11px;white-space:nowrap"' + replSrcHL + '>' + replSrc + '</td>';
-            h += '<td style="font-family:JetBrains Mono,monospace;font-size:11px;white-space:nowrap"' + replDstHL + '>' + replDst + '</td>';
-            h += '<td><span class="nat-badge ' + e.nat_type + '">' + (e.nat_type || 'none').toUpperCase() + '</span></td>';
+            h += '<td style="font-family:JetBrains Mono,monospace;font-size:11px;white-space:nowrap"' + replSrcHL + '>' + BM.escHtml(replSrc) + '</td>';
+            h += '<td style="font-family:JetBrains Mono,monospace;font-size:11px;white-space:nowrap"' + replDstHL + '>' + BM.escHtml(replDst) + '</td>';
+            h += '<td><span class="nat-badge ' + BM.escAttr(e.nat_type || 'none') + '">' + BM.escHtml((e.nat_type || 'none').toUpperCase()) + '</span></td>';
             h += '<td style="font-variant-numeric:tabular-nums;font-size:11px;white-space:nowrap">' + (e.bytes ? BM.formatBytes(e.bytes) : '<span style="color:var(--text-2)">—</span>') + '</td>';
-            h += '<td style="font-variant-numeric:tabular-nums;font-size:11px;white-space:nowrap">' + (e.packets ? e.packets.toLocaleString() : '<span style="color:var(--text-2)">—</span>') + '</td>';
-            h += '<td style="font-variant-numeric:tabular-nums;font-size:12px;color:var(--text-2)">' + e.ttl + 's</td>';
+            h += '<td style="font-variant-numeric:tabular-nums;font-size:11px;white-space:nowrap">' + (BM.num(e.packets) > 0 ? BM.formatCount(e.packets) : '<span style="color:var(--text-2)">—</span>') + '</td>';
+            h += '<td style="font-variant-numeric:tabular-nums;font-size:12px;color:var(--text-2)">' + BM.integer(e.ttl, 0) + 's</td>';
             h += '</tr>';
         }
         tb.innerHTML = h;

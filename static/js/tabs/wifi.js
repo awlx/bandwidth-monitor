@@ -55,20 +55,20 @@
                 var st = ap.status === 'connected' ? 'up' : (ap.status === 'disconnected' ? 'down' : 'unknown');
                 var stLabel = ap.status === 'connected' ? 'Online' : (ap.status === 'disconnected' ? 'Offline' : (ap.status || 'Unknown'));
                 h += '<div class="wifi-ap-card">';
-                h += '<div class="wifi-ap-name"><span>' + (ap.name || ap.mac || 'AP') + ' <span class="wifi-ap-model">' + (ap.model || '') + '</span></span>';
-                h += '<span class="iface-status"><span class="iface-status-dot ' + st + '"></span>' + stLabel + '</span></div>';
+                h += '<div class="wifi-ap-name"><span>' + BM.escHtml(ap.name || ap.mac || 'AP') + ' <span class="wifi-ap-model">' + BM.escHtml(ap.model || '') + '</span></span>';
+                h += '<span class="iface-status"><span class="iface-status-dot ' + st + '"></span>' + BM.escHtml(stLabel) + '</span></div>';
                 h += '<div class="wifi-ap-stats">';
-                h += '<div><div class="wifi-ap-stat-label">Clients</div><div class="wifi-ap-stat-value" style="color:var(--rx)">' + (ap.num_clients || 0) + '</div></div>';
-                h += '<div><div class="wifi-ap-stat-label">Firmware</div><div class="wifi-ap-stat-value" style="font-size:11px">' + (ap.version || '—') + '</div></div>';
+                h += '<div><div class="wifi-ap-stat-label">Clients</div><div class="wifi-ap-stat-value" style="color:var(--rx)">' + BM.integer(ap.num_clients, 0) + '</div></div>';
+                h += '<div><div class="wifi-ap-stat-label">Firmware</div><div class="wifi-ap-stat-value" style="font-size:11px">' + BM.escHtml(ap.version || '—') + '</div></div>';
                 h += '<div><div class="wifi-ap-stat-label label-rx">RX Rate</div><div class="wifi-ap-stat-value" style="font-size:11px;color:var(--rx)">' + BM.formatRate(ap.rx_rate || 0) + '</div></div>';
                 h += '<div><div class="wifi-ap-stat-label label-tx">TX Rate</div><div class="wifi-ap-stat-value" style="font-size:11px;color:var(--tx)">' + BM.formatRate(ap.tx_rate || 0) + '</div></div>';
                 h += '<div><div class="wifi-ap-stat-label">RX Total</div><div class="wifi-ap-stat-value" style="font-size:11px">' + BM.formatBytes(ap.rx_bytes || 0) + '</div></div>';
                 h += '<div><div class="wifi-ap-stat-label">TX Total</div><div class="wifi-ap-stat-value" style="font-size:11px">' + BM.formatBytes(ap.tx_bytes || 0) + '</div></div>';
                 if (ap.ip) {
-                    h += '<div><div class="wifi-ap-stat-label">IP</div><div class="wifi-ap-stat-value" style="font-size:11px;font-family:JetBrains Mono,monospace">' + ap.ip + '</div></div>';
+                    h += '<div><div class="wifi-ap-stat-label">IP</div><div class="wifi-ap-stat-value" style="font-size:11px;font-family:JetBrains Mono,monospace">' + BM.escHtml(ap.ip) + '</div></div>';
                 }
                 if (ap.mac) {
-                    h += '<div><div class="wifi-ap-stat-label">MAC</div><div class="wifi-ap-stat-value" style="font-size:11px;font-family:JetBrains Mono,monospace">' + ap.mac + '</div></div>';
+                    h += '<div><div class="wifi-ap-stat-label">MAC</div><div class="wifi-ap-stat-value" style="font-size:11px;font-family:JetBrains Mono,monospace">' + BM.escHtml(ap.mac) + '</div></div>';
                 }
                 if (ap.uptime) {
                     var days = Math.floor(ap.uptime / 86400);
@@ -178,21 +178,21 @@
                 var ips = cl.ip ? [cl.ip] : [];
                 var name = BM.deviceDisplayName(cl.mac, ips, cl.hostname) || cl.ip || cl.mac || '—';
                 var sub = cl.ip && cl.hostname ? cl.ip : (cl.mac || '');
-                var sig = cl.signal || 0;
+                var sig = BM.num(cl.signal, 0);
                 var sigClass = sig >= -50 ? 'sig-great' : sig >= -65 ? 'sig-good' : sig >= -75 ? 'sig-ok' : 'sig-weak';
                 var favKey = BM.deviceLabelKey(cl.mac, ips);
                 ch += '<tr>';
                 ch += '<td><span class="' + BM.rankClass(i) + '">' + (i + 1) + '</span></td>';
                 ch += '<td>' + BM.favoriteStarHtml(favKey) + '</td>';
                 ch += '<td>';
-                if (cl.ip) ch += '<span class="ip-cell ip-clickable" data-ip="' + cl.ip + '">' + name + '</span>';
-                else ch += '<span class="ip-cell">' + name + '</span>';
-                if (sub && sub !== name) ch += '<div style="font-size:10px;color:var(--text-2);font-family:JetBrains Mono,monospace">' + sub + '</div>';
+                if (cl.ip) ch += '<span class="ip-cell ip-clickable" data-ip="' + BM.escAttr(cl.ip) + '">' + BM.escHtml(name) + '</span>';
+                else ch += '<span class="ip-cell">' + BM.escHtml(name) + '</span>';
+                if (sub && sub !== name) ch += '<div style="font-size:10px;color:var(--text-2);font-family:JetBrains Mono,monospace">' + BM.escHtml(sub) + '</div>';
                 ch += '</td>';
-                ch += '<td style="font-size:12px">' + (cl.ssid || '—') + '</td>';
-                ch += '<td style="font-size:12px">' + (cl.ap_name || '—') + '</td>';
-                ch += '<td style="font-size:11px;color:var(--text-2)">' + (cl.radio || '—') + '</td>';
-                ch += '<td style="font-size:11px;font-variant-numeric:tabular-nums">' + (cl.channel || '—') + '</td>';
+                ch += '<td style="font-size:12px">' + BM.escHtml(cl.ssid || '—') + '</td>';
+                ch += '<td style="font-size:12px">' + BM.escHtml(cl.ap_name || '—') + '</td>';
+                ch += '<td style="font-size:11px;color:var(--text-2)">' + BM.escHtml(cl.radio || '—') + '</td>';
+                ch += '<td style="font-size:11px;font-variant-numeric:tabular-nums">' + (BM.num(cl.channel) > 0 ? BM.integer(cl.channel, 0) : '—') + '</td>';
                 ch += '<td><span class="signal-badge ' + sigClass + '">' + sig + ' dBm</span></td>';
                 ch += '<td style="white-space:nowrap;font-variant-numeric:tabular-nums">' + BM.formatBytes(cl.rx_bytes || 0) + '</td>';
                 ch += '<td style="white-space:nowrap;font-variant-numeric:tabular-nums">' + BM.formatBytes(cl.tx_bytes || 0) + '</td>';
