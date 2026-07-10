@@ -52,6 +52,13 @@ jobs:
         if: matrix.goarch == 'amd64'
         run: ./packaging/test-packaging.sh
 
+      - name: Test Linux packages
+        if: matrix.goarch == 'amd64'
+        run: |
+          go vet ./...
+          go test ./...
+          go test -race -v ./bandwidthtop ./cmd/bandwidth-top ./talkers
+
       - name: Build binary
         env:
           GOOS: linux
