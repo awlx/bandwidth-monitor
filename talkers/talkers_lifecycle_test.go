@@ -1,6 +1,7 @@
 package talkers
 
 import (
+	"errors"
 	"sync"
 	"testing"
 )
@@ -32,11 +33,12 @@ func TestStopWaitsForCaptureWorker(t *testing.T) {
 	stopObserved := make(chan struct{})
 	releaseCapture := make(chan struct{})
 	var tracker *Tracker
-	tracker = lifecycleTestTracker(func(string) {
+	tracker = lifecycleTestTracker(func(string) error {
 		close(captureStarted)
 		<-tracker.stopCh
 		close(stopObserved)
 		<-releaseCapture
+		return nil
 	})
 
 	runDone := make(chan struct{})
@@ -69,9 +71,9 @@ func TestStopWaitsForCaptureWorker(t *testing.T) {
 	<-runDone
 }
 
-func lifecycleTestTracker(captureFn func(string)) *Tracker {
+func lifecycleTestTracker(captureFn func(string) error) *Tracker {
 	if captureFn == nil {
-		captureFn = func(string) {
+		captureFn = func(string) error {
 			panic("capture worker started unexpectedly")
 		}
 	}
@@ -81,6 +83,34 @@ func lifecycleTestTracker(captureFn func(string)) *Tracker {
 		buckets:    make([]*bucket, 0, 1),
 		stopCh:     make(chan struct{}),
 		doneCh:     make(chan struct{}),
+		errCh:      make(chan error, 1),
 		captureFn:  captureFn,
 	}
+}
+
+func TestDirectCaptureOptsIntoNonLANInterface(t *testing.T) {
+	started := make(chan struct{})
+	var tracker *Tracker
+	tracker = lifecycleTestTracker(func(string) error {
+		close(started)
+		<-tracker.stopCh
+		return nil
+	})
+	tracker.direct = true
+	tracker.lanDevices = map[string]bool{}
+
+	go tracker.Run()
+	<-started
+	tracker.Stop()
+}
+
+func TestCaptureErrorIsReported(t *testing.T) {
+	want := errors.New("capture unavailable")
+	tracker := lifecycleTestTracker(func(string) error { return want })
+
+	go tracker.Run()
+	if got := <-tracker.Errors(); !errors.Is(got, want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	tracker.Stop()
 }

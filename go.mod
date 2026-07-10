@@ -5,6 +5,7 @@ go 1.25.7
 require (
 	github.com/miekg/dns v1.1.72
 	github.com/oschwald/maxminddb-golang v1.13.1
+	github.com/rivo/uniseg v0.4.7
 	github.com/ti-mo/conntrack v0.6.0
 	github.com/vishvananda/netlink v1.3.1
 	golang.org/x/net v0.48.0
