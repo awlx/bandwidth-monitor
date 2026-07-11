@@ -54,6 +54,10 @@ cmp "$tmp/assets/bandwidth-top_1.2.3_darwin_arm64.tar.gz" \
 cask="$tmp/Casks/bandwidth-top.rb"
 "$repo/packaging/generate-homebrew-cask.sh" v1.2.3 "$tmp/assets" "$cask"
 ruby -c "$cask" >/dev/null
+cp "$cask" "$tmp/first-cask.rb"
+"$repo/packaging/generate-homebrew-cask.sh" v1.2.3 "$tmp/assets" "$cask" >/dev/null
+cmp "$tmp/first-cask.rb" "$cask" >/dev/null ||
+	fail "repeated generation changed an identical release cask"
 
 grep -F 'on_arm do' "$cask" >/dev/null || fail "cask has no on_arm block"
 grep -F 'on_intel do' "$cask" >/dev/null || fail "cask has no on_intel block"
@@ -85,6 +89,21 @@ if MACOS_SIGNING_CERTIFICATE=partial \
 		"$repo/packaging/sign-and-notarize-darwin.sh" "$tmp/bandwidth-top-arm64" \
 		>/dev/null 2>&1; then
 	fail "signing script accepted a partial credential configuration"
+fi
+if REQUIRE_APPLE_SIGNING=1 \
+		"$repo/packaging/sign-and-notarize-darwin.sh" "$tmp/bandwidth-top-arm64" \
+		>/dev/null 2>&1; then
+	fail "signing script did not require credentials for a smoke run"
+fi
+if MACOS_NOTARY_ISSUER_ID=invalid \
+	MACOS_NOTARY_KEY=invalid \
+	MACOS_NOTARY_KEY_ID=invalid \
+	MACOS_SIGNING_CERTIFICATE=invalid \
+	MACOS_SIGNING_CERTIFICATE_PASSWORD=invalid \
+	MACOS_SIGNING_IDENTITY=invalid \
+	"$repo/packaging/sign-and-notarize-darwin.sh" "$tmp/bandwidth-top-arm64" \
+	>/dev/null 2>&1; then
+	fail "signing script accepted invalid credentials"
 fi
 
 if [ "${1:-}" = "--brew" ]; then

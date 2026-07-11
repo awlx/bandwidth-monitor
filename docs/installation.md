@@ -208,19 +208,45 @@ The macOS archive does not include or imply support for the Linux-only
 
 ### Maintaining the cask
 
-After publishing a stable release, run the **Update Homebrew cask** workflow
-with its `v`-prefixed release tag. The workflow downloads the four expected
-Darwin release assets through the authenticated GitHub CLI, verifies both
-checksum sidecars, archive payloads, architectures, and Gatekeeper acceptance,
-runs Homebrew checks, and opens a draft pull request against the default branch.
-Marking the draft ready for review triggers the regular cask check; merging
-remains a human decision.
+Every successful tagged **Build & Release** run automatically starts the
+**Update Homebrew cask** workflow from the trusted default branch. It first
+confirms that the upstream run completed the release job and that the tag still
+resolves to the released commit. It then downloads the four expected Darwin
+assets, verifies both checksum sidecars, archive payloads, architectures, and
+Gatekeeper acceptance, runs Homebrew checks, and creates or updates
+`automation/update-bandwidth-top-cask`. Required checks merge that pull request
+automatically. No per-release command, approval, or merge is required.
 
-The workflow uses only the repository `GITHUB_TOKEN` with `contents: write` and
-`pull-requests: write`. The repository setting **Allow GitHub Actions to create
-and approve pull requests** must be enabled. No personal token is needed.
-Because the update is separate and manually dispatched, a cask automation
-failure cannot fail or modify the tagged release.
+Retries are idempotent: the workflow is serialized, uses one stable update
+branch, and produces no commit or duplicate pull request when the cask already
+matches the release. It never writes directly to the default branch or mutates
+the release tag.
+
+Complete this one-time repository setup before creating the first
+cask-capable release:
+
+1. Enable repository auto-merge.
+2. Enable immutable releases so published tags and assets cannot change.
+3. Protect `main`, require the `homebrew-cask` and `release-checks` status
+   checks, and do not require human approval for the automated cask PR.
+4. Install a repository-scoped GitHub App with Administration (read), Checks
+   (read), Commit statuses (read), Contents (write), and Pull requests (write).
+   Store its client ID as the `CASK_UPDATE_APP_CLIENT_ID` repository variable
+   and its private key as the `CASK_UPDATE_APP_PRIVATE_KEY` repository secret.
+5. Configure the Apple signing and notarization secrets listed below.
+
+The GitHub App is necessary because pull requests created with the repository
+`GITHUB_TOKEN` do not trigger the required checks. The workflow requests only
+the listed permissions from the installation token and fails explicitly when
+the App, auto-merge, branch protection, or required checks are missing. No
+personal access token is used.
+
+Secret and variable names can be checked during setup, but their presence does
+not prove that the stored credentials are valid. Workflow code never reads
+secret values back from GitHub or prints them. At runtime, GitHub validates the
+App credentials when issuing the installation token, while `security`,
+`codesign`, and `notarytool` validate the Apple credentials. Invalid values
+stop the workflow before a release or cask pull request can be published.
 
 For the exact install command above to work without bypassing macOS quarantine,
 configure these Actions secrets before creating the release tag:
@@ -233,6 +259,33 @@ configure these Actions secrets before creating the release tag:
 - `MACOS_NOTARY_KEY_ID`
 - `MACOS_NOTARY_ISSUER_ID`
 
+After the smoke workflow reaches the default branch and before creating the
+first tagged macOS release, validate all six credentials once with:
+
+```bash
+gh workflow run test-apple-signing.yml \
+  --repo awlx/bandwidth-monitor \
+  --ref main \
+  -f ref=main
+```
+
+The workflow is named **Test Apple signing**. GitHub only permits manual
+dispatch after the workflow file exists on the default branch, so this command
+must run after the workflow is merged. The `--ref main` option selects the
+trusted workflow definition; the `ref=main` input selects the exact source ref
+to build. The selected branch, tag, or commit must already be in `main` history;
+unmerged pull request code is rejected before credentials are exposed.
+
+The manual smoke runs natively on Apple silicon and Intel macOS runners. It
+builds an explicitly test-only version, signs and notarizes it, verifies
+Gatekeeper reports `Notarized Developer ID`, creates deterministic local
+release-like archives and checksums, and performs cask generation, audit,
+install, and uninstall checks. It creates no tag, release, artifact, branch, or
+pull request and pushes nothing. Credential files and the ephemeral keychain
+are deleted even when a job fails. This is a one-time credential validation,
+not a recurring release task; successful tagged releases continue to update
+the cask automatically.
+
 The tag build imports the certificate into an ephemeral keychain, signs each
 native binary with the hardened runtime and a secure timestamp, submits it to
 Apple's notary service, and deletes the keychain before the job ends. If none
@@ -240,22 +293,20 @@ of these secrets are configured, existing Darwin archive production remains
 unchanged, but the cask updater rejects that unsigned release. A partial secret
 configuration fails before publishing the affected archive.
 
+Release builds create a draft, upload every asset, and only then publish it.
+With release immutability enabled, GitHub locks the tag and assets at that
+point. If immutability is not enabled, the release remains available but the
+automatic cask update fails safely without opening or merging a pull request.
+
 Standalone executables and tar archives cannot carry a stapled notarization
 ticket, so the first launch requires network access for Gatekeeper to confirm
-Apple's ticket. The cask updater requires Gatekeeper to be enabled and verifies
-the `Notarized Developer ID` assessment before opening its pull request.
+Apple's ticket. The automatic cask updater requires Gatekeeper to be enabled
+and verifies the `Notarized Developer ID` assessment before opening its pull
+request.
 
-If automated pull request creation is unavailable, an authenticated maintainer
-can generate the same reviewed change locally:
-
-```bash
-./packaging/update-homebrew-cask.sh v<version>
-```
-
-Commit the resulting `Casks/bandwidth-top.rb` on a branch and open a normal pull
-request. Never create the cask before both immutable architecture archives
-exist: the generator requires exact SHA-256 checksums and rejects missing,
-unexpected, or incorrectly built assets.
+Never create the cask before both immutable architecture archives exist: the
+generator requires exact SHA-256 checksums and rejects missing, unexpected, or
+incorrectly built assets.
 
 ## Build from source
 

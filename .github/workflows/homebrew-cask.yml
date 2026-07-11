@@ -9,6 +9,7 @@ on:
       - synchronize
     paths:
       - '.github/workflows/homebrew-cask.yml'
+      - '.github/workflows/test-apple-signing.yml'
       - '.github/workflows/update-homebrew-cask.yml'
       - '.github/workflows/release.yml'
       - 'Casks/**'
@@ -17,12 +18,13 @@ on:
       - 'packaging/sign-and-notarize-darwin.sh'
       - 'packaging/test-homebrew-cask.sh'
       - 'packaging/update-homebrew-cask.sh'
+      - 'packaging/verify-homebrew-release.sh'
 
 permissions:
   contents: read
 
 jobs:
-  test:
+  homebrew-cask:
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4

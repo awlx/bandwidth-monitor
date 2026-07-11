@@ -1,36 +1,53 @@
 name: Update Homebrew cask
 
 on:
-  workflow_dispatch:
-    inputs:
-      release_tag:
-        description: Published stable release tag containing both Darwin archives
-        required: true
-        type: string
+  workflow_run:
+    workflows:
+      - Build & Release
+    types:
+      - completed
 
 permissions:
-  contents: write
-  pull-requests: write
+  actions: read
+  contents: read
 
 concurrency:
   group: update-homebrew-cask
   cancel-in-progress: false
 
+env:
+  DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+  RELEASE_RUN_ID: ${{ github.event.workflow_run.id }}
+  RELEASE_SHA: ${{ github.event.workflow_run.head_sha }}
+  RELEASE_TAG: ${{ github.event.workflow_run.head_branch }}
+
 jobs:
-  update:
+  validate-release:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      startsWith(github.event.workflow_run.head_branch, 'v')
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+          ref: ${{ env.DEFAULT_BRANCH }}
+
+      - name: Verify completed immutable release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ./packaging/verify-homebrew-release.sh \
+            "$GITHUB_REPOSITORY" "$DEFAULT_BRANCH" \
+            "$RELEASE_RUN_ID" "$RELEASE_SHA" "$RELEASE_TAG" >/dev/null
 
       - name: Generate cask from immutable release assets
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ inputs.release_tag }}
         run: ./packaging/update-homebrew-cask.sh "$RELEASE_TAG"
 
-      - name: Validate and install cask
+      - name: Validate and execute release cask without write credentials
         run: |
           set -eu
           tap_name=cask-test/bandwidth-monitor
@@ -50,21 +67,156 @@ jobs:
           brew uninstall --cask "$tap_name/bandwidth-top"
           brew untap --force "$tap_name"
 
-      - name: Open draft cask update pull request
+  update-pr:
+    needs: validate-release
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: ${{ env.DEFAULT_BRANCH }}
+
+      - name: Independently reverify immutable release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag_object=$(
+            ./packaging/verify-homebrew-release.sh \
+              "$GITHUB_REPOSITORY" "$DEFAULT_BRANCH" \
+              "$RELEASE_RUN_ID" "$RELEASE_SHA" "$RELEASE_TAG"
+          )
+          echo "RELEASE_TAG_OBJECT_SHA=$tag_object" >> "$GITHUB_ENV"
+
+      - name: Require GitHub App configuration
+        env:
+          CASK_UPDATE_APP_CLIENT_ID: ${{ vars.CASK_UPDATE_APP_CLIENT_ID }}
+          CASK_UPDATE_APP_PRIVATE_KEY: ${{ secrets.CASK_UPDATE_APP_PRIVATE_KEY }}
+        run: |
+          test -n "$CASK_UPDATE_APP_CLIENT_ID" || {
+            echo "missing repository variable CASK_UPDATE_APP_CLIENT_ID" >&2
+            exit 1
+          }
+          test -n "$CASK_UPDATE_APP_PRIVATE_KEY" || {
+            echo "missing repository secret CASK_UPDATE_APP_PRIVATE_KEY" >&2
+            exit 1
+          }
+
+      - name: Create least-privilege GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1
+        with:
+          client-id: ${{ vars.CASK_UPDATE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CASK_UPDATE_APP_PRIVATE_KEY }}
+          permission-administration: read
+          permission-checks: read
+          permission-contents: write
+          permission-pull-requests: write
+          permission-statuses: read
+
+      - name: Verify repository merge protections
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -eu
+          test "$(
+            gh api "repos/$GITHUB_REPOSITORY" --jq .allow_auto_merge
+          )" = "true" || {
+            echo "repository auto-merge must be enabled" >&2
+            exit 1
+          }
+
+          protection=$(
+            gh api \
+              "repos/$GITHUB_REPOSITORY/branches/$DEFAULT_BRANCH/protection"
+          ) || {
+            echo "$DEFAULT_BRANCH must be protected before cask automation can run" >&2
+            exit 1
+          }
+          required=$(
+            printf '%s' "$protection" |
+              jq -r '
+                .required_status_checks.contexts[]?,
+                .required_status_checks.checks[]?.context
+              ' |
+              sort -u
+          )
+          for check in homebrew-cask release-checks; do
+            printf '%s\n' "$required" | grep -Fx "$check" >/dev/null || {
+              echo "$DEFAULT_BRANCH must require the $check status check" >&2
+              exit 1
+            }
+          done
+
+          reviews=$(
+            printf '%s' "$protection" |
+              jq -r '.required_pull_request_reviews.required_approving_review_count // 0'
+          )
+          test "$reviews" = "0" || {
+            echo "automated cask PRs cannot satisfy required human approvals" >&2
+            exit 1
+          }
+
+      - name: Regenerate cask without executing release code
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ./packaging/update-homebrew-cask.sh "$RELEASE_TAG"
+          ruby -c Casks/bandwidth-top.rb
+          brew style Casks/bandwidth-top.rb
+
+      - name: Recheck immutable inputs and generated scope
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          current_tag_object=$(
+            gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" \
+              --jq .object.sha
+          )
+          test "$current_tag_object" = "$RELEASE_TAG_OBJECT_SHA" || {
+            echo "release tag changed during cask generation" >&2
+            exit 1
+          }
+          test "$(
+            gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" \
+              --jq .immutable
+          )" = "true" || {
+            echo "release is no longer immutable" >&2
+            exit 1
+          }
+
+          changes=$(git status --porcelain --untracked-files=all)
+          test "$(printf '%s\n' "$changes" | sed '/^$/d' | wc -l | tr -d ' ')" = "1" || {
+            echo "cask generation changed more than one file" >&2
+            exit 1
+          }
+          test "$(printf '%s\n' "$changes" | cut -c4-)" = "Casks/bandwidth-top.rb" || {
+            echo "cask generation changed an unexpected file" >&2
+            exit 1
+          }
+
+      - name: Create or update cask pull request
+        id: cask-pr
         uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1
         with:
-          base: ${{ github.event.repository.default_branch }}
+          base: ${{ env.DEFAULT_BRANCH }}
           body: |
-            Generated from the published `${{ inputs.release_tag }}` release.
+            Generated automatically from the published `${{ env.RELEASE_TAG }}` release.
 
             The update workflow authenticated with GitHub, verified both release
             checksum sidecars, recomputed both SHA-256 checksums, inspected the
-            exact archive payloads and Mach-O architectures, and completed
-            Homebrew style, audit, install, execution, and uninstall checks.
-
-            Mark this draft ready for review to trigger the normal cask PR check.
+            exact archive payloads, Mach-O architectures, and notarization, and
+            completed Homebrew style, audit, install, execution, and uninstall
+            checks. Required repository checks will merge this PR automatically.
           branch: automation/update-bandwidth-top-cask
-          commit-message: Update bandwidth-top cask for ${{ inputs.release_tag }}
+          commit-message: Update bandwidth-top cask for ${{ env.RELEASE_TAG }}
           delete-branch: true
-          draft: always-true
-          title: Update bandwidth-top cask for ${{ inputs.release_tag }}
+          title: Update bandwidth-top cask for ${{ env.RELEASE_TAG }}
+          token: ${{ steps.app-token.outputs.token }}
+
+      - name: Enable cask pull request auto-merge
+        if: steps.cask-pr.outputs.pull-request-number != ''
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          PR_NUMBER: ${{ steps.cask-pr.outputs.pull-request-number }}
+        run: gh pr merge "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --auto --squash
