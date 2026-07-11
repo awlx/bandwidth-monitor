@@ -26,12 +26,13 @@ type Stat struct {
 }
 
 type Row struct {
-	LocalIP   string
-	Stat      Stat
-	Info      Enrichment
-	NoResolve bool
-	Port      string
-	Protocol  string
+	LocalIP       string
+	LocalHostname string
+	Stat          Stat
+	Info          Enrichment
+	NoResolve     bool
+	Port          string
+	Protocol      string
 }
 
 type Totals struct {
@@ -295,7 +296,7 @@ func renderFlows(rows []Row, totals Totals, width, maxRows int, ansi bool) strin
 			rank := fmt.Sprintf("%d", i+1)
 			outBar := rateBar(row.Stat.Tx.Two, maxRate, layout.graph)
 			inBar := rateBar(row.Stat.Rx.Two, maxRate, layout.graph)
-			b.WriteString(flowLineStyled(layout, rank, row.LocalIP, "=>", remoteHost(row),
+			b.WriteString(flowLineStyled(layout, rank, localHost(row), "=>", remoteHost(row),
 				formatASN(row.Info.ASN), row.Info.Provider, outBar,
 				formatCompactRate(row.Stat.Tx.Two), formatCompactRate(row.Stat.Tx.Ten),
 				formatCompactRate(row.Stat.Tx.Forty),
@@ -310,7 +311,7 @@ func renderFlows(rows []Row, totals Totals, width, maxRows int, ansi bool) strin
 		b.WriteString(Truncate("# LOCAL => REMOTE 2s", width))
 		b.WriteByte('\n')
 		for i, row := range rows {
-			out := fmt.Sprintf("%d %s => %s %s %s", i+1, row.LocalIP,
+			out := fmt.Sprintf("%d %s => %s %s %s", i+1, localHost(row),
 				remoteHost(row), rateBar(row.Stat.Tx.Two, maxRate, max(1, width/8)),
 				formatCompactRate(row.Stat.Tx.Two))
 			in := fmt.Sprintf("  <= %s %s", rateBar(row.Stat.Rx.Two, maxRate, max(1, width/8)),
@@ -361,7 +362,7 @@ func renderPortFlows(rows []Row, totals Totals, width, maxRows int, ansi bool) s
 			rank := fmt.Sprintf("%d", i+1)
 			outBar := rateBar(row.Stat.Tx.Two, maxRate, layout.graph)
 			inBar := rateBar(row.Stat.Rx.Two, maxRate, layout.graph)
-			b.WriteString(portFlowLineStyled(layout, rank, row.LocalIP, "=>", remoteHost(row),
+			b.WriteString(portFlowLineStyled(layout, rank, localHost(row), "=>", remoteHost(row),
 				normalizedPort(row.Port), normalizedProtocol(row.Protocol),
 				formatASN(row.Info.ASN), row.Info.Provider, outBar,
 				formatCompactRate(row.Stat.Tx.Two), formatCompactRate(row.Stat.Tx.Ten),
@@ -376,7 +377,7 @@ func renderPortFlows(rows []Row, totals Totals, width, maxRows int, ansi bool) s
 		b.WriteString(Truncate("# LOCAL => REMOTE PORT PROTO 2s", width))
 		b.WriteByte('\n')
 		for i, row := range rows {
-			out := fmt.Sprintf("%d %s => %s %s %s %s %s", i+1, row.LocalIP,
+			out := fmt.Sprintf("%d %s => %s %s %s %s %s", i+1, localHost(row),
 				remoteHost(row), normalizedPort(row.Port), normalizedProtocol(row.Protocol),
 				rateBar(row.Stat.Tx.Two, maxRate, max(1, width/8)),
 				formatCompactRate(row.Stat.Tx.Two))
@@ -772,6 +773,17 @@ func remoteHost(row Row) string {
 		return hostname
 	}
 	if hostname := sanitizeTerminal(row.Info.Hostname); hostname != "" && hostname != ip {
+		return hostname
+	}
+	return ip
+}
+
+func localHost(row Row) string {
+	ip := sanitizeTerminal(row.LocalIP)
+	if row.NoResolve {
+		return ip
+	}
+	if hostname := sanitizeTerminal(row.LocalHostname); hostname != "" && hostname != ip {
 		return hostname
 	}
 	return ip

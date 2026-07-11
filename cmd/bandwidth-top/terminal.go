@@ -3,6 +3,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -14,6 +15,7 @@ import (
 	"bandwidth-monitor/talkers"
 
 	tea "charm.land/bubbletea/v2"
+	"golang.org/x/sys/unix"
 )
 
 const (
@@ -38,6 +40,7 @@ type liveEnricher interface {
 
 type resolverControl interface {
 	SetEnabled(bool)
+	LookupAddrAsync(string) string
 }
 
 type liveModelConfig struct {
@@ -116,6 +119,7 @@ func (m *liveModel) handleKey(key string) (tea.Model, tea.Cmd) {
 	case "n":
 		m.noResolve = !m.noResolve
 		m.config.resolver.SetEnabled(!m.noResolve)
+		m.refreshSnapshot()
 	case "p":
 		if m.mode == bandwidthtop.ViewPorts {
 			m.mode = bandwidthtop.ViewHosts
@@ -131,7 +135,8 @@ func (m *liveModel) handleKey(key string) (tea.Model, tea.Cmd) {
 
 func (m *liveModel) refreshSnapshot() {
 	m.rows, m.totals = snapshotRowsForMode(
-		m.config.tracker, m.config.enricher, m.config.rows, m.noResolve, m.mode)
+		m.config.tracker, m.config.enricher, m.config.resolver,
+		m.config.rows, m.noResolve, m.mode)
 }
 
 func (m *liveModel) View() tea.View {
@@ -180,11 +185,13 @@ func snapshotRows(
 	enricher interface {
 		Lookup(string) bandwidthtop.Enrichment
 	},
+	resolver resolverControl,
 	rowLimit int,
 	noResolve bool,
 ) ([]bandwidthtop.Row, bandwidthtop.Totals) {
 	stats, rateTotals := tracker.DirectBandwidthSnapshot(rowLimit)
-	return mapSnapshotRows(stats, rateTotals, enricher, noResolve, bandwidthtop.ViewHosts)
+	return mapSnapshotRows(
+		stats, rateTotals, enricher, resolver, noResolve, bandwidthtop.ViewHosts)
 }
 
 func snapshotRowsForMode(
@@ -194,6 +201,7 @@ func snapshotRowsForMode(
 	enricher interface {
 		Lookup(string) bandwidthtop.Enrichment
 	},
+	resolver resolverControl,
 	rowLimit int,
 	noResolve bool,
 	mode bandwidthtop.ViewMode,
@@ -203,7 +211,7 @@ func snapshotRowsForMode(
 		directMode = talkers.DirectViewPorts
 	}
 	stats, rateTotals := tracker.DirectBandwidthSnapshotForMode(directMode, rowLimit)
-	return mapSnapshotRows(stats, rateTotals, enricher, noResolve, mode)
+	return mapSnapshotRows(stats, rateTotals, enricher, resolver, noResolve, mode)
 }
 
 func mapSnapshotRows(
@@ -212,20 +220,32 @@ func mapSnapshotRows(
 	enricher interface {
 		Lookup(string) bandwidthtop.Enrichment
 	},
+	resolver resolverControl,
 	noResolve bool,
 	mode bandwidthtop.ViewMode,
 ) ([]bandwidthtop.Row, bandwidthtop.Totals) {
 	rows := make([]bandwidthtop.Row, 0, len(stats))
 	enrichmentByIP := make(map[string]bandwidthtop.Enrichment, len(stats))
+	localHostnameByIP := make(map[string]string)
 	for _, stat := range stats {
 		info, ok := enrichmentByIP[stat.IP]
 		if !ok {
 			info = enricher.Lookup(stat.IP)
 			enrichmentByIP[stat.IP] = info
 		}
+		localHostname := ""
+		if !noResolve && resolver != nil {
+			var ok bool
+			localHostname, ok = localHostnameByIP[stat.LocalIP]
+			if !ok {
+				localHostname = resolver.LookupAddrAsync(stat.LocalIP)
+				localHostnameByIP[stat.LocalIP] = localHostname
+			}
+		}
 		row := bandwidthtop.Row{
-			LocalIP:   stat.LocalIP,
-			NoResolve: noResolve,
+			LocalIP:       stat.LocalIP,
+			LocalHostname: localHostname,
+			NoResolve:     noResolve,
 			Stat: bandwidthtop.Stat{
 				IP: stat.IP, Hostname: stat.Hostname, Packets: stat.Packets,
 				Rx: bandwidthtop.RateWindows{
@@ -268,7 +288,10 @@ func viewStatus(mode bandwidthtop.ViewMode) string {
 }
 
 func captureError(err error) error {
-	return fmt.Errorf("capture failed: %w (%s)", err, capturePrivilegeHint())
+	if errors.Is(err, unix.EACCES) || errors.Is(err, unix.EPERM) {
+		return fmt.Errorf("capture failed: %w (%s)", err, capturePrivilegeHint())
+	}
+	return fmt.Errorf("capture failed: %w", err)
 }
 
 func rdnsStatus(enabled bool) string {

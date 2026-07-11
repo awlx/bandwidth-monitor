@@ -110,6 +110,70 @@ func TestRemoteHostResolutionPreference(t *testing.T) {
 	}
 }
 
+func TestLocalHostResolutionPreference(t *testing.T) {
+	tests := []struct {
+		name string
+		row  Row
+		want string
+	}{
+		{
+			name: "PTR preferred",
+			row: Row{
+				LocalIP: "192.0.2.10", LocalHostname: "local.example",
+			},
+			want: "local.example",
+		},
+		{
+			name: "raw IP fallback",
+			row:  Row{LocalIP: "192.0.2.10"},
+			want: "192.0.2.10",
+		},
+		{
+			name: "sanitized PTR fallback",
+			row: Row{
+				LocalIP: "192.0.2.10", LocalHostname: "\x1b[31m",
+			},
+			want: "192.0.2.10",
+		},
+		{
+			name: "no resolve forces IP",
+			row: Row{
+				LocalIP: "192.0.2.10", LocalHostname: "local.example", NoResolve: true,
+			},
+			want: "192.0.2.10",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := localHost(test.row); got != test.want {
+				t.Fatalf("got %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
+func TestLocalHostnameRenderingIsModeAndWidthSafe(t *testing.T) {
+	for _, mode := range []ViewMode{ViewHosts, ViewPorts} {
+		for _, width := range []int{24, 53, 80, 120, 160} {
+			row := testFlowRow()
+			row.LocalHostname = "\x1b[31mlocal-hostname-with-wide-界-content.example\x1b[0m"
+			row.Port, row.Protocol = "443", "TCP"
+			got := RenderSnapshotForMode([]Row{row}, testTotals(), width, 20, mode)
+			if strings.Contains(got, "\x1b[31m") || strings.Contains(got, "\x1b[0m") {
+				t.Fatalf("mode=%v width=%d retained terminal control data: %q", mode, width, got)
+			}
+			for _, line := range strings.Split(strings.TrimSuffix(got, "\n"), "\n") {
+				if cells := uniseg.StringWidth(line); cells > width {
+					t.Fatalf("mode=%v width=%d produced %d cells: %q", mode, width, cells, line)
+				}
+			}
+			if width >= 80 && !strings.Contains(got, "local-") {
+				t.Fatalf("mode=%v width=%d omitted local PTR hostname:\n%s", mode, width, got)
+			}
+		}
+	}
+}
+
 func TestRemoteHostnameArrivalPreservesLayout(t *testing.T) {
 	const width = 80
 	row := testFlowRow()

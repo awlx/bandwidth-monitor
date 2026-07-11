@@ -160,7 +160,7 @@ func TestDarwinRingClosesDescriptorAfterConfigurationFailure(t *testing.T) {
 	system := bpfSystem{
 		open:  func(string, int, uint32) (int, error) { return 42, nil },
 		close: func(int) error { closeCalls++; return nil },
-		ioctlSetInt: func(_ int, request uint, _ int) error {
+		ioctlSetPointerInt: func(_ int, request uint, _ int) error {
 			if request == unix.BIOCIMMEDIATE {
 				return errors.New("configuration failed")
 			}
@@ -176,14 +176,52 @@ func TestDarwinRingClosesDescriptorAfterConfigurationFailure(t *testing.T) {
 	}
 }
 
+func TestDarwinRingUsesPointerIntegerIOCTLs(t *testing.T) {
+	var requests []struct {
+		request uint
+		value   int
+	}
+	system := bpfSystem{
+		open:  func(string, int, uint32) (int, error) { return 42, nil },
+		close: func(int) error { return nil },
+		ioctlSetPointerInt: func(_ int, request uint, value int) error {
+			requests = append(requests, struct {
+				request uint
+				value   int
+			}{request: request, value: value})
+			return nil
+		},
+		ioctlPtr:   func(int, uint, unsafe.Pointer) error { return nil },
+		ioctlNoArg: func(int, uint) error { return nil },
+		ioctlGetInt: func(_ int, request uint) (int, error) {
+			if request == unix.BIOCGBLEN {
+				return 4096, nil
+			}
+			return unix.DLT_RAW, nil
+		},
+	}
+	ring, err := newDarwinRing("test0", false, system)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ring.Close()
+	if len(requests) != 2 ||
+		requests[0].request != unix.BIOCSBLEN ||
+		requests[0].value != bpfRequestedBuffer ||
+		requests[1].request != unix.BIOCIMMEDIATE ||
+		requests[1].value != 1 {
+		t.Fatalf("pointer integer ioctl requests=%v", requests)
+	}
+}
+
 func TestDarwinRingCloseIsIdempotent(t *testing.T) {
 	closeCalls := 0
 	system := bpfSystem{
-		open:        func(string, int, uint32) (int, error) { return 42, nil },
-		close:       func(int) error { closeCalls++; return nil },
-		ioctlSetInt: func(int, uint, int) error { return nil },
-		ioctlPtr:    func(int, uint, unsafe.Pointer) error { return nil },
-		ioctlNoArg:  func(int, uint) error { return nil },
+		open:               func(string, int, uint32) (int, error) { return 42, nil },
+		close:              func(int) error { closeCalls++; return nil },
+		ioctlSetPointerInt: func(int, uint, int) error { return nil },
+		ioctlPtr:           func(int, uint, unsafe.Pointer) error { return nil },
+		ioctlNoArg:         func(int, uint) error { return nil },
 		ioctlGetInt: func(_ int, request uint) (int, error) {
 			if request == unix.BIOCGBLEN {
 				return 4096, nil

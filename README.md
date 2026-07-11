@@ -68,8 +68,9 @@ systemd setup, and GeoIP options.
 `bandwidth-top` is an iftop-style viewer for ad-hoc inspection of one Linux or
 macOS interface. It ranks local/remote flows with outbound and inbound lines,
 rolling 2-, 10-, and 40-second rates, total TX/RX rates, and traffic amounts
-since start. It can enrich peers with PTR names, ASN, provider, and location
-data. The dashboard daemon remains Linux-only.
+since start. It can resolve local and remote endpoint PTR names and enrich
+remote peers with ASN, provider, and location data. The dashboard daemon
+remains Linux-only.
 
 In an interactive terminal, press `n` to enable or disable PTR lookups, `h` or
 `?` for key help, and `q` or Ctrl-C to quit. `--no-resolve`/`-n` starts with
@@ -109,7 +110,7 @@ Common options:
 | `--refresh` | `1s` | Refresh interval |
 | `--snapshot`, `-t` | Off | Print one plain snapshot and exit |
 | `--ports`, `-P` | Off | Aggregate by remote port/protocol; non-initial fragments use port `-` |
-| `--no-resolve`, `-n` | Off | Disable PTR lookups and show remote IPs |
+| `--no-resolve`, `-n` | Off | Disable PTR lookups and show raw endpoint IPs |
 | `--version`, `-v` | Off | Print the built version and exit |
 | `--server` | Gateway discovery | Explicit Bandwidth Monitor URL |
 | `--no-server-discovery` | Off | Disable the default-gateway probe |

@@ -23,25 +23,25 @@ const (
 )
 
 type bpfSystem struct {
-	open        func(string, int, uint32) (int, error)
-	close       func(int) error
-	read        func(int, []byte) (int, error)
-	poll        func([]unix.PollFd, int) (int, error)
-	ioctlGetInt func(int, uint) (int, error)
-	ioctlSetInt func(int, uint, int) error
-	ioctlPtr    func(int, uint, unsafe.Pointer) error
-	ioctlNoArg  func(int, uint) error
+	open               func(string, int, uint32) (int, error)
+	close              func(int) error
+	read               func(int, []byte) (int, error)
+	poll               func([]unix.PollFd, int) (int, error)
+	ioctlGetInt        func(int, uint) (int, error)
+	ioctlSetPointerInt func(int, uint, int) error
+	ioctlPtr           func(int, uint, unsafe.Pointer) error
+	ioctlNoArg         func(int, uint) error
 }
 
 var nativeBPFSystem = bpfSystem{
-	open:        unix.Open,
-	close:       unix.Close,
-	read:        unix.Read,
-	poll:        unix.Poll,
-	ioctlGetInt: unix.IoctlGetInt,
-	ioctlSetInt: unix.IoctlSetInt,
-	ioctlPtr:    ioctlPointer,
-	ioctlNoArg:  ioctlWithoutArgument,
+	open:               unix.Open,
+	close:              unix.Close,
+	read:               unix.Read,
+	poll:               unix.Poll,
+	ioctlGetInt:        unix.IoctlGetInt,
+	ioctlSetPointerInt: unix.IoctlSetPointerInt,
+	ioctlPtr:           ioctlPointer,
+	ioctlNoArg:         ioctlWithoutArgument,
 }
 
 // Ring is a Berkeley Packet Filter capture buffer on Darwin.
@@ -75,13 +75,13 @@ func newDarwinRing(dev string, promisc bool, system bpfSystem) (_ *Ring, err err
 		}
 	}()
 
-	if err = system.ioctlSetInt(fd, unix.BIOCSBLEN, bpfRequestedBuffer); err != nil {
+	if err = system.ioctlSetPointerInt(fd, unix.BIOCSBLEN, bpfRequestedBuffer); err != nil {
 		return nil, fmt.Errorf("configure BPF buffer length: %w", err)
 	}
 	if err = bindBPFInterface(fd, dev, system.ioctlPtr); err != nil {
 		return nil, err
 	}
-	if err = system.ioctlSetInt(fd, unix.BIOCIMMEDIATE, 1); err != nil {
+	if err = system.ioctlSetPointerInt(fd, unix.BIOCIMMEDIATE, 1); err != nil {
 		return nil, fmt.Errorf("enable BPF immediate mode: %w", err)
 	}
 	timeout := unix.NsecToTimeval(int64(bpfReadTimeoutMillis) * 1e6)

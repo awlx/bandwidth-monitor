@@ -83,6 +83,55 @@ func TestResolverEnableDisableIsConcurrentSafe(t *testing.T) {
 	workers.Wait()
 }
 
+func TestLookupAddrAsyncDeduplicatesConcurrentRequests(t *testing.T) {
+	var queries atomic.Int32
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var startOnce sync.Once
+	server := &mdns.Server{
+		PacketConn: mustListenUDP(t),
+		Handler: mdns.HandlerFunc(func(w mdns.ResponseWriter, request *mdns.Msg) {
+			queries.Add(1)
+			startOnce.Do(func() { close(started) })
+			<-release
+			response := new(mdns.Msg)
+			response.SetReply(request)
+			response.Answer = append(response.Answer, &mdns.PTR{
+				Hdr: mdns.RR_Header{
+					Name: request.Question[0].Name, Rrtype: mdns.TypePTR,
+					Class: mdns.ClassINET, Ttl: 60,
+				},
+				Ptr: "cached.example.",
+			})
+			_ = w.WriteMsg(response)
+		}),
+	}
+	go func() { _ = server.ActivateAndServe() }()
+	t.Cleanup(func() { _ = server.Shutdown() })
+
+	resolver := newTestResolver(server.PacketConn.LocalAddr().String())
+	for range 32 {
+		if got := resolver.LookupAddrAsync("192.0.2.10"); got != "192.0.2.10" {
+			t.Fatalf("uncached lookup returned %q", got)
+		}
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("PTR lookup did not start")
+	}
+	for range 32 {
+		_ = resolver.LookupAddrAsync("192.0.2.10")
+	}
+	close(release)
+	waitFor(t, func() bool {
+		return resolver.LookupAddrAsync("192.0.2.10") == "cached.example"
+	})
+	if got := queries.Load(); got != 1 {
+		t.Fatalf("made %d PTR queries for one IP", got)
+	}
+}
+
 func newTestResolver(server string) *Resolver {
 	return &Resolver{
 		cache:   make(map[string]cacheEntry),

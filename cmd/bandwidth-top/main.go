@@ -107,7 +107,7 @@ func run(args []string, stdout, stderr io.Writer) error {
 	}
 
 	return runSnapshot(
-		stdout, tracker, enricher, title, options.rows, options.refresh,
+		stdout, tracker, enricher, dns, title, options.rows, options.refresh,
 		options.width, options.noResolve, viewMode,
 	)
 }
@@ -150,8 +150,8 @@ func parseCLIOptions(args []string, stderr io.Writer) (cliOptions, error) {
 	fs.BoolVar(&options.noServerDiscovery, "no-server-discovery", false, "disable one-time default-gateway monitor discovery")
 	fs.StringVar(&options.publicURL, "public-url", bandwidthtop.DefaultPublicURL, "public enrichment API base URL")
 	fs.BoolVar(&options.noPublic, "no-public", false, "disable public enrichment fallback")
-	fs.BoolVar(&options.noResolve, "no-resolve", false, "disable reverse DNS and show remote IPs")
-	fs.BoolVar(&options.noResolve, "n", false, "disable reverse DNS and show remote IPs (shorthand)")
+	fs.BoolVar(&options.noResolve, "no-resolve", false, "disable reverse DNS and show raw endpoint IPs")
+	fs.BoolVar(&options.noResolve, "n", false, "disable reverse DNS and show raw endpoint IPs (shorthand)")
 	fs.IntVar(&options.width, "width", 0, "output width in columns (default: terminal width)")
 	fs.BoolVar(&options.showVersion, "version", false, "print version and exit")
 	fs.BoolVar(&options.showVersion, "v", false, "print version and exit (shorthand)")
@@ -172,6 +172,7 @@ func runSnapshot(
 	stdout io.Writer,
 	tracker *talkers.Tracker,
 	enricher *bandwidthtop.Enricher,
+	dns resolverControl,
 	title string,
 	rows int,
 	refresh time.Duration,
@@ -196,7 +197,8 @@ func runSnapshot(
 	case <-timer.C:
 	}
 
-	viewRows, totals := snapshotRowsForMode(tracker, enricher, rows, noResolve, mode)
+	viewRows, totals := snapshotRowsForMode(
+		tracker, enricher, dns, rows, noResolve, mode)
 	enricher.Wait()
 	for i := range viewRows {
 		viewRows[i].Info = enricher.Lookup(viewRows[i].Stat.IP)
