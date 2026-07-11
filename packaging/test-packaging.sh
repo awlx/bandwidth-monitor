@@ -124,6 +124,33 @@ assert_contains "$repo/.github/workflows/release.yml" 'DARWIN_TOP_RESULT: ${{ ne
 assert_contains "$repo/.github/workflows/release.yml" 'LINUX_PACKAGES_RESULT: ${{ needs.linux-packages.result }}'
 assert_contains "$repo/.github/workflows/release.yml" 'OPENWRT_RESULT: ${{ needs.openwrt.result }}'
 assert_contains "$repo/.github/workflows/homebrew-cask.yml" 'homebrew-cask:'
+assert_contains "$repo/.github/workflows/homebrew-cask.yml" 'timeout-minutes: 30'
+assert_contains "$repo/.github/workflows/homebrew-cask.yml" './packaging/test-run-with-timeout.sh'
+assert_contains "$repo/.github/workflows/homebrew-cask.yml" \
+	'./packaging/run-with-timeout.sh'
+assert_contains "$repo/.github/workflows/homebrew-cask.yml" \
+	'HOMEBREW_NO_AUTO_UPDATE=1 "$timeout_helper" --homebrew'
+assert_contains "$repo/.github/workflows/homebrew-cask.yml" \
+	'"brew audit published cask"'
+assert_contains "$repo/.github/workflows/homebrew-cask.yml" \
+	'"brew install published cask"'
+assert_contains "$repo/.github/workflows/homebrew-cask.yml" \
+	'"cleanup published cask uninstall"'
+assert_contains "$repo/packaging/test-homebrew-cask.sh" \
+	'HOMEBREW_NO_AUTO_UPDATE=1 "$timeout_helper" --homebrew'
+assert_contains "$repo/packaging/test-homebrew-cask.sh" \
+	'"brew audit generated cask"'
+assert_contains "$repo/packaging/test-homebrew-cask.sh" \
+	'"brew install local cask"'
+assert_contains "$repo/packaging/test-homebrew-cask.sh" \
+	'"cleanup brew uninstall"'
+assert_contains "$repo/packaging/run-with-timeout.sh" \
+	'Process.spawn(*command, pgroup: true)'
+assert_contains "$repo/packaging/run-with-timeout.sh" \
+	'Process.kill(signal, -pid)'
+assert_contains "$repo/packaging/run-with-timeout.sh" \
+	'Homebrew lock and cache diagnostics'
+assert_not_contains "$repo/packaging/run-with-timeout.sh" 'env |'
 assert_contains "$repo/packaging/generate-homebrew-cask.sh" 'on_arm do'
 assert_contains "$repo/packaging/generate-homebrew-cask.sh" 'on_intel do'
 assert_contains "$repo/packaging/generate-homebrew-cask.sh" 'binary "bandwidth-top"'
@@ -249,5 +276,7 @@ if command -v nfpm >/dev/null 2>&1; then
 		[ ! -s "$tmp/rpm-overlap" ] || fail "RPM package payloads overlap"
 	fi
 fi
+
+"$repo/packaging/test-run-with-timeout.sh"
 
 echo "packaging assertions passed"

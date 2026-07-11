@@ -5,16 +5,38 @@ repo=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
 tmp=$(mktemp -d)
 installed=false
 tapped=false
-tap_name=awlx-test/bandwidth-monitor
-trap '
+tap_name=${HOMEBREW_TEST_TAP_NAME:-awlx-test/bandwidth-monitor}
+timeout_helper="$repo/packaging/run-with-timeout.sh"
+brew_query_timeout=${HOMEBREW_TEST_QUERY_TIMEOUT:-60}
+brew_operation_timeout=${HOMEBREW_TEST_OPERATION_TIMEOUT:-600}
+brew_cleanup_timeout=${HOMEBREW_TEST_CLEANUP_TIMEOUT:-120}
+
+run_brew() {
+	timeout=$1
+	command_name=$2
+	shift 2
+	HOMEBREW_NO_AUTO_UPDATE=1 "$timeout_helper" --homebrew \
+		"$timeout" "$command_name" brew "$@"
+}
+
+cleanup() {
+	status=$?
+	trap - EXIT
 	if [ "$installed" = true ]; then
-		HOMEBREW_NO_AUTO_UPDATE=1 brew uninstall --cask "$tap_name/bandwidth-top" >/dev/null 2>&1 || true
+		run_brew "$brew_cleanup_timeout" "cleanup brew uninstall" \
+			uninstall --cask "$tap_name/bandwidth-top" || true
 	fi
 	if [ "$tapped" = true ]; then
-		HOMEBREW_NO_AUTO_UPDATE=1 brew untap --force "$tap_name" >/dev/null 2>&1 || true
+		run_brew "$brew_cleanup_timeout" "cleanup brew untap" \
+			untap --force "$tap_name" || true
 	fi
 	rm -rf "$tmp"
-' EXIT HUP INT TERM
+	exit "$status"
+}
+trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 fail() {
 	echo "Homebrew cask assertion failed: $*" >&2
@@ -108,9 +130,12 @@ fi
 
 if [ "${1:-}" = "--brew" ]; then
 	command -v brew >/dev/null 2>&1 || fail "brew is required for --brew"
-	HOMEBREW_NO_AUTO_UPDATE=1 brew style "$cask"
+	run_brew "$brew_query_timeout" "brew style generated cask" style "$cask"
 
-	if HOMEBREW_NO_AUTO_UPDATE=1 brew list --cask bandwidth-top >/dev/null 2>&1; then
+	installed_casks=$(run_brew "$brew_query_timeout" \
+		"brew list installed casks" list --cask)
+	if printf '%s\n' "$installed_casks" |
+			grep -Fx bandwidth-top >/dev/null; then
 		fail "bandwidth-top is already installed; refusing to replace it"
 	fi
 
@@ -126,30 +151,39 @@ if [ "${1:-}" = "--brew" ]; then
 		-e "s|https://github.com/awlx/bandwidth-monitor/releases/download/v#{version}/bandwidth-top_#{version}_darwin_amd64.tar.gz|file://$escaped_archive|" \
 		"$cask" > "$tmp/bandwidth-top.rb"
 
-	if HOMEBREW_NO_AUTO_UPDATE=1 brew tap | grep -Fx "$tap_name" >/dev/null; then
+	taps=$(run_brew "$brew_query_timeout" "brew list taps" tap)
+	if printf '%s\n' "$taps" | grep -Fx "$tap_name" >/dev/null; then
 		fail "$tap_name is already tapped; refusing to replace it"
 	fi
-	HOMEBREW_NO_AUTO_UPDATE=1 brew tap-new --no-git "$tap_name"
 	tapped=true
-	tap_path=$(brew --repository "$tap_name")
+	run_brew "$brew_query_timeout" "brew create test tap" \
+		tap-new --no-git "$tap_name"
+	tap_path=$(run_brew "$brew_query_timeout" "brew locate test tap" \
+		--repository "$tap_name")
 	mkdir -p "$tap_path/Casks"
 	install -m 0644 "$cask" "$tap_path/Casks/bandwidth-top.rb"
-	HOMEBREW_NO_AUTO_UPDATE=1 brew audit --cask --arch all \
-		"$tap_name/bandwidth-top"
+	run_brew "$brew_operation_timeout" "brew audit generated cask" \
+		audit --cask --arch all "$tap_name/bandwidth-top"
 	install -m 0644 "$tmp/bandwidth-top.rb" "$tap_path/Casks/bandwidth-top.rb"
-	rm -f "$(brew --cache --cask "$tap_name/bandwidth-top")"
+	cache_path=$(run_brew "$brew_query_timeout" "brew locate cask cache" \
+		--cache --cask "$tap_name/bandwidth-top")
+	rm -f "$cache_path"
 
-	HOMEBREW_NO_AUTO_UPDATE=1 brew install --cask "$tap_name/bandwidth-top"
 	installed=true
-	[ -x "$(brew --prefix)/bin/bandwidth-top" ] ||
+	run_brew "$brew_operation_timeout" "brew install local cask" \
+		install --cask "$tap_name/bandwidth-top"
+	brew_prefix=$(run_brew "$brew_query_timeout" "brew locate prefix" --prefix)
+	[ -x "$brew_prefix/bin/bandwidth-top" ] ||
 		fail "Homebrew did not link bandwidth-top"
-	cmp "$tmp/bandwidth-top-$goarch" "$(brew --prefix)/bin/bandwidth-top" >/dev/null ||
+	cmp "$tmp/bandwidth-top-$goarch" "$brew_prefix/bin/bandwidth-top" >/dev/null ||
 		fail "installed cask binary does not match the selected archive"
-	HOMEBREW_NO_AUTO_UPDATE=1 brew uninstall --cask "$tap_name/bandwidth-top"
+	run_brew "$brew_cleanup_timeout" "brew uninstall local cask" \
+		uninstall --cask "$tap_name/bandwidth-top"
 	installed=false
-	[ ! -e "$(brew --prefix)/bin/bandwidth-top" ] ||
+	[ ! -e "$brew_prefix/bin/bandwidth-top" ] ||
 		fail "Homebrew did not unlink bandwidth-top"
-	HOMEBREW_NO_AUTO_UPDATE=1 brew untap --force "$tap_name"
+	run_brew "$brew_cleanup_timeout" "brew remove test tap" \
+		untap --force "$tap_name"
 	tapped=false
 fi
 

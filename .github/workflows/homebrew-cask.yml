@@ -17,6 +17,8 @@ on:
       - 'packaging/generate-homebrew-cask.sh'
       - 'packaging/sign-and-notarize-darwin.sh'
       - 'packaging/test-homebrew-cask.sh'
+      - 'packaging/run-with-timeout.sh'
+      - 'packaging/test-run-with-timeout.sh'
       - 'packaging/update-homebrew-cask.sh'
       - 'packaging/verify-homebrew-release.sh'
 
@@ -26,6 +28,7 @@ permissions:
 jobs:
   homebrew-cask:
     runs-on: macos-15
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
@@ -34,24 +37,60 @@ jobs:
           go-version: '1.25.7'
 
       - name: Test cask generation and local install
-        run: ./packaging/test-homebrew-cask.sh --brew
+        run: |
+          ./packaging/test-run-with-timeout.sh
+          ./packaging/test-homebrew-cask.sh --brew
 
       - name: Audit published cask
         if: hashFiles('Casks/bandwidth-top.rb') != ''
         run: |
           set -eu
           tap_name=cask-test/bandwidth-monitor
-          trap '
-            brew uninstall --cask "$tap_name/bandwidth-top" >/dev/null 2>&1 || true
-            brew untap --force "$tap_name" >/dev/null 2>&1 || true
-          ' EXIT
-          brew style Casks/bandwidth-top.rb
-          brew tap-new --no-git "$tap_name"
-          tap_path="$(brew --repository "$tap_name")"
+          timeout_helper=./packaging/run-with-timeout.sh
+          installed=false
+          tapped=false
+          run_brew() {
+            timeout=$1
+            command_name=$2
+            shift 2
+            HOMEBREW_NO_AUTO_UPDATE=1 "$timeout_helper" --homebrew \
+              "$timeout" "$command_name" brew "$@"
+          }
+          cleanup() {
+            status=$?
+            trap - EXIT
+            if [ "$installed" = true ]; then
+              run_brew 120 "cleanup published cask uninstall" \
+                uninstall --cask "$tap_name/bandwidth-top" || true
+            fi
+            if [ "$tapped" = true ]; then
+              run_brew 120 "cleanup published cask tap" \
+                untap --force "$tap_name" || true
+            fi
+            exit "$status"
+          }
+          trap cleanup EXIT
+          trap 'exit 129' HUP
+          trap 'exit 130' INT
+          trap 'exit 143' TERM
+
+          run_brew 60 "brew style published cask" style Casks/bandwidth-top.rb
+          tapped=true
+          run_brew 60 "brew create published cask tap" \
+            tap-new --no-git "$tap_name"
+          tap_path="$(run_brew 60 "brew locate published cask tap" \
+            --repository "$tap_name")"
           mkdir -p "$tap_path/Casks"
           install -m 0644 Casks/bandwidth-top.rb "$tap_path/Casks/bandwidth-top.rb"
-          brew audit --cask --arch all "$tap_name/bandwidth-top"
-          brew install --cask "$tap_name/bandwidth-top"
+          run_brew 600 "brew audit published cask" \
+            audit --cask --arch all "$tap_name/bandwidth-top"
+          installed=true
+          run_brew 600 "brew install published cask" \
+            install --cask "$tap_name/bandwidth-top"
           bandwidth-top --version
-          brew uninstall --cask "$tap_name/bandwidth-top"
-          brew untap --force "$tap_name"
+          run_brew 120 "brew uninstall published cask" \
+            uninstall --cask "$tap_name/bandwidth-top"
+          installed=false
+          run_brew 120 "brew remove published cask tap" \
+            untap --force "$tap_name"
+          tapped=false
