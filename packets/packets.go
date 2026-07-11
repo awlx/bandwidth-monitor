@@ -2,39 +2,41 @@ package packets
 
 import (
 	"encoding/binary"
-	"fmt"
-	"log"
 	"net"
-	"unsafe"
 
 	"golang.org/x/net/bpf"
-	"golang.org/x/sys/unix"
+)
+
+const (
+	etherTypeIPv4   = 0x0800
+	etherTypeIPv6   = 0x86dd
+	etherTypeDot1Q  = 0x8100
+	etherTypeDot1AD = 0x88a8
+	ipProtoUDP      = 17
 )
 
 var (
 	SnapLen int32 = 128
 	// AnyIpFilter is a BPF program for Layer 2 (Ethernet) interfaces.
-	// It accepts IPv4, IPv6, and 802.1Q VLAN-tagged IP frames.
+	// It accepts IPv4, IPv6, and up to two 802.1Q/802.1ad VLAN tags.
 	AnyIpFilter = []bpf.Instruction{
-		// Load EtherType at standard Ethernet header offset (12 bytes).
 		bpf.LoadAbsolute{Off: 12, Size: 2},
-		// If EtherType is IPv4, accept.
-		bpf.JumpIf{Cond: bpf.JumpEqual, Val: unix.ETH_P_IP, SkipTrue: 5},
-		// If EtherType is IPv6, accept.
-		bpf.JumpIf{Cond: bpf.JumpEqual, Val: unix.ETH_P_IPV6, SkipTrue: 4},
-		// If EtherType is 802.1Q VLAN, check inner EtherType at offset 16.
-		bpf.JumpIf{Cond: bpf.JumpEqual, Val: unix.ETH_P_8021Q, SkipTrue: 1},
-		// Not IP and not VLAN: drop.
+		bpf.JumpIf{Cond: bpf.JumpEqual, Val: etherTypeIPv4, SkipTrue: 14},
+		bpf.JumpIf{Cond: bpf.JumpEqual, Val: etherTypeIPv6, SkipTrue: 13},
+		bpf.JumpIf{Cond: bpf.JumpEqual, Val: etherTypeDot1Q, SkipTrue: 2},
+		bpf.JumpIf{Cond: bpf.JumpEqual, Val: etherTypeDot1AD, SkipTrue: 1},
 		bpf.RetConstant{Val: 0},
-		// One level of VLAN: load inner EtherType at offset 16.
 		bpf.LoadAbsolute{Off: 16, Size: 2},
-		// If inner EtherType is IPv4 or IPv6, accept; otherwise drop.
-		bpf.JumpIf{Cond: bpf.JumpEqual, Val: unix.ETH_P_IP, SkipTrue: 1},
-		bpf.JumpIf{Cond: bpf.JumpEqual, Val: unix.ETH_P_IPV6, SkipTrue: 0, SkipFalse: 1},
-		// Accept: return snaplen.
-		bpf.RetConstant{Val: uint32(SnapLen)},
-		// Drop.
+		bpf.JumpIf{Cond: bpf.JumpEqual, Val: etherTypeIPv4, SkipTrue: 8},
+		bpf.JumpIf{Cond: bpf.JumpEqual, Val: etherTypeIPv6, SkipTrue: 7},
+		bpf.JumpIf{Cond: bpf.JumpEqual, Val: etherTypeDot1Q, SkipTrue: 2},
+		bpf.JumpIf{Cond: bpf.JumpEqual, Val: etherTypeDot1AD, SkipTrue: 1},
 		bpf.RetConstant{Val: 0},
+		bpf.LoadAbsolute{Off: 20, Size: 2},
+		bpf.JumpIf{Cond: bpf.JumpEqual, Val: etherTypeIPv4, SkipTrue: 2},
+		bpf.JumpIf{Cond: bpf.JumpEqual, Val: etherTypeIPv6, SkipTrue: 1},
+		bpf.RetConstant{Val: 0},
+		bpf.RetConstant{Val: uint32(SnapLen)},
 	}
 
 	// RawIpFilter is a BPF program for Layer 3 (raw IP) interfaces such as
@@ -95,7 +97,7 @@ func detectTunnel(pkt []byte, ipHdrStart int, p *Packet) {
 	case protoIPIP, protoIPv6inV4, protoGRE, protoESP, protoAH, protoL2TP:
 		p.IsTunnel = true
 		return
-	case unix.IPPROTO_UDP:
+	case ipProtoUDP:
 		// Fall through to UDP payload inspection
 	default:
 		return
@@ -170,8 +172,8 @@ func ParseIPPacket(pkt []byte, isL3 bool) Packet {
 		return parseRawIP(pkt)
 	}
 
-	// Ethernet frame
-	if len(pkt) < 34 {
+	// Ethernet frame.
+	if len(pkt) < EthHeaderSize {
 		return Packet{}
 	}
 	return parseEthernetFrame(pkt)
@@ -213,17 +215,26 @@ func parseEthernetFrame(pkt []byte) Packet {
 	// Step from no vlan tag, to single vlan tag, to QinQ tags.
 	for _, offset := range []int{0, 4, 8} {
 		headerOffsets := EthHeaderSize + offset
+		if headerOffsets > len(pkt) {
+			return Packet{}
+		}
 		pktType := binary.BigEndian.Uint16(pkt[headerOffsets-2 : headerOffsets])
 		if offset != 0 {
 			// The VLAN TCI sits right after the 802.1Q EtherType marker.
 			// For offset=4 (single tag): TCI is at pkt[14:16].
 			// For offset=8 (QinQ inner): TCI is at pkt[18:20].
 			tciStart := EthHeaderSize + offset - 4
+			if tciStart+2 > len(pkt) {
+				return Packet{}
+			}
 			tci := binary.BigEndian.Uint16(pkt[tciStart : tciStart+2])
 			ret.Dot1qTag = int(tci & 0x0FFF)
 		}
 		switch pktType {
-		case unix.ETH_P_IP:
+		case etherTypeIPv4:
+			if headerOffsets+20 > len(pkt) {
+				return Packet{}
+			}
 			ret.Version = 4
 			ret.SrcIP = net.IP(pkt[headerOffsets+12 : headerOffsets+16])
 			ret.DstIP = net.IP(pkt[headerOffsets+16 : headerOffsets+20])
@@ -232,7 +243,10 @@ func parseEthernetFrame(pkt []byte) Packet {
 			ret.Len = uint64(binary.BigEndian.Uint16(pkt[headerOffsets+2 : headerOffsets+4]))
 			detectTunnel(pkt, headerOffsets, &ret)
 			return ret
-		case unix.ETH_P_IPV6:
+		case etherTypeIPv6:
+			if headerOffsets+40 > len(pkt) {
+				return Packet{}
+			}
 			ret.Version = 6
 			ret.SrcIP = net.IP(pkt[headerOffsets+8 : headerOffsets+24])
 			ret.DstIP = net.IP(pkt[headerOffsets+24 : headerOffsets+40])
@@ -245,89 +259,6 @@ func parseEthernetFrame(pkt []byte) Packet {
 	}
 	// Not a recognised EtherType after VLAN unwinding — silently ignore.
 	return Packet{}
-}
-
-// FetchPcapSock creates a new AF_PACKET socket for capturing traffic on the
-// given interface. When promisc is true it enables PACKET_MR_PROMISC so that
-// the NIC delivers all frames (required for SPAN/mirror ports).
-//
-// For L3 interfaces (WireGuard, PPP, tun — ARPHRD_NONE/PPP), SOCK_DGRAM is
-// used instead of SOCK_RAW. SOCK_RAW on these interfaces prepends a Linux
-// cooked (SLL) header that confuses the raw IP BPF filter and parser.
-// SOCK_DGRAM strips the link-layer header and delivers the IP payload directly.
-func FetchPcapSock(dev string, promisc bool) (int, error) {
-	protocol := uint16(unix.ETH_P_ALL)
-	iface, err := net.InterfaceByName(dev)
-	if err != nil {
-		return -1, err
-	}
-	addr := &unix.SockaddrLinklayer{
-		Protocol: uint16(htons(unix.ETH_P_ALL)),
-		Ifindex:  iface.Index,
-	}
-	// Use SOCK_DGRAM for L3 interfaces to get raw IP without SLL header.
-	sockType := unix.SOCK_RAW
-	if IsL3Device(dev) {
-		sockType = unix.SOCK_DGRAM
-	}
-	fd, err := unix.Socket(unix.AF_PACKET, sockType, int(htons(protocol)))
-	if err != nil {
-		return -1, err
-	}
-	// Increase the socket receive buffer to handle high throughput without
-	// dropping packets. Default is ~208KB which fills up at ~10MB/s.
-	// 4MB gives ~400ms of buffering at 10MB/s.
-	_ = unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_RCVBUFFORCE, 4*1024*1024)
-	if err := unix.Bind(fd, addr); err != nil {
-		_ = unix.Close(fd)
-		return -1, err
-	}
-	if promisc {
-		mreq := unix.PacketMreq{
-			Ifindex: int32(iface.Index),
-			Type:    unix.PACKET_MR_PROMISC,
-		}
-		if err := unix.SetsockoptPacketMreq(fd, unix.SOL_PACKET, unix.PACKET_ADD_MEMBERSHIP, &mreq); err != nil {
-			_ = unix.Close(fd)
-			return -1, fmt.Errorf("enable promiscuous mode on %s: %w", dev, err)
-		}
-	}
-	return fd, nil
-}
-
-// ApplyBPFFilter applies the given BPF filter to the given socket descriptor.
-func ApplyBPFFilter(sockFd int, rawBpfFilter []bpf.Instruction) error {
-	expr, err := bpf.Assemble(rawBpfFilter)
-	if err != nil {
-		log.Printf("packets: BPF assemble failed: %v", err)
-		return err
-	}
-	prog := &unix.SockFprog{
-		Len:    uint16(len(expr)),
-		Filter: (*unix.SockFilter)(unsafe.Pointer(&expr[0])),
-	}
-	return unix.SetsockoptSockFprog(sockFd, unix.SOL_SOCKET, unix.SO_ATTACH_FILTER, prog)
-}
-
-func CreateEpoller(sockFD int) (int, error) {
-	unix.SetNonblock(sockFD, true)
-	epfd, err := unix.EpollCreate(20)
-	if err != nil {
-		return -1, err
-	}
-	event := unix.EpollEvent{
-		Events: unix.EPOLLIN,
-		Fd:     int32(sockFD),
-	}
-	if err := unix.EpollCtl(epfd, unix.EPOLL_CTL_ADD, sockFD, &event); err != nil {
-		unix.Close(epfd)
-		return -1, err
-	}
-	return epfd, nil
-}
-
-func htons(i uint16) uint16 {
-	return (i<<8)&0xff00 | i>>8
 }
 
 // IsL3Device returns true if the named interface is a Layer 3 (point-to-point,
@@ -359,3 +290,7 @@ func BPFFilterForDevice(dev string) []bpf.Instruction {
 	}
 	return AnyIpFilter
 }
+
+// PacketHandler is called for each captured packet. pkt is only valid for the
+// duration of the callback. wireLen is the original packet length on the wire.
+type PacketHandler func(pkt []byte, wireLen uint32)

@@ -100,6 +100,7 @@ func TestParseIPPacket(t *testing.T) {
 			want: packets.Packet{},
 		},
 	}
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := packets.ParseIPPacket(tt.pkt, false)
@@ -107,5 +108,21 @@ func TestParseIPPacket(t *testing.T) {
 				t.Errorf("mismatch (-want +got):\n%s", diff)
 			}
 		})
+	}
+}
+
+func TestParseIPPacketRejectsTruncatedEthernetAndVLANFrames(t *testing.T) {
+	frames := [][]byte{
+		make([]byte, 13),
+		append(make([]byte, 12), 0x08, 0x00),
+		append(make([]byte, 12), 0x86, 0xdd),
+		append(make([]byte, 12), 0x81, 0x00, 0x00),
+		append(make([]byte, 12), 0x81, 0x00, 0x00, 0x64, 0x08, 0x00),
+		append(make([]byte, 12), 0x88, 0xa8, 0x00, 0x64, 0x81, 0x00, 0x00),
+	}
+	for index, frame := range frames {
+		if packet := packets.ParseIPPacket(frame, false); packet.Version != 0 {
+			t.Fatalf("frame %d parsed as %+v", index, packet)
+		}
 	}
 }

@@ -65,10 +65,11 @@ systemd setup, and GeoIP options.
 
 ## bandwidth-top
 
-`bandwidth-top` is an iftop-style viewer for ad-hoc inspection of one Linux
-interface. It ranks local/remote flows with outbound and inbound lines, rolling
-2-, 10-, and 40-second rates, total TX/RX rates, and traffic amounts since start.
-It can enrich peers with PTR names, ASN, provider, and location data.
+`bandwidth-top` is an iftop-style viewer for ad-hoc inspection of one Linux or
+macOS interface. It ranks local/remote flows with outbound and inbound lines,
+rolling 2-, 10-, and 40-second rates, total TX/RX rates, and traffic amounts
+since start. It can enrich peers with PTR names, ASN, provider, and location
+data. The dashboard daemon remains Linux-only.
 
 In an interactive terminal, press `n` to enable or disable PTR lookups, `h` or
 `?` for key help, and `q` or Ctrl-C to quit. `--no-resolve`/`-n` starts with
@@ -78,17 +79,17 @@ Build and run it normally:
 
 ```bash
 make build-top
-sudo ./bandwidth-top --interface eth0
+sudo ./bandwidth-top --interface <name>
 ```
 
 Or disable public peer enrichment:
 
 ```bash
-sudo ./bandwidth-top --interface eth0 --no-public
+sudo ./bandwidth-top --interface <name> --no-public
 ```
 
-When `--interface` is omitted, the active lowest-metric default-route
-interface is selected automatically. Local MMDB files are used when available.
+When `--interface` is omitted, the active primary default-route interface is
+selected automatically. Local MMDB files are used when available.
 The CLI can also discover a ready Bandwidth Monitor service on the selected
 default gateway and use its `/api/host` endpoint. Missing data otherwise falls
 back to `ip.ffmuc.net` unless `--no-public` is set.
@@ -102,23 +103,32 @@ Common options:
 
 | Option | Default | Purpose |
 |---|---|---|
-| `--interface` | Default route | Interface to capture |
+| `--interface`, `-i` | Default route | Interface to capture |
 | `--local-network` | Interface prefixes | Local CIDR override; repeatable |
-| `--rows` | `20` | Maximum displayed peers |
+| `--rows`, `-L` | `20` | Maximum displayed peers |
 | `--refresh` | `1s` | Refresh interval |
-| `--snapshot` | Off | Print one plain snapshot and exit |
-| `--ports` | Off | Aggregate by remote port/protocol; non-initial fragments use port `-` |
+| `--snapshot`, `-t` | Off | Print one plain snapshot and exit |
+| `--ports`, `-P` | Off | Aggregate by remote port/protocol; non-initial fragments use port `-` |
 | `--no-resolve`, `-n` | Off | Disable PTR lookups and show remote IPs |
+| `--version`, `-v` | Off | Print the built version and exit |
 | `--server` | Gateway discovery | Explicit Bandwidth Monitor URL |
 | `--no-server-discovery` | Off | Disable the default-gateway probe |
 | `--no-public` | Off | Disable public enrichment fallback |
 
-`bandwidth-top` requires root or `CAP_NET_RAW`. To run an installed binary
-without root:
+On Linux, `bandwidth-top` requires root or `CAP_NET_RAW`. To run an installed
+binary without root:
 
 ```bash
 sudo setcap cap_net_raw+ep /usr/bin/bandwidth-top
 ```
+
+On macOS, packet capture uses native Berkeley Packet Filter devices without
+CGo or libpcap. It generally requires root or administrator-managed read/write
+access to `/dev/bpf*`; never make those devices world-accessible. Ethernet
+(including 802.1Q/802.1ad VLAN), null/loopback, and raw-IP BPF link types are
+understood. Other link types fail with an explicit unsupported-link error.
+The CLI validates that the selected capture interface is active,
+non-loopback, and has an assigned IPv4 or IPv6 prefix.
 
 The `bandwidth-top` and `bandwidth-monitor` packages are independent: installing
 the terminal viewer does not install or start the daemon.
@@ -127,6 +137,8 @@ the terminal viewer does not install or start the daemon.
 
 Prebuilt daemon and CLI packages are published separately on
 [GitHub Releases](https://github.com/awlx/bandwidth-monitor/releases).
+Releases also include standalone, checksummed macOS `bandwidth-top` archives for
+amd64 and arm64; they do not contain the Linux-only daemon.
 
 ### Debian and Ubuntu with APT
 

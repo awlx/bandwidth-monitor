@@ -1,4 +1,4 @@
-//go:build linux
+//go:build linux || darwin
 
 package main
 
@@ -14,7 +14,6 @@ import (
 	"bandwidth-monitor/talkers"
 
 	tea "charm.land/bubbletea/v2"
-	"golang.org/x/sys/unix"
 )
 
 const (
@@ -269,7 +268,7 @@ func viewStatus(mode bandwidthtop.ViewMode) string {
 }
 
 func captureError(err error) error {
-	return fmt.Errorf("capture failed: %w (run as root or grant CAP_NET_RAW)", err)
+	return fmt.Errorf("capture failed: %w (%s)", err, capturePrivilegeHint())
 }
 
 func rdnsStatus(enabled bool) string {
@@ -450,8 +449,7 @@ func supportsLiveTerminal(out io.Writer, snapshot bool, term string) bool {
 	if !ok {
 		return false
 	}
-	_, outputErr := unix.IoctlGetTermios(int(output.Fd()), unix.TCGETS)
-	return outputErr == nil
+	return terminalFDIsTTY(int(output.Fd()))
 }
 
 func terminalSize(out io.Writer) terminalDimensions {
@@ -459,11 +457,11 @@ func terminalSize(out io.Writer) terminalDimensions {
 	if !ok {
 		return terminalDimensions{defaultWidth, defaultHeight}
 	}
-	size, err := unix.IoctlGetWinsize(int(file.Fd()), unix.TIOCGWINSZ)
-	if err != nil || size.Col == 0 || size.Row == 0 {
+	width, height, err := terminalFDSize(int(file.Fd()))
+	if err != nil || width == 0 || height == 0 {
 		return terminalDimensions{defaultWidth, defaultHeight}
 	}
-	return terminalDimensions{width: int(size.Col), height: int(size.Row)}
+	return terminalDimensions{width: width, height: height}
 }
 
 func maxInt(a, b int) int {

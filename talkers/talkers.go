@@ -877,7 +877,7 @@ func (t *Tracker) captureDevice(device string) error {
 		return err
 	}
 	defer ring.Close()
-	log.Printf("talkers: TPACKET_V3 ring on %s", device)
+	log.Printf("talkers: packet capture active on %s", device)
 
 	// IP string cache: avoids heap-allocating net.IP.String() for every
 	// packet. At 10 MB/s there are ~7000 pps but only 10-100 unique IPs.
@@ -918,7 +918,7 @@ func (t *Tracker) captureDevice(device string) error {
 		// Phase 1: Parse all packets in the block WITHOUT holding the lock.
 		// IP parsing, string conversion, and classification happen here.
 		batch = batch[:0]
-		ring.ReadBlock(func(pkt []byte, wireLen uint32) {
+		_, err := ring.ReadBlock(func(pkt []byte, wireLen uint32) {
 			ipPacket := packets.ParseIPPacket(pkt, true)
 			if ipPacket.Version == 0 || ipPacket.IsTunnel && !t.direct {
 				return
@@ -965,6 +965,9 @@ func (t *Tracker) captureDevice(device string) error {
 				transportProtocol: transport.protocol,
 			})
 		}, 100)
+		if err != nil {
+			return err
+		}
 
 		if len(batch) == 0 {
 			continue

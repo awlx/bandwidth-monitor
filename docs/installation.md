@@ -1,8 +1,8 @@
 # Installation
 
-Bandwidth Monitor supports Linux. The daemon and `bandwidth-top` terminal
-viewer are built and packaged independently; neither package requires the
-other.
+The Bandwidth Monitor daemon supports Linux. The standalone `bandwidth-top`
+terminal viewer supports Linux and macOS. They are built and packaged
+independently; neither package requires the other.
 
 ## Release packages
 
@@ -14,10 +14,12 @@ other.
 | `.rpm` | Fedora, RHEL, and compatible distributions on amd64 or arm64 |
 | `.ipk` | OpenWrt 23.05 targets |
 | `.apk` | OpenWrt snapshot targets |
+| `.tar.gz` | Standalone macOS `bandwidth-top` on amd64 or arm64 |
 | Nix flake | NixOS and Nix on Linux |
 
-Each format has a `bandwidth-monitor` daemon package and a separate
-`bandwidth-top` package.
+Linux package formats have a `bandwidth-monitor` daemon package and a separate
+`bandwidth-top` package. macOS archives contain only `bandwidth-top` and the
+license, with a matching `.sha256` checksum.
 
 ## Debian and Ubuntu
 
@@ -155,6 +157,33 @@ Add the repository as an input and import its module:
 The flake includes GeoIP databases. Set `geoipDir` to a directory managed by
 `services.geoipupdate` if you prefer independently updated databases.
 
+## macOS standalone CLI
+
+Download the archive matching the Mac architecture:
+
+- `bandwidth-top_<version>_darwin_arm64.tar.gz` for Apple silicon
+- `bandwidth-top_<version>_darwin_amd64.tar.gz` for Intel
+
+Verify, extract, and install it:
+
+```bash
+shasum -a 256 -c bandwidth-top_<version>_darwin_<arch>.tar.gz.sha256
+tar -xzf bandwidth-top_<version>_darwin_<arch>.tar.gz
+sudo install -m 0755 bandwidth-top /usr/local/bin/bandwidth-top
+sudo bandwidth-top
+```
+
+macOS capture uses native `/dev/bpf*` devices and does not require CGo or
+libpcap. Running as root is the default. Administrators can instead grant a
+dedicated trusted group read/write access to the BPF devices; do not use
+world-readable or world-writable device permissions. The CLI supports Ethernet
+(including 802.1Q/802.1ad VLAN), null/loopback, and raw-IP BPF link framing;
+other Darwin link types are rejected explicitly. The selected interface must be
+active, non-loopback, and have an assigned IPv4 or IPv6 address.
+
+The macOS archive does not include or imply support for the Linux-only
+`bandwidth-monitor` daemon.
+
 ## Build from source
 
 Go 1.25 or newer is required.
@@ -173,6 +202,8 @@ Build the terminal viewer separately:
 make build-top
 sudo ./bandwidth-top
 ```
+
+The same `make build-top` command builds the native standalone CLI on macOS.
 
 ## Standalone systemd installation
 
