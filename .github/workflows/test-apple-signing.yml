@@ -36,6 +36,7 @@ jobs:
             machine: x86_64
             peer_goarch: arm64
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
 
     steps:
       - name: Check out selected source ref
@@ -187,13 +188,14 @@ jobs:
           ./trusted/packaging/generate-homebrew-cask.sh \
             "v$TEST_CASK_VERSION" "$assets" "$cask"
           ruby -c "$cask"
-          HOMEBREW_NO_AUTO_UPDATE=1 brew style "$cask"
 
           HOMEBREW_NO_AUTO_UPDATE=1 brew tap-new --no-git "$tap_name"
           tapped=true
           tap_path="$(brew --repository "$tap_name")"
           mkdir -p "$tap_path/Casks"
           install -m 0644 "$cask" "$tap_path/Casks/bandwidth-top.rb"
+          HOMEBREW_NO_AUTO_UPDATE=1 brew style \
+            "$tap_path/Casks/bandwidth-top.rb"
           HOMEBREW_NO_AUTO_UPDATE=1 brew audit --cask --arch all \
             "$tap_name/bandwidth-top"
 
