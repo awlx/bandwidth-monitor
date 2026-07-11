@@ -241,6 +241,13 @@ the listed permissions from the installation token and fails explicitly when
 the App, auto-merge, branch protection, or required checks are missing. No
 personal access token is used.
 
+Secret and variable names can be checked during setup, but their presence does
+not prove that the stored credentials are valid. Workflow code never reads
+secret values back from GitHub or prints them. At runtime, GitHub validates the
+App credentials when issuing the installation token, while `security`,
+`codesign`, and `notarytool` validate the Apple credentials. Invalid values
+stop the workflow before a release or cask pull request can be published.
+
 For the exact install command above to work without bypassing macOS quarantine,
 configure these Actions secrets before creating the release tag:
 

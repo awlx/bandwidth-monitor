@@ -90,6 +90,16 @@ if MACOS_SIGNING_CERTIFICATE=partial \
 		>/dev/null 2>&1; then
 	fail "signing script accepted a partial credential configuration"
 fi
+if MACOS_NOTARY_ISSUER_ID=invalid \
+	MACOS_NOTARY_KEY=invalid \
+	MACOS_NOTARY_KEY_ID=invalid \
+	MACOS_SIGNING_CERTIFICATE=invalid \
+	MACOS_SIGNING_CERTIFICATE_PASSWORD=invalid \
+	MACOS_SIGNING_IDENTITY=invalid \
+	"$repo/packaging/sign-and-notarize-darwin.sh" "$tmp/bandwidth-top-arm64" \
+	>/dev/null 2>&1; then
+	fail "signing script accepted invalid credentials"
+fi
 
 if [ "${1:-}" = "--brew" ]; then
 	command -v brew >/dev/null 2>&1 || fail "brew is required for --brew"

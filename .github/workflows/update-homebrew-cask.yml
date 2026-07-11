@@ -87,7 +87,7 @@ jobs:
           )
           echo "RELEASE_TAG_OBJECT_SHA=$tag_object" >> "$GITHUB_ENV"
 
-      - name: Validate GitHub App configuration
+      - name: Require GitHub App configuration
         env:
           CASK_UPDATE_APP_CLIENT_ID: ${{ vars.CASK_UPDATE_APP_CLIENT_ID }}
           CASK_UPDATE_APP_PRIVATE_KEY: ${{ secrets.CASK_UPDATE_APP_PRIVATE_KEY }}
