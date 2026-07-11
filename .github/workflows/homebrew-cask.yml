@@ -9,7 +9,7 @@ on:
       - synchronize
     paths:
       - '.github/workflows/homebrew-cask.yml'
-      - '.github/workflows/apple-signing-smoke.yml'
+      - '.github/workflows/test-apple-signing.yml'
       - '.github/workflows/update-homebrew-cask.yml'
       - '.github/workflows/release.yml'
       - 'Casks/**'

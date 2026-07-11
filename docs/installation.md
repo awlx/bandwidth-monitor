@@ -263,13 +263,13 @@ After the smoke workflow reaches the default branch and before creating the
 first tagged macOS release, validate all six credentials once with:
 
 ```bash
-gh workflow run apple-signing-smoke.yml \
+gh workflow run test-apple-signing.yml \
   --repo awlx/bandwidth-monitor \
   --ref main \
   -f ref=main
 ```
 
-The workflow is named **Apple signing smoke test**. GitHub only permits manual
+The workflow is named **Test Apple signing**. GitHub only permits manual
 dispatch after the workflow file exists on the default branch, so this command
 must run after the workflow is merged. The `--ref main` option selects the
 trusted workflow definition; the `ref=main` input selects the exact source ref

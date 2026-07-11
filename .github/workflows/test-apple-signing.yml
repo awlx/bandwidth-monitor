@@ -1,4 +1,4 @@
-name: Apple signing smoke test
+name: Test Apple signing
 
 on:
   workflow_dispatch:
