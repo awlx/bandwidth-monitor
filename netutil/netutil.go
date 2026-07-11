@@ -4,10 +4,7 @@ package netutil
 
 import (
 	"net"
-	"syscall"
 	"time"
-
-	"golang.org/x/sys/unix"
 )
 
 // CGNAT is the RFC 6598 Carrier-Grade NAT range (100.64.0.0/10).
@@ -90,16 +87,4 @@ func ListenConfigForInterface(iface string) *net.ListenConfig {
 		return &net.ListenConfig{}
 	}
 	return &net.ListenConfig{Control: bindControl(iface)}
-}
-
-func bindControl(iface string) func(network, address string, c syscall.RawConn) error {
-	return func(_, _ string, c syscall.RawConn) error {
-		var bindErr error
-		if ctrlErr := c.Control(func(fd uintptr) {
-			bindErr = unix.BindToDevice(int(fd), iface)
-		}); ctrlErr != nil {
-			return ctrlErr
-		}
-		return bindErr
-	}
 }

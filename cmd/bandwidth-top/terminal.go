@@ -1,8 +1,9 @@
-//go:build linux
+//go:build linux || darwin
 
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -12,6 +13,7 @@ import (
 
 	"bandwidth-monitor/bandwidthtop"
 	"bandwidth-monitor/talkers"
+	"bandwidth-monitor/version"
 
 	tea "charm.land/bubbletea/v2"
 	"golang.org/x/sys/unix"
@@ -39,6 +41,7 @@ type liveEnricher interface {
 
 type resolverControl interface {
 	SetEnabled(bool)
+	LookupAddrAsync(string) string
 }
 
 type liveModelConfig struct {
@@ -111,12 +114,26 @@ func (m *liveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m *liveModel) handleKey(key string) (tea.Model, tea.Cmd) {
+	if m.showHelp {
+		switch key {
+		case "q", "ctrl+c":
+			return m, tea.Quit
+		case "h", "?", "esc":
+			m.showHelp = false
+			return m, nil
+		case "p", "n":
+			// Keep advertised mode and PTR controls active while help is open.
+		default:
+			return m, nil
+		}
+	}
 	switch key {
 	case "q", "ctrl+c":
 		return m, tea.Quit
 	case "n":
 		m.noResolve = !m.noResolve
 		m.config.resolver.SetEnabled(!m.noResolve)
+		m.refreshSnapshot()
 	case "p":
 		if m.mode == bandwidthtop.ViewPorts {
 			m.mode = bandwidthtop.ViewHosts
@@ -132,16 +149,19 @@ func (m *liveModel) handleKey(key string) (tea.Model, tea.Cmd) {
 
 func (m *liveModel) refreshSnapshot() {
 	m.rows, m.totals = snapshotRowsForMode(
-		m.config.tracker, m.config.enricher, m.config.rows, m.noResolve, m.mode)
+		m.config.tracker, m.config.enricher, m.config.resolver,
+		m.config.rows, m.noResolve, m.mode)
 }
 
 func (m *liveModel) View() tea.View {
 	size := liveDimensions(m.size, m.config.width)
-	status := []string{viewStatus(m.mode) + " | " + rdnsStatus(!m.noResolve) + " | p ports | n rDNS | h/? help | q quit"}
-	status = append(status, m.config.enricher.SourceStatusLines(size.width)...)
 	if m.showHelp {
-		status = append(status, "keys: p toggle ports | n toggle rDNS | q quit | h/? close help")
+		view := tea.NewView(renderHelpScreen(size, m.mode, !m.noResolve))
+		view.AltScreen = true
+		return view
 	}
+	status := []string{viewStatus(m.mode) + " | " + rdnsStatus(!m.noResolve) + " | p mode | n rDNS | ? help | q quit"}
+	status = append(status, m.config.enricher.SourceStatusLines(size.width)...)
 	if lookupStatus := lookupErrorStatus(m.rows); lookupStatus != "" {
 		status = append(status, lookupStatus)
 	}
@@ -154,6 +174,70 @@ func (m *liveModel) View() tea.View {
 		m.config.title, status, rows, m.totals, m.config.rows, size, true, m.mode))
 	view.AltScreen = true
 	return view
+}
+
+func renderHelpScreen(size terminalDimensions, mode bandwidthtop.ViewMode, resolve bool) string {
+	width, height := size.width, size.height
+	if width <= 0 {
+		width = defaultWidth
+	}
+	if height <= 0 {
+		height = defaultHeight
+	}
+	current := fmt.Sprintf("Current: %s | %s", viewStatus(mode), rdnsStatus(resolve))
+	lines := []string{
+		fmt.Sprintf("bandwidth-top %s - help", version.String()),
+		current,
+		"",
+		"Modes: hosts group by remote IP; ports group by remote IP, port, and protocol.",
+		`Remote port: outbound destination, inbound source; "-" means unavailable.`,
+		"Directions: LOCAL => REMOTE is TX; LOCAL <= REMOTE is RX.",
+		"Rates: 2s, 10s, and 40s are rolling bit/s averages.",
+		"Graph: bars scale to the largest directional 2s rate currently shown.",
+		"SINCE START: cumulative TX/RX bytes; changing views does not reset totals.",
+		"Enrichment: local MMDB -> monitor -> public fallback, for remote peers only.",
+		"PTR: one shared async cache resolves both endpoints; raw IPs remain the fallback.",
+		"",
+		"Keys: p host/port mode | n PTR on/off",
+		"      h / ? / Esc close help | q / Ctrl-C quit",
+		"",
+		"CLI: -i interface | -L rows",
+		"     -t snapshot | -P ports",
+		"     -n no-resolve | -v version",
+		"",
+		"Press h, ?, or Esc to return.",
+	}
+	if width < 72 {
+		lines = []string{
+			fmt.Sprintf("bandwidth-top %s - help", version.String()),
+			current,
+			"",
+			"Modes: hosts=remote IP; ports=remote IP+port/protocol.",
+			`Port: outbound dst; inbound src; "-" if unavailable.`,
+			"Arrows: => TX local-to-remote; <= RX remote-to-local.",
+			"Rates: rolling 2s / 10s / 40s bit/s averages.",
+			"Graph: scaled to the largest shown directional 2s rate.",
+			"SINCE START: cumulative TX/RX; view changes keep totals.",
+			"Enrich: local MMDB -> monitor -> public; remote only.",
+			"PTR: shared async cache for both ends; raw IP fallback.",
+			"",
+			"Keys: p mode | n PTR | h/?/Esc back | q/Ctrl-C quit",
+			"CLI: -i iface | -L rows | -t snapshot | -P ports",
+			"     -n no-resolve | -v version",
+			"",
+			"Press h, ?, or Esc to return.",
+		}
+	}
+	lines = boundedLines(lines, width)
+	if len(lines) <= height {
+		return strings.Join(lines, "\n")
+	}
+	if height == 1 {
+		return lines[0]
+	}
+	visible := append([]string(nil), lines[:height-1]...)
+	visible = append(visible, bandwidthtop.Truncate("Press h, ?, or Esc to return.", width))
+	return strings.Join(visible, "\n")
 }
 
 func tickAfter(delay time.Duration) tea.Cmd {
@@ -181,11 +265,13 @@ func snapshotRows(
 	enricher interface {
 		Lookup(string) bandwidthtop.Enrichment
 	},
+	resolver resolverControl,
 	rowLimit int,
 	noResolve bool,
 ) ([]bandwidthtop.Row, bandwidthtop.Totals) {
 	stats, rateTotals := tracker.DirectBandwidthSnapshot(rowLimit)
-	return mapSnapshotRows(stats, rateTotals, enricher, noResolve, bandwidthtop.ViewHosts)
+	return mapSnapshotRows(
+		stats, rateTotals, enricher, resolver, noResolve, bandwidthtop.ViewHosts)
 }
 
 func snapshotRowsForMode(
@@ -195,6 +281,7 @@ func snapshotRowsForMode(
 	enricher interface {
 		Lookup(string) bandwidthtop.Enrichment
 	},
+	resolver resolverControl,
 	rowLimit int,
 	noResolve bool,
 	mode bandwidthtop.ViewMode,
@@ -204,7 +291,7 @@ func snapshotRowsForMode(
 		directMode = talkers.DirectViewPorts
 	}
 	stats, rateTotals := tracker.DirectBandwidthSnapshotForMode(directMode, rowLimit)
-	return mapSnapshotRows(stats, rateTotals, enricher, noResolve, mode)
+	return mapSnapshotRows(stats, rateTotals, enricher, resolver, noResolve, mode)
 }
 
 func mapSnapshotRows(
@@ -213,20 +300,32 @@ func mapSnapshotRows(
 	enricher interface {
 		Lookup(string) bandwidthtop.Enrichment
 	},
+	resolver resolverControl,
 	noResolve bool,
 	mode bandwidthtop.ViewMode,
 ) ([]bandwidthtop.Row, bandwidthtop.Totals) {
 	rows := make([]bandwidthtop.Row, 0, len(stats))
 	enrichmentByIP := make(map[string]bandwidthtop.Enrichment, len(stats))
+	localHostnameByIP := make(map[string]string)
 	for _, stat := range stats {
 		info, ok := enrichmentByIP[stat.IP]
 		if !ok {
 			info = enricher.Lookup(stat.IP)
 			enrichmentByIP[stat.IP] = info
 		}
+		localHostname := ""
+		if !noResolve && resolver != nil {
+			var ok bool
+			localHostname, ok = localHostnameByIP[stat.LocalIP]
+			if !ok {
+				localHostname = resolver.LookupAddrAsync(stat.LocalIP)
+				localHostnameByIP[stat.LocalIP] = localHostname
+			}
+		}
 		row := bandwidthtop.Row{
-			LocalIP:   stat.LocalIP,
-			NoResolve: noResolve,
+			LocalIP:       stat.LocalIP,
+			LocalHostname: localHostname,
+			NoResolve:     noResolve,
 			Stat: bandwidthtop.Stat{
 				IP: stat.IP, Hostname: stat.Hostname, Packets: stat.Packets,
 				Rx: bandwidthtop.RateWindows{
@@ -269,7 +368,10 @@ func viewStatus(mode bandwidthtop.ViewMode) string {
 }
 
 func captureError(err error) error {
-	return fmt.Errorf("capture failed: %w (run as root or grant CAP_NET_RAW)", err)
+	if errors.Is(err, unix.EACCES) || errors.Is(err, unix.EPERM) {
+		return fmt.Errorf("capture failed: %w (%s)", err, capturePrivilegeHint())
+	}
+	return fmt.Errorf("capture failed: %w", err)
 }
 
 func rdnsStatus(enabled bool) string {
@@ -450,8 +552,7 @@ func supportsLiveTerminal(out io.Writer, snapshot bool, term string) bool {
 	if !ok {
 		return false
 	}
-	_, outputErr := unix.IoctlGetTermios(int(output.Fd()), unix.TCGETS)
-	return outputErr == nil
+	return terminalFDIsTTY(int(output.Fd()))
 }
 
 func terminalSize(out io.Writer) terminalDimensions {
@@ -459,11 +560,11 @@ func terminalSize(out io.Writer) terminalDimensions {
 	if !ok {
 		return terminalDimensions{defaultWidth, defaultHeight}
 	}
-	size, err := unix.IoctlGetWinsize(int(file.Fd()), unix.TIOCGWINSZ)
-	if err != nil || size.Col == 0 || size.Row == 0 {
+	width, height, err := terminalFDSize(int(file.Fd()))
+	if err != nil || width == 0 || height == 0 {
 		return terminalDimensions{defaultWidth, defaultHeight}
 	}
-	return terminalDimensions{width: int(size.Col), height: int(size.Row)}
+	return terminalDimensions{width: width, height: height}
 }
 
 func maxInt(a, b int) int {

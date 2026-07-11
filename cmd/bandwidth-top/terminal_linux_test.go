@@ -63,24 +63,39 @@ func (e *fakeLiveEnricher) SourceStatusLines(int) []string {
 }
 
 type fakeResolverControl struct {
-	states []bool
+	states  []bool
+	names   map[string]string
+	lookups map[string]int
 }
 
 func (r *fakeResolverControl) SetEnabled(enabled bool) {
 	r.states = append(r.states, enabled)
 }
 
+func (r *fakeResolverControl) LookupAddrAsync(ip string) string {
+	if r.lookups != nil {
+		r.lookups[ip]++
+	}
+	if name := r.names[ip]; name != "" {
+		return name
+	}
+	return ip
+}
+
 func TestLiveModelKeysToggleDNSHelpAndQuit(t *testing.T) {
 	model, resolver := testLiveModel(false)
 	model.rows = terminalTestRows(1)
 	model.rows[0].Stat.Hostname = "cached.example"
+	model.rows[0].LocalHostname = "local.example"
 
 	updateModel(t, model, keyPress("n"))
 	if !model.noResolve || len(resolver.states) != 1 || resolver.states[0] {
 		t.Fatalf("DNS toggle state=%v calls=%v", model.noResolve, resolver.states)
 	}
 	if view := stripTerminalANSI(model.View().Content); !strings.Contains(view, "rdns: off") ||
-		!strings.Contains(view, "198.51.100.20") || strings.Contains(view, "cached.example") {
+		!strings.Contains(view, "192.0.2.10") ||
+		!strings.Contains(view, "198.51.100.20") ||
+		strings.Contains(view, "local.example") || strings.Contains(view, "cached.example") {
 		t.Fatalf("disabled DNS view is wrong:\n%s", view)
 	}
 
@@ -89,6 +104,7 @@ func TestLiveModelKeysToggleDNSHelpAndQuit(t *testing.T) {
 		t.Fatalf("DNS re-enable state=%v calls=%v", model.noResolve, resolver.states)
 	}
 	if view := stripTerminalANSI(model.View().Content); !strings.Contains(view, "rdns: on") ||
+		!strings.Contains(view, "local.example") ||
 		!strings.Contains(view, "cached.example") {
 		t.Fatalf("enabled DNS view is wrong:\n%s", view)
 	}
@@ -149,6 +165,7 @@ func TestLiveModelPortModeTransitionsStatusHelpAndDNS(t *testing.T) {
 	updateModel(t, model, tickMsg(time.Now()))
 	if model.mode != bandwidthtop.ViewPorts || !model.noResolve ||
 		tracker.modes[2] != talkers.DirectViewPorts ||
+		tracker.modes[3] != talkers.DirectViewPorts ||
 		len(resolver.states) != 1 || resolver.states[0] {
 		t.Fatalf("port+DNS mode=%v noResolve=%v snapshots=%v resolver=%v",
 			model.mode, model.noResolve, tracker.modes, resolver.states)
@@ -162,7 +179,12 @@ func TestLiveModelPortModeTransitionsStatusHelpAndDNS(t *testing.T) {
 	updateModel(t, model, keyPress("?"))
 	help := stripTerminalANSI(model.View().Content)
 	for _, want := range []string{
-		"p toggle ports", "n toggle rDNS", "q quit", "h/? close help",
+		"bandwidth-top", "ports group by remote IP, port, and protocol",
+		"LOCAL => REMOTE is TX", "2s, 10s, and 40s", "SINCE START",
+		"local MMDB -> monitor -> public fallback",
+		"shared async cache resolves both endpoints",
+		"-i interface", "-L rows", "-t snapshot", "-P ports",
+		"-n no-resolve", "-v version", "h / ? / Esc close help",
 	} {
 		if !strings.Contains(help, want) {
 			t.Fatalf("help missing %q:\n%s", want, help)
@@ -173,15 +195,70 @@ func TestLiveModelPortModeTransitionsStatusHelpAndDNS(t *testing.T) {
 		t.Fatalf("UI state changes altered cumulative totals: %+v", model.totals)
 	}
 	updateModel(t, model, keyPress("p"))
-	if tracker.modes[3] != talkers.DirectViewHosts {
+	if tracker.modes[4] != talkers.DirectViewHosts {
 		t.Fatalf("host toggle did not refresh immediately: snapshots=%v", tracker.modes)
 	}
 	updateModel(t, model, tickMsg(time.Now()))
-	if model.mode != bandwidthtop.ViewHosts || tracker.modes[4] != talkers.DirectViewHosts {
+	if model.mode != bandwidthtop.ViewHosts || tracker.modes[5] != talkers.DirectViewHosts {
 		t.Fatalf("return mode=%v snapshots=%v", model.mode, tracker.modes)
 	}
-	if got := enricher.lookups["198.51.100.20"]; got != 5 {
+	if got := enricher.lookups["198.51.100.20"]; got != 6 {
 		t.Fatalf("duplicate enrichment within port rows: lookups=%d", got)
+	}
+}
+
+func TestMapSnapshotRowsResolvesEachLocalIPOnceAcrossHostAndPortRows(t *testing.T) {
+	stats := []talkers.DirectTalkerStat{
+		{
+			LocalIP: "192.0.2.10",
+			TalkerStat: talkers.TalkerStat{
+				IP: "198.51.100.20", Hostname: "remote-a.example",
+			},
+			Protocol: "TCP", RemotePort: 443, HasPort: true,
+		},
+		{
+			LocalIP: "192.0.2.10",
+			TalkerStat: talkers.TalkerStat{
+				IP: "203.0.113.20", Hostname: "remote-b.example",
+			},
+			Protocol: "UDP", RemotePort: 53, HasPort: true,
+		},
+	}
+	resolver := &fakeResolverControl{
+		names:   map[string]string{"192.0.2.10": "local.example"},
+		lookups: make(map[string]int),
+	}
+	for _, mode := range []bandwidthtop.ViewMode{bandwidthtop.ViewHosts, bandwidthtop.ViewPorts} {
+		rows, _ := mapSnapshotRows(
+			stats, talkers.DirectRateTotals{}, &fakeLiveEnricher{}, resolver, false, mode)
+		if len(rows) != 2 || rows[0].LocalHostname != "local.example" ||
+			rows[1].LocalHostname != "local.example" {
+			t.Fatalf("mode=%v rows=%+v", mode, rows)
+		}
+	}
+	if got := resolver.lookups["192.0.2.10"]; got != 2 {
+		t.Fatalf("local resolver calls=%d, want one per rendered snapshot", got)
+	}
+}
+
+func TestMapSnapshotRowsNoResolveSkipsLocalPTR(t *testing.T) {
+	resolver := &fakeResolverControl{lookups: make(map[string]int)}
+	rows, _ := mapSnapshotRows(
+		[]talkers.DirectTalkerStat{{
+			LocalIP: "192.0.2.10",
+			TalkerStat: talkers.TalkerStat{
+				IP: "198.51.100.20", Hostname: "remote.example",
+			},
+		}},
+		talkers.DirectRateTotals{},
+		&fakeLiveEnricher{},
+		resolver,
+		true,
+		bandwidthtop.ViewHosts,
+	)
+	if len(rows) != 1 || rows[0].LocalHostname != "" || !rows[0].NoResolve ||
+		len(resolver.lookups) != 0 {
+		t.Fatalf("rows=%+v lookups=%v", rows, resolver.lookups)
 	}
 }
 
@@ -589,7 +666,9 @@ func TestLiveTerminalSupportsTTYOutputWithRedirectedInput(t *testing.T) {
 }
 
 func testLiveModel(noResolve bool) (*liveModel, *fakeResolverControl) {
-	resolver := &fakeResolverControl{}
+	resolver := &fakeResolverControl{
+		names: map[string]string{"192.0.2.10": "local.example"},
+	}
 	tracker := &fakeLiveTracker{
 		errors: make(chan error),
 		rows: []talkers.DirectTalkerStat{{

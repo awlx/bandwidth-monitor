@@ -1,4 +1,4 @@
-//go:build linux
+//go:build linux || darwin
 
 package main
 
@@ -17,6 +17,7 @@ import (
 	"bandwidth-monitor/bandwidthtop"
 	"bandwidth-monitor/resolver"
 	"bandwidth-monitor/talkers"
+	"bandwidth-monitor/version"
 
 	tea "charm.land/bubbletea/v2"
 )
@@ -29,50 +30,32 @@ func main() {
 }
 
 func run(args []string, stdout, stderr io.Writer) error {
-	fs := flag.NewFlagSet("bandwidth-top", flag.ContinueOnError)
-	fs.SetOutput(stderr)
-	ifaceName := fs.String("interface", "", "capture interface (default: lowest-metric default route)")
-	var localNetworkFlags bandwidthtop.LocalNetworkFlags
-	fs.Var(&localNetworkFlags, "local-network", "local CIDR override (repeatable; replaces interface prefixes)")
-	rows := fs.Int("rows", 20, "maximum rows")
-	refresh := fs.Duration("refresh", time.Second, "refresh interval")
-	snapshot := fs.Bool("snapshot", false, "print one plain snapshot and exit")
-	ports := fs.Bool("ports", false, "aggregate by remote port and protocol (view: ports)")
-	asnPath := fs.String("asn-mmdb", discover("GeoLite2-ASN.mmdb"), "ASN MMDB path")
-	cityPath := fs.String("city-mmdb", discoverCity(), "city/country MMDB path")
-	server := fs.String("server", "", "bandwidth-monitor base URL for enrichment")
-	noServerDiscovery := fs.Bool("no-server-discovery", false, "disable one-time default-gateway monitor discovery")
-	publicURL := fs.String("public-url", bandwidthtop.DefaultPublicURL, "public enrichment API base URL")
-	noPublic := fs.Bool("no-public", false, "disable public enrichment fallback")
-	noResolve := false
-	fs.BoolVar(&noResolve, "no-resolve", false, "disable reverse DNS and show remote IPs")
-	fs.BoolVar(&noResolve, "n", false, "disable reverse DNS and show remote IPs (shorthand)")
-	width := fs.Int("width", 0, "output width in columns (default: terminal width)")
-	fs.Usage = func() {
-		fmt.Fprintln(stderr, "Usage: bandwidth-top [options]")
-		fmt.Fprintln(stderr, "Live AF_PACKET traffic viewer; requires root or CAP_NET_RAW.")
-		fmt.Fprintln(stderr, "Local databases and monitor readiness are checked once at startup.")
-		fs.PrintDefaults()
-	}
-	if err := fs.Parse(args); err != nil {
+	options, err := parseCLIOptions(args, stderr)
+	if err != nil {
 		return err
 	}
-	if *rows <= 0 || *refresh <= 0 {
+	if options.showVersion {
+		_, err := fmt.Fprintf(stdout, "bandwidth-top %s\n", version.String())
+		return err
+	}
+	if options.rows <= 0 || options.refresh <= 0 {
 		return fmt.Errorf("rows and refresh must be positive")
 	}
 
-	selected, err := bandwidthtop.SelectCaptureInterface(*ifaceName)
+	selected, err := bandwidthtop.SelectCaptureInterface(options.interfaceName)
 	if err != nil {
 		return err
 	}
 	iface := selected.Interface
-	localNetworks := bandwidthtop.EffectiveLocalNetworks(selected.LocalNets, localNetworkFlags.Networks())
+	localNetworks := bandwidthtop.EffectiveLocalNetworks(
+		selected.LocalNets, options.localNetworks.Networks())
 	monitorURL, monitorDiscovery := bandwidthtop.MonitorServerURL(
-		*server, *noServerDiscovery, selected.Gateway, iface.Name)
+		options.server, options.noServerDiscovery, selected.Gateway, iface.Name)
 	enricher, err := bandwidthtop.NewEnricherWithDatabases(bandwidthtop.Config{
-		ServerURL: monitorURL, PublicURL: *publicURL, DisablePublic: *noPublic,
-		MonitorDiscovery: monitorDiscovery, DisableMonitorDiscovery: *noServerDiscovery,
-	}, *cityPath, *asnPath)
+		ServerURL: monitorURL, PublicURL: options.publicURL,
+		DisablePublic: options.noPublic, MonitorDiscovery: monitorDiscovery,
+		DisableMonitorDiscovery: options.noServerDiscovery,
+	}, options.cityPath, options.asnPath)
 	if err != nil {
 		return err
 	}
@@ -80,29 +63,29 @@ func run(args []string, stdout, stderr io.Writer) error {
 	for _, warning := range enricher.StartupWarnings() {
 		fmt.Fprintln(stderr, "bandwidth-top:", warning)
 	}
-	liveTerminal := supportsLiveTerminal(stdout, *snapshot, os.Getenv("TERM"))
-	if !*snapshot && !liveTerminal {
+	liveTerminal := supportsLiveTerminal(stdout, options.snapshot, os.Getenv("TERM"))
+	if !options.snapshot && !liveTerminal {
 		fmt.Fprintln(stderr, "bandwidth-top: non-interactive terminal; rendering one plain snapshot")
 	}
 	viewMode := bandwidthtop.ViewHosts
-	if *ports {
+	if options.ports {
 		viewMode = bandwidthtop.ViewPorts
 	}
 	log.SetOutput(io.Discard)
 	dns := resolver.New()
-	dns.SetEnabled(!noResolve)
+	dns.SetEnabled(!options.noResolve)
 	defer dns.Stop()
 	tracker := talkers.NewDirect(iface.Name, false, localNetworks, nil, dns)
 	go tracker.Run()
 	defer tracker.Stop()
 
 	title := fmt.Sprintf("bandwidth-top  interface=%s  refresh=%s  rates=bit/s",
-		iface.Name, refresh.String())
+		iface.Name, options.refresh.String())
 	if liveTerminal {
 		done := make(chan struct{})
 		model := newLiveModel(liveModelConfig{
-			title: title, rows: *rows, refresh: *refresh, width: *width,
-			noResolve: noResolve, tracker: tracker, enricher: enricher, resolver: dns,
+			title: title, rows: options.rows, refresh: options.refresh, width: options.width,
+			noResolve: options.noResolve, tracker: tracker, enricher: enricher, resolver: dns,
 			initialMode: viewMode, done: done,
 		})
 		final, programErr := tea.NewProgram(
@@ -123,13 +106,73 @@ func run(args []string, stdout, stderr io.Writer) error {
 		return nil
 	}
 
-	return runSnapshot(stdout, tracker, enricher, title, *rows, *refresh, *width, noResolve, viewMode)
+	return runSnapshot(
+		stdout, tracker, enricher, dns, title, options.rows, options.refresh,
+		options.width, options.noResolve, viewMode,
+	)
+}
+
+type cliOptions struct {
+	interfaceName     string
+	localNetworks     bandwidthtop.LocalNetworkFlags
+	rows              int
+	refresh           time.Duration
+	snapshot          bool
+	ports             bool
+	asnPath           string
+	cityPath          string
+	server            string
+	noServerDiscovery bool
+	publicURL         string
+	noPublic          bool
+	noResolve         bool
+	width             int
+	showVersion       bool
+}
+
+func parseCLIOptions(args []string, stderr io.Writer) (cliOptions, error) {
+	var options cliOptions
+	fs := flag.NewFlagSet("bandwidth-top", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	fs.StringVar(&options.interfaceName, "interface", "", "capture interface (default: primary default route)")
+	fs.StringVar(&options.interfaceName, "i", "", "capture interface (shorthand)")
+	fs.Var(&options.localNetworks, "local-network", "local CIDR override (repeatable; replaces interface prefixes)")
+	fs.IntVar(&options.rows, "rows", 20, "maximum rows")
+	fs.IntVar(&options.rows, "L", 20, "maximum rows (shorthand)")
+	fs.DurationVar(&options.refresh, "refresh", time.Second, "refresh interval")
+	fs.BoolVar(&options.snapshot, "snapshot", false, "print one plain snapshot and exit")
+	fs.BoolVar(&options.snapshot, "t", false, "print one plain snapshot and exit (shorthand)")
+	fs.BoolVar(&options.ports, "ports", false, "aggregate by remote port and protocol (view: ports)")
+	fs.BoolVar(&options.ports, "P", false, "aggregate by remote port and protocol (shorthand)")
+	fs.StringVar(&options.asnPath, "asn-mmdb", discover("GeoLite2-ASN.mmdb"), "ASN MMDB path")
+	fs.StringVar(&options.cityPath, "city-mmdb", discoverCity(), "city/country MMDB path")
+	fs.StringVar(&options.server, "server", "", "bandwidth-monitor base URL for enrichment")
+	fs.BoolVar(&options.noServerDiscovery, "no-server-discovery", false, "disable one-time default-gateway monitor discovery")
+	fs.StringVar(&options.publicURL, "public-url", bandwidthtop.DefaultPublicURL, "public enrichment API base URL")
+	fs.BoolVar(&options.noPublic, "no-public", false, "disable public enrichment fallback")
+	fs.BoolVar(&options.noResolve, "no-resolve", false, "disable reverse DNS and show raw endpoint IPs")
+	fs.BoolVar(&options.noResolve, "n", false, "disable reverse DNS and show raw endpoint IPs (shorthand)")
+	fs.IntVar(&options.width, "width", 0, "output width in columns (default: terminal width)")
+	fs.BoolVar(&options.showVersion, "version", false, "print version and exit")
+	fs.BoolVar(&options.showVersion, "v", false, "print version and exit (shorthand)")
+	fs.Usage = func() {
+		fmt.Fprintf(stderr, "bandwidth-top %s\n", version.String())
+		fmt.Fprintln(stderr, "Usage: bandwidth-top [options]")
+		fmt.Fprintln(stderr, captureUsageText())
+		fmt.Fprintln(stderr, "Local databases and monitor readiness are checked once at startup.")
+		fs.PrintDefaults()
+	}
+	if err := fs.Parse(args); err != nil {
+		return cliOptions{}, err
+	}
+	return options, nil
 }
 
 func runSnapshot(
 	stdout io.Writer,
 	tracker *talkers.Tracker,
 	enricher *bandwidthtop.Enricher,
+	dns resolverControl,
 	title string,
 	rows int,
 	refresh time.Duration,
@@ -154,7 +197,8 @@ func runSnapshot(
 	case <-timer.C:
 	}
 
-	viewRows, totals := snapshotRowsForMode(tracker, enricher, rows, noResolve, mode)
+	viewRows, totals := snapshotRowsForMode(
+		tracker, enricher, dns, rows, noResolve, mode)
 	enricher.Wait()
 	for i := range viewRows {
 		viewRows[i].Info = enricher.Lookup(viewRows[i].Stat.IP)

@@ -1,6 +1,9 @@
+//go:build linux
+
 package packets
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"sync/atomic"
@@ -208,16 +211,11 @@ func (r *Ring) IsL3() bool {
 	return r.isL3
 }
 
-// PacketHandler is called for each captured packet.
-// pkt is a slice into the mmap'd ring — it must not be retained after return.
-// wireLen is the original packet length on the wire (may exceed len(pkt)).
-type PacketHandler func(pkt []byte, wireLen uint32)
-
 // ReadBlock polls for the next ready block, walks all packets in it,
 // calls handler for each, then releases the block back to the kernel.
 // Returns false if the poll timed out (no packets).
 // The timeout is in milliseconds; -1 blocks forever.
-func (r *Ring) ReadBlock(handler PacketHandler, timeoutMs int) bool {
+func (r *Ring) ReadBlock(handler PacketHandler, timeoutMs int) (bool, error) {
 	offset := uintptr(r.blockIdx) * uintptr(r.blockSize)
 	bd := (*blockDesc)(unsafe.Pointer(&r.ring[offset]))
 
@@ -225,10 +223,15 @@ func (r *Ring) ReadBlock(handler PacketHandler, timeoutMs int) bool {
 	status := atomic.LoadUint32(&bd.blockStatus)
 	if status&tpStatusUser == 0 {
 		// Block not ready — poll
-		unix.Poll([]unix.PollFd{r.pollFd}, timeoutMs)
+		if _, err := unix.Poll([]unix.PollFd{r.pollFd}, timeoutMs); err != nil {
+			if normalizeLinuxPollError(err) == nil {
+				return false, nil
+			}
+			return false, fmt.Errorf("ring: poll: %w", err)
+		}
 		status = atomic.LoadUint32(&bd.blockStatus)
 		if status&tpStatusUser == 0 {
-			return false // timeout
+			return false, nil // timeout
 		}
 	}
 
@@ -267,5 +270,12 @@ func (r *Ring) ReadBlock(handler PacketHandler, timeoutMs int) bool {
 	atomic.StoreUint32(&bd.blockStatus, tpStatusKernel)
 
 	r.blockIdx = (r.blockIdx + 1) % r.blockNr
-	return true
+	return true, nil
+}
+
+func normalizeLinuxPollError(err error) error {
+	if errors.Is(err, unix.EINTR) {
+		return nil
+	}
+	return err
 }

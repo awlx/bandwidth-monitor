@@ -340,10 +340,60 @@ jobs:
           name: openwrt-${{ matrix.arch }}
           path: pkg-out/*
 
+  # ─── macOS standalone bandwidth-top (amd64 + arm64) ────────────────
+  darwin-top:
+    strategy:
+      matrix:
+        include:
+          - runner: macos-15-intel
+            goarch: amd64
+          - runner: macos-15
+            goarch: arm64
+
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Test standalone macOS CLI
+        run: |
+          go vet ./bandwidthtop ./packets ./talkers ./cmd/bandwidth-top
+          go test ./bandwidthtop ./packets ./talkers ./cmd/bandwidth-top
+          go test -race ./bandwidthtop ./packets ./talkers ./cmd/bandwidth-top
+
+      - name: Build standalone macOS archive
+        env:
+          CGO_ENABLED: "0"
+          GOOS: darwin
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          VERSION="$(./packaging/package-version.sh nfpm \
+            "$GITHUB_REF_TYPE" "$GITHUB_REF_NAME" \
+            "$GITHUB_RUN_NUMBER" "$GITHUB_RUN_ATTEMPT" "$GITHUB_SHA")"
+          COMMIT="$(echo "$GITHUB_SHA" | cut -c1-7)"
+          LDFLAGS="-s -w -X bandwidth-monitor/version.Commit=${COMMIT} -X bandwidth-monitor/version.Version=${VERSION}"
+          ARCHIVE="bandwidth-top_${VERSION}_darwin_${GOARCH}.tar.gz"
+          mkdir -p darwin-top
+          go build -trimpath -ldflags="${LDFLAGS}" -o darwin-top/bandwidth-top ./cmd/bandwidth-top
+          cp LICENSE darwin-top/LICENSE
+          tar -czf "$ARCHIVE" -C darwin-top bandwidth-top LICENSE
+          shasum -a 256 "$ARCHIVE" > "${ARCHIVE}.sha256"
+
+      - name: Upload standalone macOS archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: bandwidth-top-darwin-${{ matrix.goarch }}
+          path: |
+            bandwidth-top_*_darwin_${{ matrix.goarch }}.tar.gz
+            bandwidth-top_*_darwin_${{ matrix.goarch }}.tar.gz.sha256
+
   # ─── GitHub Release (tags only) ────────────────────────────────────
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [linux-packages, openwrt]
+    needs: [linux-packages, openwrt, darwin-top]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -364,6 +414,7 @@ jobs:
             artifacts/**/*.ipk
             artifacts/**/*.apk
             artifacts/**/*.tar.gz
+            artifacts/**/*.sha256
 
   # ─── APT Repository (GitHub Pages) ─────────────────────────────────
   # Builds a Debian/Ubuntu apt repository from the .deb artifacts and
