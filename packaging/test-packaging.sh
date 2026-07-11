@@ -107,6 +107,7 @@ assert_contains "$apple_smoke" 'contents: read'
 assert_contains "$apple_smoke" 'group: apple-signing-smoke'
 assert_contains "$apple_smoke" 'runner: macos-15'
 assert_contains "$apple_smoke" 'runner: macos-15-intel'
+assert_contains "$apple_smoke" 'timeout-minutes: 45'
 assert_contains "$apple_smoke" 'persist-credentials: false'
 assert_contains "$apple_smoke" 'ref: ${{ github.sha }}'
 assert_contains "$apple_smoke" 'test "$GITHUB_REF" = "$expected_ref"'
@@ -116,6 +117,14 @@ assert_contains "$apple_smoke" 'REQUIRE_APPLE_SIGNING:'
 assert_contains "$apple_smoke" './trusted/packaging/sign-and-notarize-darwin.sh'
 assert_contains "$apple_smoke" './trusted/packaging/generate-homebrew-cask.sh'
 assert_contains "$apple_smoke" 'cmp "$native_archive" "$RUNNER_TEMP/repeated.tar.gz"'
+assert_contains "$apple_smoke" 'HOMEBREW_NO_AUTO_UPDATE=1 brew style \'
+assert_contains "$apple_smoke" '"$tap_path/Casks/bandwidth-top.rb"'
+assert_not_contains "$apple_smoke" 'brew style "$cask"'
+assert_before "$apple_smoke" \
+	'install -m 0644 "$cask" "$tap_path/Casks/bandwidth-top.rb"' \
+	'HOMEBREW_NO_AUTO_UPDATE=1 brew style \'
+assert_before "$apple_smoke" 'HOMEBREW_NO_AUTO_UPDATE=1 brew style \' \
+	'brew audit --cask --arch all'
 assert_contains "$apple_smoke" 'brew audit --cask --arch all'
 assert_contains "$apple_smoke" 'brew install --cask'
 assert_count "$apple_smoke" 2 \
