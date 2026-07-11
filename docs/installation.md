@@ -159,6 +159,28 @@ The flake includes GeoIP databases. Set `geoipDir` to a directory managed by
 
 ## macOS standalone CLI
 
+### Homebrew cask
+
+The repository is also a custom Homebrew tap. Install the standalone CLI with:
+
+```bash
+brew tap awlx/bandwidth-monitor https://github.com/awlx/bandwidth-monitor
+brew install --cask awlx/bandwidth-monitor/bandwidth-top
+```
+
+Update or remove it with:
+
+```bash
+brew upgrade --cask awlx/bandwidth-monitor/bandwidth-top
+brew uninstall --cask awlx/bandwidth-monitor/bandwidth-top
+```
+
+The cask becomes available after the first release containing the macOS
+archives and its generated cask update are published. It installs only the
+`bandwidth-top` binary; it does not install or run the Linux-only daemon.
+
+### Release archive
+
 Download the archive matching the Mac architecture:
 
 - `bandwidth-top_<version>_darwin_arm64.tar.gz` for Apple silicon
@@ -183,6 +205,57 @@ active, non-loopback, and have an assigned IPv4 or IPv6 address.
 
 The macOS archive does not include or imply support for the Linux-only
 `bandwidth-monitor` daemon.
+
+### Maintaining the cask
+
+After publishing a stable release, run the **Update Homebrew cask** workflow
+with its `v`-prefixed release tag. The workflow downloads the four expected
+Darwin release assets through the authenticated GitHub CLI, verifies both
+checksum sidecars, archive payloads, architectures, and Gatekeeper acceptance,
+runs Homebrew checks, and opens a draft pull request against the default branch.
+Marking the draft ready for review triggers the regular cask check; merging
+remains a human decision.
+
+The workflow uses only the repository `GITHUB_TOKEN` with `contents: write` and
+`pull-requests: write`. The repository setting **Allow GitHub Actions to create
+and approve pull requests** must be enabled. No personal token is needed.
+Because the update is separate and manually dispatched, a cask automation
+failure cannot fail or modify the tagged release.
+
+For the exact install command above to work without bypassing macOS quarantine,
+configure these Actions secrets before creating the release tag:
+
+- `MACOS_SIGNING_CERTIFICATE`: base64-encoded Developer ID Application
+  certificate in PKCS#12 format
+- `MACOS_SIGNING_CERTIFICATE_PASSWORD`
+- `MACOS_SIGNING_IDENTITY`
+- `MACOS_NOTARY_KEY`: base64-encoded App Store Connect API private key
+- `MACOS_NOTARY_KEY_ID`
+- `MACOS_NOTARY_ISSUER_ID`
+
+The tag build imports the certificate into an ephemeral keychain, signs each
+native binary with the hardened runtime and a secure timestamp, submits it to
+Apple's notary service, and deletes the keychain before the job ends. If none
+of these secrets are configured, existing Darwin archive production remains
+unchanged, but the cask updater rejects that unsigned release. A partial secret
+configuration fails before publishing the affected archive.
+
+Standalone executables and tar archives cannot carry a stapled notarization
+ticket, so the first launch requires network access for Gatekeeper to confirm
+Apple's ticket. The cask updater requires Gatekeeper to be enabled and verifies
+the `Notarized Developer ID` assessment before opening its pull request.
+
+If automated pull request creation is unavailable, an authenticated maintainer
+can generate the same reviewed change locally:
+
+```bash
+./packaging/update-homebrew-cask.sh v<version>
+```
+
+Commit the resulting `Casks/bandwidth-top.rb` on a branch and open a normal pull
+request. Never create the cask before both immutable architecture archives
+exist: the generator requires exact SHA-256 checksums and rejects missing,
+unexpected, or incorrectly built assets.
 
 ## Build from source
 

@@ -364,7 +364,7 @@ jobs:
           go test ./bandwidthtop ./packets ./talkers ./cmd/bandwidth-top
           go test -race ./bandwidthtop ./packets ./talkers ./cmd/bandwidth-top
 
-      - name: Build standalone macOS archive
+      - name: Build standalone macOS binary
         env:
           CGO_ENABLED: "0"
           GOOS: darwin
@@ -376,11 +376,26 @@ jobs:
           COMMIT="$(echo "$GITHUB_SHA" | cut -c1-7)"
           LDFLAGS="-s -w -X bandwidth-monitor/version.Commit=${COMMIT} -X bandwidth-monitor/version.Version=${VERSION}"
           ARCHIVE="bandwidth-top_${VERSION}_darwin_${GOARCH}.tar.gz"
+          echo "DARWIN_ARCHIVE=$ARCHIVE" >> "$GITHUB_ENV"
           mkdir -p darwin-top
           go build -trimpath -ldflags="${LDFLAGS}" -o darwin-top/bandwidth-top ./cmd/bandwidth-top
-          cp LICENSE darwin-top/LICENSE
-          tar -czf "$ARCHIVE" -C darwin-top bandwidth-top LICENSE
-          shasum -a 256 "$ARCHIVE" > "${ARCHIVE}.sha256"
+
+      - name: Sign and notarize standalone macOS binary
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          MACOS_NOTARY_ISSUER_ID: ${{ secrets.MACOS_NOTARY_ISSUER_ID }}
+          MACOS_NOTARY_KEY: ${{ secrets.MACOS_NOTARY_KEY }}
+          MACOS_NOTARY_KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID }}
+          MACOS_SIGNING_CERTIFICATE: ${{ secrets.MACOS_SIGNING_CERTIFICATE }}
+          MACOS_SIGNING_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_SIGNING_CERTIFICATE_PASSWORD }}
+          MACOS_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+        run: ./packaging/sign-and-notarize-darwin.sh darwin-top/bandwidth-top
+
+      - name: Create standalone macOS archive
+        run: |
+          ./packaging/create-darwin-top-archive.sh \
+            darwin-top/bandwidth-top LICENSE "$DARWIN_ARCHIVE"
+          shasum -a 256 "$DARWIN_ARCHIVE" > "${DARWIN_ARCHIVE}.sha256"
 
       - name: Upload standalone macOS archive
         uses: actions/upload-artifact@v4

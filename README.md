@@ -142,6 +142,16 @@ Prebuilt daemon and CLI packages are published separately on
 Releases also include standalone, checksummed macOS `bandwidth-top` archives for
 amd64 and arm64; they do not contain the Linux-only daemon.
 
+On macOS, the repository itself can be used as a custom Homebrew tap:
+
+```bash
+brew tap awlx/bandwidth-monitor https://github.com/awlx/bandwidth-monitor
+brew install --cask awlx/bandwidth-monitor/bandwidth-top
+```
+
+See [Installation](docs/installation.md#homebrew-cask) for upgrade, uninstall,
+capture-permission, and cask release-maintenance details.
+
 ### Debian and Ubuntu with APT
 
 ```bash

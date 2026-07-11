@@ -1,0 +1,55 @@
+name: Homebrew cask
+
+on:
+  pull_request:
+    types:
+      - opened
+      - ready_for_review
+      - reopened
+      - synchronize
+    paths:
+      - '.github/workflows/homebrew-cask.yml'
+      - '.github/workflows/update-homebrew-cask.yml'
+      - '.github/workflows/release.yml'
+      - 'Casks/**'
+      - 'packaging/create-darwin-top-archive.sh'
+      - 'packaging/generate-homebrew-cask.sh'
+      - 'packaging/sign-and-notarize-darwin.sh'
+      - 'packaging/test-homebrew-cask.sh'
+      - 'packaging/update-homebrew-cask.sh'
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.7'
+
+      - name: Test cask generation and local install
+        run: ./packaging/test-homebrew-cask.sh --brew
+
+      - name: Audit published cask
+        if: hashFiles('Casks/bandwidth-top.rb') != ''
+        run: |
+          set -eu
+          tap_name=cask-test/bandwidth-monitor
+          trap '
+            brew uninstall --cask "$tap_name/bandwidth-top" >/dev/null 2>&1 || true
+            brew untap --force "$tap_name" >/dev/null 2>&1 || true
+          ' EXIT
+          brew style Casks/bandwidth-top.rb
+          brew tap-new --no-git "$tap_name"
+          tap_path="$(brew --repository "$tap_name")"
+          mkdir -p "$tap_path/Casks"
+          install -m 0644 Casks/bandwidth-top.rb "$tap_path/Casks/bandwidth-top.rb"
+          brew audit --cask --arch all "$tap_name/bandwidth-top"
+          brew install --cask "$tap_name/bandwidth-top"
+          bandwidth-top --version
+          brew uninstall --cask "$tap_name/bandwidth-top"
+          brew untap --force "$tap_name"
