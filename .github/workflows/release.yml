@@ -422,6 +422,7 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          draft: true
           generate_release_notes: true
           files: |
             artifacts/**/*.deb
@@ -430,6 +431,27 @@ jobs:
             artifacts/**/*.apk
             artifacts/**/*.tar.gz
             artifacts/**/*.sha256
+
+      - name: Publish immutable GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release edit "$GITHUB_REF_NAME" --draft=false
+
+  # ─── Required aggregate release build check ────────────────────────
+  release-checks:
+    if: always() && !startsWith(github.ref, 'refs/tags/v')
+    needs: [linux-packages, openwrt, darwin-top]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every release build matrix
+        env:
+          DARWIN_TOP_RESULT: ${{ needs.darwin-top.result }}
+          LINUX_PACKAGES_RESULT: ${{ needs.linux-packages.result }}
+          OPENWRT_RESULT: ${{ needs.openwrt.result }}
+        run: |
+          test "$DARWIN_TOP_RESULT" = "success"
+          test "$LINUX_PACKAGES_RESULT" = "success"
+          test "$OPENWRT_RESULT" = "success"
 
   # ─── APT Repository (GitHub Pages) ─────────────────────────────────
   # Builds a Debian/Ubuntu apt repository from the .deb artifacts and

@@ -17,12 +17,13 @@ on:
       - 'packaging/sign-and-notarize-darwin.sh'
       - 'packaging/test-homebrew-cask.sh'
       - 'packaging/update-homebrew-cask.sh'
+      - 'packaging/verify-homebrew-release.sh'
 
 permissions:
   contents: read
 
 jobs:
-  test:
+  homebrew-cask:
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4

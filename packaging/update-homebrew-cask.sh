@@ -41,6 +41,13 @@ resolved=$(
 	echo "release must exist and be published as a stable release: $tag" >&2
 	exit 1
 }
+immutable=$(
+	gh api "repos/awlx/bandwidth-monitor/releases/tags/$tag" --jq .immutable
+)
+[ "$immutable" = "true" ] || {
+	echo "release must be immutable before generating its cask: $tag" >&2
+	exit 1
+}
 
 for goarch in arm64 amd64; do
 	archive="bandwidth-top_${version}_darwin_${goarch}.tar.gz"
