@@ -42,7 +42,7 @@ fi
 
 tmp=$(mktemp -d)
 keychain="$tmp/release-signing.keychain-db"
-keychain_password=$(LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 32)
+keychain_password=$(openssl rand -hex 32)
 cleanup() {
 	security delete-keychain "$keychain" >/dev/null 2>&1 || true
 	rm -rf "$tmp"

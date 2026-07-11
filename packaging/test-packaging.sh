@@ -86,6 +86,8 @@ assert_not_contains "$repo/.github/workflows/update-homebrew-cask.yml" 'pull_req
 assert_not_contains "$repo/.github/workflows/update-homebrew-cask.yml" 'git push'
 assert_not_contains "$repo/.github/workflows/update-homebrew-cask.yml" 'echo "$CASK_UPDATE_APP_PRIVATE_KEY"'
 assert_not_contains "$repo/packaging/sign-and-notarize-darwin.sh" 'echo "$MACOS_'
+assert_contains "$repo/packaging/sign-and-notarize-darwin.sh" 'openssl rand -hex 32'
+assert_not_contains "$repo/packaging/sign-and-notarize-darwin.sh" '/dev/urandom'
 assert_contains "$repo/.github/workflows/release.yml" 'draft: true'
 assert_contains "$repo/.github/workflows/release.yml" 'gh release edit "$GITHUB_REF_NAME" --draft=false'
 assert_contains "$repo/.github/workflows/release.yml" 'release-checks:'
