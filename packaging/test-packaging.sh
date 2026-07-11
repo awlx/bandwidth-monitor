@@ -20,6 +20,15 @@ assert_not_contains() {
 	fi
 }
 
+assert_before() {
+	first=$(grep -nF -- "$2" "$1" | head -n 1 | cut -d: -f1)
+	second=$(grep -nF -- "$3" "$1" | head -n 1 | cut -d: -f1)
+	[ -n "$first" ] || fail "$1 does not contain $2"
+	[ -n "$second" ] || fail "$1 does not contain $3"
+	[ "$first" -lt "$second" ] ||
+		fail "$1 does not place $2 before $3"
+}
+
 assert_contains "$repo/bandwidth-monitor.openrc" "/opt/bandwidth-monitor/bandwidth-monitor"
 assert_contains "$repo/packaging/bandwidth-monitor.openrc" 'command="/usr/bin/bandwidth-monitor"'
 assert_contains "$repo/packaging/bandwidth-monitor.openrc" ': "${BANDWIDTH_MONITOR_CONFIG:=/etc/bandwidth-monitor/env}"'
@@ -116,6 +125,36 @@ assert_contains "$repo/packaging/sign-and-notarize-darwin.sh" 'openssl rand -hex
 assert_not_contains "$repo/packaging/sign-and-notarize-darwin.sh" '/dev/urandom'
 assert_contains "$repo/packaging/sign-and-notarize-darwin.sh" 'REQUIRE_APPLE_SIGNING'
 assert_contains "$repo/packaging/sign-and-notarize-darwin.sh" 'MACOS_SIGNING_WORK_DIR'
+signing_script="$repo/packaging/sign-and-notarize-darwin.sh"
+assert_contains "$signing_script" '-T /usr/bin/codesign \'
+assert_contains "$signing_script" '-T /usr/bin/security'
+assert_not_contains "$signing_script" '-A'
+assert_contains "$signing_script" '/usr/bin/security find-identity -v -p codesigning "$keychain"'
+assert_contains "$signing_script" '== ENVIRON["EXPECTED_SIGNING_IDENTITY"]'
+assert_before "$signing_script" 'find-identity -v -p codesigning' 'set-key-partition-list \'
+assert_before "$signing_script" 'set-key-partition-list \' '--force \'
+assert_contains "$signing_script" 'set_search_list "$keychain" "$original_keychains"'
+assert_contains "$signing_script" 'default-keychain -d user -s "$keychain"'
+assert_before "$signing_script" 'list-keychains -d user > "$raw_keychains"' \
+	'create-keychain -p "$keychain_password"'
+assert_before "$signing_script" 'default-keychain -d user > "$raw_default_keychain"' \
+	'create-keychain -p "$keychain_password"'
+assert_contains "$signing_script" 'restore_default_keychain; then'
+assert_contains "$signing_script" 'set_search_list "" "$original_keychains"; then'
+assert_before "$signing_script" 'restore_default_keychain; then' \
+	'set_search_list "" "$original_keychains"; then'
+assert_before "$signing_script" 'set_search_list "" "$original_keychains"; then' \
+	'delete-keychain "$keychain"'
+assert_before "$signing_script" 'delete-keychain "$keychain"' 'rm -rf "$tmp"'
+assert_contains "$signing_script" 'trap cleanup EXIT'
+assert_contains "$signing_script" "trap '' HUP INT TERM"
+assert_contains "$signing_script" "trap 'exit 129' HUP"
+assert_contains "$signing_script" "trap 'exit 130' INT"
+assert_contains "$signing_script" "trap 'exit 143' TERM"
+assert_contains "$signing_script" '/usr/bin/codesign \'
+assert_contains "$signing_script" '/usr/bin/codesign --verify'
+assert_contains "$signing_script" '/usr/bin/xcrun notarytool submit'
+assert_contains "$signing_script" '/usr/sbin/spctl --status'
 assert_contains "$repo/.github/workflows/release.yml" 'draft: true'
 assert_contains "$repo/.github/workflows/release.yml" 'gh release edit "$GITHUB_REF_NAME" --draft=false'
 assert_contains "$repo/.github/workflows/release.yml" 'release-checks:'
