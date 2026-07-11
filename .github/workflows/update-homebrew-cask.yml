@@ -1,0 +1,70 @@
+name: Update Homebrew cask
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Published stable release tag containing both Darwin archives
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: update-homebrew-cask
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+
+      - name: Generate cask from immutable release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: ./packaging/update-homebrew-cask.sh "$RELEASE_TAG"
+
+      - name: Validate and install cask
+        run: |
+          set -eu
+          tap_name=cask-test/bandwidth-monitor
+          trap '
+            brew uninstall --cask "$tap_name/bandwidth-top" >/dev/null 2>&1 || true
+            brew untap --force "$tap_name" >/dev/null 2>&1 || true
+          ' EXIT
+          brew style Casks/bandwidth-top.rb
+          brew tap-new --no-git "$tap_name"
+          tap_path="$(brew --repository "$tap_name")"
+          mkdir -p "$tap_path/Casks"
+          install -m 0644 Casks/bandwidth-top.rb "$tap_path/Casks/bandwidth-top.rb"
+          brew audit --cask --arch all "$tap_name/bandwidth-top"
+          brew install --cask "$tap_name/bandwidth-top"
+          test -x "$(brew --prefix)/bin/bandwidth-top"
+          bandwidth-top --version
+          brew uninstall --cask "$tap_name/bandwidth-top"
+          brew untap --force "$tap_name"
+
+      - name: Open draft cask update pull request
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1
+        with:
+          base: ${{ github.event.repository.default_branch }}
+          body: |
+            Generated from the published `${{ inputs.release_tag }}` release.
+
+            The update workflow authenticated with GitHub, verified both release
+            checksum sidecars, recomputed both SHA-256 checksums, inspected the
+            exact archive payloads and Mach-O architectures, and completed
+            Homebrew style, audit, install, execution, and uninstall checks.
+
+            Mark this draft ready for review to trigger the normal cask PR check.
+          branch: automation/update-bandwidth-top-cask
+          commit-message: Update bandwidth-top cask for ${{ inputs.release_tag }}
+          delete-branch: true
+          draft: always-true
+          title: Update bandwidth-top cask for ${{ inputs.release_tag }}
