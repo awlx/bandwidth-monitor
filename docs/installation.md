@@ -259,6 +259,33 @@ configure these Actions secrets before creating the release tag:
 - `MACOS_NOTARY_KEY_ID`
 - `MACOS_NOTARY_ISSUER_ID`
 
+After the smoke workflow reaches the default branch and before creating the
+first tagged macOS release, validate all six credentials once with:
+
+```bash
+gh workflow run apple-signing-smoke.yml \
+  --repo awlx/bandwidth-monitor \
+  --ref main \
+  -f ref=main
+```
+
+The workflow is named **Apple signing smoke test**. GitHub only permits manual
+dispatch after the workflow file exists on the default branch, so this command
+must run after the workflow is merged. The `--ref main` option selects the
+trusted workflow definition; the `ref=main` input selects the exact source ref
+to build. The selected branch, tag, or commit must already be in `main` history;
+unmerged pull request code is rejected before credentials are exposed.
+
+The manual smoke runs natively on Apple silicon and Intel macOS runners. It
+builds an explicitly test-only version, signs and notarizes it, verifies
+Gatekeeper reports `Notarized Developer ID`, creates deterministic local
+release-like archives and checksums, and performs cask generation, audit,
+install, and uninstall checks. It creates no tag, release, artifact, branch, or
+pull request and pushes nothing. Credential files and the ephemeral keychain
+are deleted even when a job fails. This is a one-time credential validation,
+not a recurring release task; successful tagged releases continue to update
+the cask automatically.
+
 The tag build imports the certificate into an ephemeral keychain, signs each
 native binary with the hardened runtime and a secure timestamp, submits it to
 Apple's notary service, and deletes the keychain before the job ends. If none

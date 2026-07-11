@@ -90,6 +90,11 @@ if MACOS_SIGNING_CERTIFICATE=partial \
 		>/dev/null 2>&1; then
 	fail "signing script accepted a partial credential configuration"
 fi
+if REQUIRE_APPLE_SIGNING=1 \
+		"$repo/packaging/sign-and-notarize-darwin.sh" "$tmp/bandwidth-top-arm64" \
+		>/dev/null 2>&1; then
+	fail "signing script did not require credentials for a smoke run"
+fi
 if MACOS_NOTARY_ISSUER_ID=invalid \
 	MACOS_NOTARY_KEY=invalid \
 	MACOS_NOTARY_KEY_ID=invalid \

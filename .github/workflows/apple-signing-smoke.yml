@@ -1,0 +1,236 @@
+name: Apple signing smoke test
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Trusted branch, tag, or commit to build
+        required: true
+        default: main
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: apple-signing-smoke
+  cancel-in-progress: false
+
+env:
+  GO_VERSION: '1.25.7'
+  TEST_CASK_VERSION: '0.0.0'
+
+jobs:
+  sign-notarize:
+    name: ${{ matrix.goarch }} native credential smoke
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            goarch: arm64
+            machine: arm64
+            peer_goarch: amd64
+          - runner: macos-15-intel
+            goarch: amd64
+            machine: x86_64
+            peer_goarch: arm64
+    runs-on: ${{ matrix.runner }}
+
+    steps:
+      - name: Check out selected source ref
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          path: source
+          persist-credentials: false
+
+      - name: Check out trusted smoke tooling
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          path: trusted
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Resolve exact source revision
+        run: |
+          set -eu
+          expected_ref="refs/heads/${{ github.event.repository.default_branch }}"
+          test "$GITHUB_REF" = "$expected_ref" || {
+            echo "Run this workflow only from $expected_ref" >&2
+            exit 1
+          }
+          trusted_sha="$(git -C trusted rev-parse HEAD)"
+          test "$trusted_sha" = "$GITHUB_SHA" || {
+            echo "Trusted tooling does not match the dispatched workflow commit" >&2
+            exit 1
+          }
+          source_sha="$(git -C source rev-parse HEAD)"
+          test -n "$source_sha"
+          git -C trusted merge-base --is-ancestor "$source_sha" "$trusted_sha" || {
+            echo "Selected source must already be in the default-branch history" >&2
+            exit 1
+          }
+          echo "SOURCE_SHA=$source_sha" >> "$GITHUB_ENV"
+          echo "SHORT_SHA=$(printf '%s' "$source_sha" | cut -c1-12)" >> "$GITHUB_ENV"
+          echo "Building requested ref at commit $source_sha"
+
+      - name: Build native test-only bandwidth-top
+        working-directory: source
+        env:
+          CGO_ENABLED: '0'
+          GOOS: darwin
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          set -eu
+          test "$(uname -m)" = "${{ matrix.machine }}"
+          test_version="signing-smoke-$SHORT_SHA"
+          ldflags="-s -w -X bandwidth-monitor/version.Version=$test_version -X bandwidth-monitor/version.Commit=$SHORT_SHA"
+          go build -trimpath -ldflags="$ldflags" \
+            -o "$RUNNER_TEMP/bandwidth-top-${{ matrix.goarch }}" \
+            ./cmd/bandwidth-top
+          file "$RUNNER_TEMP/bandwidth-top-${{ matrix.goarch }}" |
+            grep -F "Mach-O 64-bit executable ${{ matrix.machine }}"
+
+      - name: Sign and notarize with configured Apple credentials
+        env:
+          MACOS_SIGNING_CERTIFICATE: ${{ secrets.MACOS_SIGNING_CERTIFICATE }}
+          MACOS_SIGNING_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_SIGNING_CERTIFICATE_PASSWORD }}
+          MACOS_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+          MACOS_NOTARY_KEY: ${{ secrets.MACOS_NOTARY_KEY }}
+          MACOS_NOTARY_KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID }}
+          MACOS_NOTARY_ISSUER_ID: ${{ secrets.MACOS_NOTARY_ISSUER_ID }}
+          MACOS_SIGNING_WORK_DIR: ${{ runner.temp }}/apple-signing
+          REQUIRE_APPLE_SIGNING: '1'
+        run: |
+          set -eu
+          ./trusted/packaging/sign-and-notarize-darwin.sh \
+            "$RUNNER_TEMP/bandwidth-top-${{ matrix.goarch }}"
+
+      - name: Verify signed native binary
+        run: |
+          set -eu
+          binary="$RUNNER_TEMP/bandwidth-top-${{ matrix.goarch }}"
+          test ! -e "$RUNNER_TEMP/apple-signing"
+          codesign --verify --strict --verbose=2 "$binary"
+          assessment="$(spctl --assess --type execute --verbose=2 "$binary" 2>&1)"
+          printf '%s\n' "$assessment" |
+            grep -F "source=Notarized Developer ID"
+          test "$("$binary" --version)" = \
+            "bandwidth-top signing-smoke-$SHORT_SHA"
+
+      - name: Create local release-like assets
+        working-directory: source
+        env:
+          CGO_ENABLED: '0'
+          GOOS: darwin
+          GOARCH: ${{ matrix.peer_goarch }}
+        run: |
+          set -eu
+          assets="$RUNNER_TEMP/assets"
+          mkdir -m 0700 "$assets"
+          native_archive="$assets/bandwidth-top_${TEST_CASK_VERSION}_darwin_${{ matrix.goarch }}.tar.gz"
+          ./../trusted/packaging/create-darwin-top-archive.sh \
+            "$RUNNER_TEMP/bandwidth-top-${{ matrix.goarch }}" \
+            ./../trusted/LICENSE \
+            "$native_archive"
+          ./../trusted/packaging/create-darwin-top-archive.sh \
+            "$RUNNER_TEMP/bandwidth-top-${{ matrix.goarch }}" \
+            ./../trusted/LICENSE \
+            "$RUNNER_TEMP/repeated.tar.gz"
+          cmp "$native_archive" "$RUNNER_TEMP/repeated.tar.gz"
+
+          peer_binary="$RUNNER_TEMP/bandwidth-top-${{ matrix.peer_goarch }}"
+          test_version="signing-smoke-$SHORT_SHA"
+          ldflags="-s -w -X bandwidth-monitor/version.Version=$test_version -X bandwidth-monitor/version.Commit=$SHORT_SHA"
+          go build -trimpath -ldflags="$ldflags" \
+            -o "$peer_binary" \
+            ./cmd/bandwidth-top
+          peer_archive="$assets/bandwidth-top_${TEST_CASK_VERSION}_darwin_${{ matrix.peer_goarch }}.tar.gz"
+          ./../trusted/packaging/create-darwin-top-archive.sh \
+            "$peer_binary" \
+            ./../trusted/LICENSE \
+            "$peer_archive"
+
+          for archive in "$native_archive" "$peer_archive"; do
+            (
+              cd "$assets"
+              name="$(basename "$archive")"
+              shasum -a 256 "$name" > "$name.sha256"
+            )
+          done
+
+      - name: Generate and locally install cask
+        run: |
+          set -eu
+          tap_name=awlx-smoke/bandwidth-monitor
+          installed=false
+          tapped=false
+          cleanup() {
+            if [ "$installed" = true ]; then
+              HOMEBREW_NO_AUTO_UPDATE=1 brew uninstall --cask \
+                "$tap_name/bandwidth-top" >/dev/null 2>&1 || true
+            fi
+            if [ "$tapped" = true ]; then
+              HOMEBREW_NO_AUTO_UPDATE=1 brew untap --force \
+                "$tap_name" >/dev/null 2>&1 || true
+            fi
+          }
+          trap cleanup EXIT HUP INT TERM
+
+          assets="$RUNNER_TEMP/assets"
+          cask="$RUNNER_TEMP/bandwidth-top.rb"
+          ./trusted/packaging/generate-homebrew-cask.sh \
+            "v$TEST_CASK_VERSION" "$assets" "$cask"
+          ruby -c "$cask"
+          HOMEBREW_NO_AUTO_UPDATE=1 brew style "$cask"
+
+          HOMEBREW_NO_AUTO_UPDATE=1 brew tap-new --no-git "$tap_name"
+          tapped=true
+          tap_path="$(brew --repository "$tap_name")"
+          mkdir -p "$tap_path/Casks"
+          install -m 0644 "$cask" "$tap_path/Casks/bandwidth-top.rb"
+          HOMEBREW_NO_AUTO_UPDATE=1 brew audit --cask --arch all \
+            "$tap_name/bandwidth-top"
+
+          native_archive="$assets/bandwidth-top_${TEST_CASK_VERSION}_darwin_${{ matrix.goarch }}.tar.gz"
+          escaped_archive="$(printf '%s\n' "$native_archive" | sed 's/[&|]/\\&/g')"
+          sed \
+            -e "s|https://github.com/awlx/bandwidth-monitor/releases/download/v#{version}/bandwidth-top_#{version}_darwin_arm64.tar.gz|file://$escaped_archive|" \
+            -e "s|https://github.com/awlx/bandwidth-monitor/releases/download/v#{version}/bandwidth-top_#{version}_darwin_amd64.tar.gz|file://$escaped_archive|" \
+            "$cask" > "$tap_path/Casks/bandwidth-top.rb"
+
+          rm -f "$(brew --cache --cask "$tap_name/bandwidth-top")"
+          HOMEBREW_NO_AUTO_UPDATE=1 brew install --cask \
+            "$tap_name/bandwidth-top"
+          installed=true
+          installed_binary="$(brew --prefix)/bin/bandwidth-top"
+          cmp "$RUNNER_TEMP/bandwidth-top-${{ matrix.goarch }}" "$installed_binary"
+          codesign --verify --strict --verbose=2 "$installed_binary"
+          assessment="$(spctl --assess --type execute --verbose=2 \
+            "$installed_binary" 2>&1)"
+          printf '%s\n' "$assessment" |
+            grep -F "source=Notarized Developer ID"
+          test "$("$installed_binary" --version)" = \
+            "bandwidth-top signing-smoke-$SHORT_SHA"
+
+          HOMEBREW_NO_AUTO_UPDATE=1 brew uninstall --cask \
+            "$tap_name/bandwidth-top"
+          installed=false
+          HOMEBREW_NO_AUTO_UPDATE=1 brew untap --force "$tap_name"
+          tapped=false
+
+      - name: Remove credential material
+        if: always()
+        env:
+          MACOS_SIGNING_WORK_DIR: ${{ runner.temp }}/apple-signing
+        run: |
+          security delete-keychain \
+            "$MACOS_SIGNING_WORK_DIR/release-signing.keychain-db" \
+            >/dev/null 2>&1 || true
+          rm -rf "$MACOS_SIGNING_WORK_DIR"

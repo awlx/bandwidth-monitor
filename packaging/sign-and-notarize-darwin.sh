@@ -32,6 +32,10 @@ for name in $required_vars; do
 done
 
 if [ "$configured" -eq 0 ]; then
+	if [ "${REQUIRE_APPLE_SIGNING:-0}" = "1" ]; then
+		echo "Apple signing credentials are required" >&2
+		exit 1
+	fi
 	echo "Apple signing credentials are not configured; leaving $binary ad-hoc signed"
 	exit 0
 fi
@@ -40,7 +44,23 @@ fi
 	exit 1
 }
 
-tmp=$(mktemp -d)
+if [ -n "${MACOS_SIGNING_WORK_DIR:-}" ]; then
+	tmp=$MACOS_SIGNING_WORK_DIR
+	case "$tmp" in
+		/*) ;;
+		*)
+			echo "MACOS_SIGNING_WORK_DIR must be an absolute path" >&2
+			exit 1
+			;;
+	esac
+	if [ -e "$tmp" ] || [ -L "$tmp" ]; then
+		echo "MACOS_SIGNING_WORK_DIR already exists" >&2
+		exit 1
+	fi
+	mkdir -m 0700 "$tmp"
+else
+	tmp=$(mktemp -d)
+fi
 keychain="$tmp/release-signing.keychain-db"
 keychain_password=$(openssl rand -hex 32)
 cleanup() {
