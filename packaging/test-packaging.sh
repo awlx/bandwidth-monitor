@@ -183,7 +183,7 @@ assert_contains "$signing_script" '-R=notarized "$binary"'
 assert_not_contains "$signing_script" 'spctl'
 assert_not_contains "$signing_script" 'source=Notarized Developer ID'
 assert_contains "$repo/.github/workflows/release.yml" 'draft: true'
-assert_contains "$repo/.github/workflows/release.yml" 'gh release edit "$GITHUB_REF_NAME" --draft=false'
+assert_contains "$repo/.github/workflows/release.yml" 'gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false'
 assert_contains "$repo/.github/workflows/release.yml" 'release-checks:'
 assert_contains "$repo/.github/workflows/release.yml" "if: always() && !startsWith(github.ref, 'refs/tags/v')"
 assert_contains "$repo/.github/workflows/release.yml" 'DARWIN_TOP_RESULT: ${{ needs.darwin-top.result }}'
