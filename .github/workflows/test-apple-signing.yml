@@ -117,10 +117,9 @@ jobs:
           set -eu
           binary="$RUNNER_TEMP/bandwidth-top-${{ matrix.goarch }}"
           test ! -e "$RUNNER_TEMP/apple-signing"
-          codesign --verify --strict --verbose=2 "$binary"
-          assessment="$(spctl --assess --type execute --verbose=2 "$binary" 2>&1)"
-          printf '%s\n' "$assessment" |
-            grep -F "source=Notarized Developer ID"
+          /usr/bin/codesign --verify --strict --verbose=2 "$binary"
+          /usr/bin/codesign --verify --strict --verbose=2 --check-notarization \
+            -R=notarized "$binary"
           test "$("$binary" --version)" = \
             "bandwidth-top signing-smoke-$SHORT_SHA"
 
@@ -211,11 +210,9 @@ jobs:
           installed=true
           installed_binary="$(brew --prefix)/bin/bandwidth-top"
           cmp "$RUNNER_TEMP/bandwidth-top-${{ matrix.goarch }}" "$installed_binary"
-          codesign --verify --strict --verbose=2 "$installed_binary"
-          assessment="$(spctl --assess --type execute --verbose=2 \
-            "$installed_binary" 2>&1)"
-          printf '%s\n' "$assessment" |
-            grep -F "source=Notarized Developer ID"
+          /usr/bin/codesign --verify --strict --verbose=2 "$installed_binary"
+          /usr/bin/codesign --verify --strict --verbose=2 --check-notarization \
+            -R=notarized "$installed_binary"
           test "$("$installed_binary" --version)" = \
             "bandwidth-top signing-smoke-$SHORT_SHA"
 

@@ -205,9 +205,10 @@ jobs:
 
             The update workflow authenticated with GitHub, verified both release
             checksum sidecars, recomputed both SHA-256 checksums, inspected the
-            exact archive payloads, Mach-O architectures, and notarization, and
-            completed Homebrew style, audit, install, execution, and uninstall
-            checks. Required repository checks will merge this PR automatically.
+            exact archive payloads and Mach-O architectures, verified both
+            notarization tickets online, and completed Homebrew style, audit,
+            install, execution, and uninstall checks. Required repository checks
+            will merge this PR automatically.
           branch: automation/update-bandwidth-top-cask
           commit-message: Update bandwidth-top cask for ${{ env.RELEASE_TAG }}
           delete-branch: true
