@@ -213,7 +213,7 @@ Every successful tagged **Build & Release** run automatically starts the
 confirms that the upstream run completed the release job and that the tag still
 resolves to the released commit. It then downloads the four expected Darwin
 assets, verifies both checksum sidecars, archive payloads, architectures, and
-Gatekeeper acceptance, runs Homebrew checks, and creates or updates
+online notarization tickets, runs Homebrew checks, and creates or updates
 `automation/update-bandwidth-top-cask`. Required checks merge that pull request
 automatically. No per-release command, approval, or merge is required.
 
@@ -278,13 +278,14 @@ unmerged pull request code is rejected before credentials are exposed.
 
 The manual smoke runs natively on Apple silicon and Intel macOS runners. It
 builds an explicitly test-only version, signs and notarizes it, verifies
-Gatekeeper reports `Notarized Developer ID`, creates deterministic local
-release-like archives and checksums, and performs cask generation, audit,
-install, and uninstall checks. It creates no tag, release, artifact, branch, or
-pull request and pushes nothing. Credential files and the ephemeral keychain
-are deleted even when a job fails. This is a one-time credential validation,
-not a recurring release task; successful tagged releases continue to update
-the cask automatically.
+the signature and forces an online lookup of its notarization ticket, creates
+deterministic local release-like archives and checksums, and performs cask
+generation, audit, install, and uninstall checks. It repeats signature and
+online ticket verification for the installed native binary. It creates no tag,
+release, artifact, branch, or pull request and pushes nothing. Credential files
+and the ephemeral keychain are deleted even when a job fails. This is a
+one-time credential validation, not a recurring release task; successful tagged
+releases continue to update the cask automatically.
 
 The tag build imports the certificate into an ephemeral keychain, signs each
 native binary with the hardened runtime and a secure timestamp, submits it to
@@ -299,10 +300,13 @@ point. If immutability is not enabled, the release remains available but the
 automatic cask update fails safely without opening or merging a pull request.
 
 Standalone executables and tar archives cannot carry a stapled notarization
-ticket, so the first launch requires network access for Gatekeeper to confirm
-Apple's ticket. The automatic cask updater requires Gatekeeper to be enabled
-and verifies the `Notarized Developer ID` assessment before opening its pull
-request.
+ticket. The signing workflow waits for the notary service to return `Accepted`,
+then `codesign --check-notarization` forces an independent online lookup of the
+ticket while `-R=notarized` requires that ticket to exist and the raw
+executable's signature is verified. The automatic cask updater performs the
+same online signature and ticket verification for both architecture binaries
+before opening its pull request. It does not use `spctl`'s app-bundle
+assessment for these standalone CLI executables.
 
 Never create the cask before both immutable architecture archives exist: the
 generator requires exact SHA-256 checksums and rejects missing, unexpected, or

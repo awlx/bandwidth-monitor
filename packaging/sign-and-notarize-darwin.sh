@@ -243,23 +243,24 @@ EXPECTED_SIGNING_IDENTITY=$MACOS_SIGNING_IDENTITY awk '
 /usr/bin/codesign --verify --strict --verbose=2 "$binary"
 
 ditto -c -k --keepParent "$binary" "$tmp/notarization.zip"
+notary_result="$tmp/notary-result.plist"
 /usr/bin/xcrun notarytool submit "$tmp/notarization.zip" \
 	--issuer "$MACOS_NOTARY_ISSUER_ID" \
 	--key "$tmp/AuthKey_${MACOS_NOTARY_KEY_ID}.p8" \
 	--key-id "$MACOS_NOTARY_KEY_ID" \
-	--wait
+	--wait \
+	--output-format plist > "$notary_result"
+notary_status=$(
+	/usr/bin/plutil -extract status raw -o - "$notary_result"
+) || {
+	echo "could not read the Apple notarization status" >&2
+	exit 1
+}
+[ "$notary_status" = "Accepted" ] || {
+	/usr/bin/plutil -p "$notary_result" >&2
+	echo "Apple notarization was not accepted" >&2
+	exit 1
+}
 
-/usr/sbin/spctl --status | grep -Fx "assessments enabled" >/dev/null || {
-	echo "Gatekeeper assessments must be enabled to verify notarization" >&2
-	exit 1
-}
-assessment=$(/usr/sbin/spctl --assess --type execute --verbose=2 "$binary" 2>&1) || {
-	printf '%s\n' "$assessment" >&2
-	exit 1
-}
-printf '%s\n' "$assessment" |
-	grep -F "source=Notarized Developer ID" >/dev/null || {
-	printf '%s\n' "$assessment" >&2
-	echo "Apple notarization was not verified" >&2
-	exit 1
-}
+/usr/bin/codesign --verify --strict --verbose=2 --check-notarization \
+	-R=notarized "$binary"

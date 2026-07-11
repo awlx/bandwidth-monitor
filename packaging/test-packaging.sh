@@ -20,6 +20,12 @@ assert_not_contains() {
 	fi
 }
 
+assert_count() {
+	actual=$(grep -F -c -- "$3" "$1" || true)
+	[ "$actual" -eq "$2" ] ||
+		fail "$1 contains $actual instances of $3 instead of $2"
+}
+
 assert_before() {
 	first=$(grep -nF -- "$2" "$1" | head -n 1 | cut -d: -f1)
 	second=$(grep -nF -- "$3" "$1" | head -n 1 | cut -d: -f1)
@@ -112,7 +118,12 @@ assert_contains "$apple_smoke" './trusted/packaging/generate-homebrew-cask.sh'
 assert_contains "$apple_smoke" 'cmp "$native_archive" "$RUNNER_TEMP/repeated.tar.gz"'
 assert_contains "$apple_smoke" 'brew audit --cask --arch all'
 assert_contains "$apple_smoke" 'brew install --cask'
-assert_contains "$apple_smoke" 'source=Notarized Developer ID'
+assert_count "$apple_smoke" 2 \
+	'/usr/bin/codesign --verify --strict --verbose=2 --check-notarization \'
+assert_contains "$apple_smoke" '-R=notarized "$binary"'
+assert_contains "$apple_smoke" '-R=notarized "$installed_binary"'
+assert_not_contains "$apple_smoke" 'spctl'
+assert_not_contains "$apple_smoke" 'source=Notarized Developer ID'
 assert_contains "$apple_smoke" 'if: always()'
 assert_not_contains "$apple_smoke" 'pull_request_target:'
 assert_not_contains "$apple_smoke" 'actions/upload-artifact'
@@ -154,7 +165,14 @@ assert_contains "$signing_script" "trap 'exit 143' TERM"
 assert_contains "$signing_script" '/usr/bin/codesign \'
 assert_contains "$signing_script" '/usr/bin/codesign --verify'
 assert_contains "$signing_script" '/usr/bin/xcrun notarytool submit'
-assert_contains "$signing_script" '/usr/sbin/spctl --status'
+assert_contains "$signing_script" '--wait \'
+assert_contains "$signing_script" '--output-format plist > "$notary_result"'
+assert_contains "$signing_script" '[ "$notary_status" = "Accepted" ]'
+assert_count "$signing_script" 1 \
+	'/usr/bin/codesign --verify --strict --verbose=2 --check-notarization \'
+assert_contains "$signing_script" '-R=notarized "$binary"'
+assert_not_contains "$signing_script" 'spctl'
+assert_not_contains "$signing_script" 'source=Notarized Developer ID'
 assert_contains "$repo/.github/workflows/release.yml" 'draft: true'
 assert_contains "$repo/.github/workflows/release.yml" 'gh release edit "$GITHUB_REF_NAME" --draft=false'
 assert_contains "$repo/.github/workflows/release.yml" 'release-checks:'
@@ -168,6 +186,13 @@ assert_contains "$repo/packaging/generate-homebrew-cask.sh" 'on_intel do'
 assert_contains "$repo/packaging/generate-homebrew-cask.sh" 'binary "bandwidth-top"'
 assert_not_contains "$repo/packaging/generate-homebrew-cask.sh" 'sha256 :no_check'
 assert_not_contains "$repo/packaging/generate-homebrew-cask.sh" 'version :latest'
+assert_count "$repo/packaging/generate-homebrew-cask.sh" 1 \
+	'/usr/bin/codesign --verify --strict --verbose=2 --check-notarization \'
+assert_contains "$repo/packaging/generate-homebrew-cask.sh" \
+	'-R=notarized "$extract_dir/bandwidth-top"'
+assert_not_contains "$repo/packaging/generate-homebrew-cask.sh" 'spctl'
+assert_not_contains "$repo/packaging/generate-homebrew-cask.sh" \
+	'source=Notarized Developer ID'
 assert_contains "$repo/packaging/update-homebrew-cask.sh" 'REQUIRE_NOTARIZATION=1'
 assert_contains "$repo/packaging/update-homebrew-cask.sh" '--jq .immutable'
 assert_contains "$repo/packaging/verify-homebrew-release.sh" 'release_jobs='

@@ -32,13 +32,6 @@ esac
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT HUP INT TERM
 
-if [ "${REQUIRE_NOTARIZATION:-0}" = "1" ]; then
-	spctl --status | grep -Fx "assessments enabled" >/dev/null || {
-		echo "Gatekeeper assessments must be enabled to verify release assets" >&2
-		exit 1
-	}
-fi
-
 validate_asset() {
 	goarch=$1
 	machine=$2
@@ -106,18 +99,9 @@ validate_asset() {
 		exit 1
 	}
 	if [ "${REQUIRE_NOTARIZATION:-0}" = "1" ]; then
-		assessment=$(
-			spctl --assess --type execute --verbose=2 \
-				"$extract_dir/bandwidth-top" 2>&1
-		) || {
-			printf '%s\n' "$assessment" >&2
-			echo "Gatekeeper rejected bandwidth-top in $archive_name" >&2
-			exit 1
-		}
-		printf '%s\n' "$assessment" |
-			grep -F "source=Notarized Developer ID" >/dev/null || {
-			printf '%s\n' "$assessment" >&2
-			echo "notarization was not verified for $archive_name" >&2
+		/usr/bin/codesign --verify --strict --verbose=2 --check-notarization \
+			-R=notarized "$extract_dir/bandwidth-top" || {
+			echo "online notarization ticket was not verified for $archive_name" >&2
 			exit 1
 		}
 	fi
