@@ -63,51 +63,197 @@ else
 fi
 keychain="$tmp/release-signing.keychain-db"
 keychain_password=$(openssl rand -hex 32)
-cleanup() {
-	security delete-keychain "$keychain" >/dev/null 2>&1 || true
-	rm -rf "$tmp"
+original_keychains="$tmp/original-keychains"
+original_default_keychain="$tmp/original-default-keychain"
+keychain_created=false
+search_list_changed=false
+default_changed=false
+
+parse_keychain_paths() {
+	input=$1
+	output=$2
+	: > "$output"
+	while IFS= read -r line || [ -n "$line" ]; do
+		[ -n "$line" ] || continue
+		case "$line" in
+			*\"*\")
+				path=${line#*\"}
+				case "$path" in
+					*\") path=${path%\"*} ;;
+					*)
+						echo "could not parse macOS keychain path" >&2
+						return 1
+						;;
+				esac
+				;;
+			*)
+				echo "could not parse macOS keychain path" >&2
+				return 1
+				;;
+		esac
+		printf '%s\n' "$path" >> "$output"
+	done < "$input"
 }
-trap cleanup EXIT HUP INT TERM
+
+set_search_list() {
+	prepend=$1
+	paths=$2
+	set --
+	[ -z "$prepend" ] || set -- "$prepend"
+	while IFS= read -r path || [ -n "$path" ]; do
+		[ -n "$path" ] || continue
+		set -- "$@" "$path"
+	done < "$paths"
+	/usr/bin/security list-keychains -d user -s "$@"
+}
+
+restore_default_keychain() {
+	if [ -s "$original_default_keychain" ]; then
+		IFS= read -r path < "$original_default_keychain"
+		/usr/bin/security default-keychain -d user -s "$path"
+	else
+		/usr/bin/security default-keychain -d user -s
+	fi
+}
+
+cleanup() {
+	status=$?
+	trap - EXIT
+	trap '' HUP INT TERM
+	set +e
+	cleanup_failed=0
+
+	if [ "$default_changed" = true ] &&
+		! restore_default_keychain; then
+		echo "failed to restore the original default keychain" >&2
+		cleanup_failed=1
+	fi
+	if [ "$search_list_changed" = true ] &&
+		! set_search_list "" "$original_keychains"; then
+		echo "failed to restore the original keychain search list" >&2
+		cleanup_failed=1
+	fi
+	if [ "$keychain_created" = true ] &&
+		! /usr/bin/security delete-keychain "$keychain" >/dev/null 2>&1; then
+		echo "failed to delete the ephemeral signing keychain" >&2
+		cleanup_failed=1
+	fi
+	if ! rm -rf "$tmp"; then
+		echo "failed to remove temporary Apple signing files" >&2
+		cleanup_failed=1
+	fi
+
+	if [ "$status" -eq 0 ] && [ "$cleanup_failed" -ne 0 ]; then
+		status=1
+	fi
+	exit "$status"
+}
+trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+raw_keychains="$tmp/current-keychains"
+/usr/bin/security list-keychains -d user > "$raw_keychains" || {
+	echo "could not read the user keychain search list" >&2
+	exit 1
+}
+parse_keychain_paths "$raw_keychains" "$original_keychains"
+
+raw_default_keychain="$tmp/current-default-keychain"
+/usr/bin/security default-keychain -d user > "$raw_default_keychain" || {
+	echo "could not read the user default keychain" >&2
+	exit 1
+}
+parse_keychain_paths "$raw_default_keychain" "$original_default_keychain"
+[ "$(wc -l < "$original_default_keychain")" -le 1 ] || {
+	echo "macOS returned multiple default keychains" >&2
+	exit 1
+}
 
 printf '%s' "$MACOS_SIGNING_CERTIFICATE" |
 	base64 --decode > "$tmp/signing-certificate.p12"
 printf '%s' "$MACOS_NOTARY_KEY" |
 	base64 --decode > "$tmp/AuthKey_${MACOS_NOTARY_KEY_ID}.p8"
 
-security create-keychain -p "$keychain_password" "$keychain"
-security unlock-keychain -p "$keychain_password" "$keychain"
-security set-keychain-settings -lut 21600 "$keychain"
-security import "$tmp/signing-certificate.p12" \
+keychain_created=true
+/usr/bin/security create-keychain -p "$keychain_password" "$keychain"
+/usr/bin/security unlock-keychain -p "$keychain_password" "$keychain"
+/usr/bin/security set-keychain-settings -lut 21600 "$keychain"
+
+search_list_changed=true
+set_search_list "$keychain" "$original_keychains" || {
+	echo "could not configure the user keychain search list" >&2
+	exit 1
+}
+default_changed=true
+/usr/bin/security default-keychain -d user -s "$keychain" || {
+	echo "could not configure the ephemeral default keychain" >&2
+	exit 1
+}
+
+/usr/bin/security import "$tmp/signing-certificate.p12" \
 	-k "$keychain" \
 	-P "$MACOS_SIGNING_CERTIFICATE_PASSWORD" \
-	-T /usr/bin/codesign
-security set-key-partition-list \
+	-T /usr/bin/codesign \
+	-T /usr/bin/security
+
+identity_output="$tmp/codesigning-identities"
+/usr/bin/security find-identity -v -p codesigning "$keychain" > "$identity_output" || {
+	echo "could not inspect the ephemeral signing keychain" >&2
+	exit 1
+}
+EXPECTED_SIGNING_IDENTITY=$MACOS_SIGNING_IDENTITY awk '
+	/^[[:space:]]*[0-9]+\)/ {
+		identity = $0
+		sub(/^[[:space:]]*[0-9]+\)[[:space:]]+/, "", identity)
+
+		fingerprint = identity
+		sub(/[[:space:]].*$/, "", fingerprint)
+		if (fingerprint == ENVIRON["EXPECTED_SIGNING_IDENTITY"])
+			found = 1
+
+		first_quote = index(identity, "\"")
+		if (first_quote > 0) {
+			name = substr(identity, first_quote + 1)
+			sub(/"[[:space:]]*$/, "", name)
+			if (name == ENVIRON["EXPECTED_SIGNING_IDENTITY"])
+				found = 1
+		}
+	}
+	END { exit(found ? 0 : 1) }
+' "$identity_output" || {
+	echo "configured macOS signing identity was not found in the ephemeral keychain" >&2
+	exit 1
+}
+
+/usr/bin/security set-key-partition-list \
 	-S apple-tool:,apple:,codesign: \
 	-s \
 	-k "$keychain_password" \
 	"$keychain"
 
-codesign \
+/usr/bin/codesign \
 	--force \
 	--options runtime \
 	--sign "$MACOS_SIGNING_IDENTITY" \
 	--timestamp \
 	--keychain "$keychain" \
 	"$binary"
-codesign --verify --strict --verbose=2 "$binary"
+/usr/bin/codesign --verify --strict --verbose=2 "$binary"
 
 ditto -c -k --keepParent "$binary" "$tmp/notarization.zip"
-xcrun notarytool submit "$tmp/notarization.zip" \
+/usr/bin/xcrun notarytool submit "$tmp/notarization.zip" \
 	--issuer "$MACOS_NOTARY_ISSUER_ID" \
 	--key "$tmp/AuthKey_${MACOS_NOTARY_KEY_ID}.p8" \
 	--key-id "$MACOS_NOTARY_KEY_ID" \
 	--wait
 
-spctl --status | grep -Fx "assessments enabled" >/dev/null || {
+/usr/sbin/spctl --status | grep -Fx "assessments enabled" >/dev/null || {
 	echo "Gatekeeper assessments must be enabled to verify notarization" >&2
 	exit 1
 }
-assessment=$(spctl --assess --type execute --verbose=2 "$binary" 2>&1) || {
+assessment=$(/usr/sbin/spctl --assess --type execute --verbose=2 "$binary" 2>&1) || {
 	printf '%s\n' "$assessment" >&2
 	exit 1
 }
