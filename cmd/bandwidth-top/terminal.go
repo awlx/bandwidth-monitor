@@ -13,6 +13,7 @@ import (
 
 	"bandwidth-monitor/bandwidthtop"
 	"bandwidth-monitor/talkers"
+	"bandwidth-monitor/version"
 
 	tea "charm.land/bubbletea/v2"
 	"golang.org/x/sys/unix"
@@ -113,6 +114,19 @@ func (m *liveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m *liveModel) handleKey(key string) (tea.Model, tea.Cmd) {
+	if m.showHelp {
+		switch key {
+		case "q", "ctrl+c":
+			return m, tea.Quit
+		case "h", "?", "esc":
+			m.showHelp = false
+			return m, nil
+		case "p", "n":
+			// Keep advertised mode and PTR controls active while help is open.
+		default:
+			return m, nil
+		}
+	}
 	switch key {
 	case "q", "ctrl+c":
 		return m, tea.Quit
@@ -141,11 +155,13 @@ func (m *liveModel) refreshSnapshot() {
 
 func (m *liveModel) View() tea.View {
 	size := liveDimensions(m.size, m.config.width)
-	status := []string{viewStatus(m.mode) + " | " + rdnsStatus(!m.noResolve) + " | p ports | n rDNS | h/? help | q quit"}
-	status = append(status, m.config.enricher.SourceStatusLines(size.width)...)
 	if m.showHelp {
-		status = append(status, "keys: p toggle ports | n toggle rDNS | q quit | h/? close help")
+		view := tea.NewView(renderHelpScreen(size, m.mode, !m.noResolve))
+		view.AltScreen = true
+		return view
 	}
+	status := []string{viewStatus(m.mode) + " | " + rdnsStatus(!m.noResolve) + " | p mode | n rDNS | ? help | q quit"}
+	status = append(status, m.config.enricher.SourceStatusLines(size.width)...)
 	if lookupStatus := lookupErrorStatus(m.rows); lookupStatus != "" {
 		status = append(status, lookupStatus)
 	}
@@ -158,6 +174,70 @@ func (m *liveModel) View() tea.View {
 		m.config.title, status, rows, m.totals, m.config.rows, size, true, m.mode))
 	view.AltScreen = true
 	return view
+}
+
+func renderHelpScreen(size terminalDimensions, mode bandwidthtop.ViewMode, resolve bool) string {
+	width, height := size.width, size.height
+	if width <= 0 {
+		width = defaultWidth
+	}
+	if height <= 0 {
+		height = defaultHeight
+	}
+	current := fmt.Sprintf("Current: %s | %s", viewStatus(mode), rdnsStatus(resolve))
+	lines := []string{
+		fmt.Sprintf("bandwidth-top %s - help", version.String()),
+		current,
+		"",
+		"Modes: hosts group by remote IP; ports group by remote IP, port, and protocol.",
+		`Remote port: outbound destination, inbound source; "-" means unavailable.`,
+		"Directions: LOCAL => REMOTE is TX; LOCAL <= REMOTE is RX.",
+		"Rates: 2s, 10s, and 40s are rolling bit/s averages.",
+		"Graph: bars scale to the largest directional 2s rate currently shown.",
+		"SINCE START: cumulative TX/RX bytes; changing views does not reset totals.",
+		"Enrichment: local MMDB -> monitor -> public fallback, for remote peers only.",
+		"PTR: one shared async cache resolves both endpoints; raw IPs remain the fallback.",
+		"",
+		"Keys: p host/port mode | n PTR on/off",
+		"      h / ? / Esc close help | q / Ctrl-C quit",
+		"",
+		"CLI: -i interface | -L rows",
+		"     -t snapshot | -P ports",
+		"     -n no-resolve | -v version",
+		"",
+		"Press h, ?, or Esc to return.",
+	}
+	if width < 72 {
+		lines = []string{
+			fmt.Sprintf("bandwidth-top %s - help", version.String()),
+			current,
+			"",
+			"Modes: hosts=remote IP; ports=remote IP+port/protocol.",
+			`Port: outbound dst; inbound src; "-" if unavailable.`,
+			"Arrows: => TX local-to-remote; <= RX remote-to-local.",
+			"Rates: rolling 2s / 10s / 40s bit/s averages.",
+			"Graph: scaled to the largest shown directional 2s rate.",
+			"SINCE START: cumulative TX/RX; view changes keep totals.",
+			"Enrich: local MMDB -> monitor -> public; remote only.",
+			"PTR: shared async cache for both ends; raw IP fallback.",
+			"",
+			"Keys: p mode | n PTR | h/?/Esc back | q/Ctrl-C quit",
+			"CLI: -i iface | -L rows | -t snapshot | -P ports",
+			"     -n no-resolve | -v version",
+			"",
+			"Press h, ?, or Esc to return.",
+		}
+	}
+	lines = boundedLines(lines, width)
+	if len(lines) <= height {
+		return strings.Join(lines, "\n")
+	}
+	if height == 1 {
+		return lines[0]
+	}
+	visible := append([]string(nil), lines[:height-1]...)
+	visible = append(visible, bandwidthtop.Truncate("Press h, ?, or Esc to return.", width))
+	return strings.Join(visible, "\n")
 }
 
 func tickAfter(delay time.Duration) tea.Cmd {

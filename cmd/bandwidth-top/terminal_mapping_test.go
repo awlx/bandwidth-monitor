@@ -3,14 +3,17 @@
 package main
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 
 	"bandwidth-monitor/bandwidthtop"
 	"bandwidth-monitor/talkers"
+	"bandwidth-monitor/version"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/rivo/uniseg"
 )
 
 type mappingTestTracker struct {
@@ -120,6 +123,7 @@ func TestLocalPTRLookupsAreDeduplicatedPerSnapshot(t *testing.T) {
 			TalkerStat: talkers.TalkerStat{IP: "203.0.113.20"},
 		},
 	}
+
 	resolver := &mappingTestResolver{
 		enabled: true,
 		names:   map[string]string{"192.0.2.10": "local.example"},
@@ -143,6 +147,99 @@ func TestLocalPTRLookupsAreDeduplicatedPerSnapshot(t *testing.T) {
 	if len(rows) != 2 || rows[0].LocalHostname != "" ||
 		rows[1].LocalHostname != "" || len(resolver.lookups) != 0 {
 		t.Fatalf("no-resolve rows=%+v lookups=%v", rows, resolver.lookups)
+	}
+}
+
+func TestLiveHelpScreenContentAndCloseKeys(t *testing.T) {
+	originalVersion, originalCommit := version.Version, version.Commit
+	t.Cleanup(func() { version.Version, version.Commit = originalVersion, originalCommit })
+	version.Version, version.Commit = "7.8.9", "ignored"
+
+	model := newLiveModel(liveModelConfig{
+		title: "bandwidth-top", rows: 20, refresh: time.Second,
+		tracker:  &mappingTestTracker{errs: make(chan error)},
+		enricher: mappingTestEnricher{}, resolver: &mappingTestResolver{},
+		done: make(chan struct{}), initialSize: terminalDimensions{width: 120, height: 24},
+		initialMode: bandwidthtop.ViewPorts,
+	})
+	status := model.View().Content
+	if !strings.Contains(status, "p mode | n rDNS | ? help | q quit") ||
+		strings.Contains(status, "h/? help") {
+		t.Fatalf("normal status is not concise:\n%s", status)
+	}
+	updateMappingModel(t, model, mappingKeyPress("?"))
+	help := model.View().Content
+	for _, want := range []string{
+		"bandwidth-top 7.8.9 - help",
+		"Current: view: ports | rdns: on",
+		"hosts group by remote IP",
+		"outbound destination, inbound source",
+		"LOCAL => REMOTE is TX",
+		"2s, 10s, and 40s",
+		"largest directional 2s rate",
+		"SINCE START",
+		"local MMDB -> monitor -> public fallback",
+		"both endpoints",
+		"raw IPs remain the fallback",
+		"-i interface", "-L rows", "-t snapshot", "-P ports",
+		"-n no-resolve", "-v version",
+	} {
+		if !strings.Contains(help, want) {
+			t.Fatalf("help missing %q:\n%s", want, help)
+		}
+	}
+	if strings.Contains(help, "# LOCAL") {
+		t.Fatalf("help did not replace the traffic view:\n%s", help)
+	}
+
+	updateMappingModel(t, model, mappingKeyPress("p"))
+	updateMappingModel(t, model, mappingKeyPress("n"))
+	help = model.View().Content
+	if !strings.Contains(help, "Current: view: hosts | rdns: off") {
+		t.Fatalf("help did not reflect live mode and PTR toggles:\n%s", help)
+	}
+
+	for _, message := range []tea.Msg{
+		mappingKeyPress("h"),
+		mappingKeyPress("?"),
+		tea.KeyPressMsg(tea.Key{Code: tea.KeyEscape}),
+	} {
+		model.showHelp = true
+		updateMappingModel(t, model, message)
+		if model.showHelp {
+			t.Fatalf("%v did not close help", message)
+		}
+	}
+}
+
+func TestLiveHelpScreenRespectsTerminalDimensions(t *testing.T) {
+	for _, size := range []terminalDimensions{
+		{width: 1, height: 1},
+		{width: 20, height: 2},
+		{width: 55, height: 8},
+		{width: 80, height: 12},
+		{width: 120, height: 24},
+	} {
+		t.Run(fmt.Sprintf("%dx%d", size.width, size.height), func(t *testing.T) {
+			model := newLiveModel(liveModelConfig{
+				title: "bandwidth-top", rows: 20, refresh: time.Second,
+				tracker:  &mappingTestTracker{errs: make(chan error)},
+				enricher: mappingTestEnricher{}, resolver: &mappingTestResolver{},
+				done: make(chan struct{}), initialSize: size,
+			})
+			model.showHelp = true
+			view := model.View()
+			lines := strings.Split(view.Content, "\n")
+			if len(lines) > size.height {
+				t.Fatalf("rendered %d lines for height %d:\n%s", len(lines), size.height, view.Content)
+			}
+			width := liveDimensions(size, 0).width
+			for _, line := range lines {
+				if got := uniseg.StringWidth(line); got > width {
+					t.Fatalf("line width=%d exceeds %d: %q", got, width, line)
+				}
+			}
+		})
 	}
 }
 

@@ -179,7 +179,12 @@ func TestLiveModelPortModeTransitionsStatusHelpAndDNS(t *testing.T) {
 	updateModel(t, model, keyPress("?"))
 	help := stripTerminalANSI(model.View().Content)
 	for _, want := range []string{
-		"p toggle ports", "n toggle rDNS", "q quit", "h/? close help",
+		"bandwidth-top", "ports group by remote IP, port, and protocol",
+		"LOCAL => REMOTE is TX", "2s, 10s, and 40s", "SINCE START",
+		"local MMDB -> monitor -> public fallback",
+		"shared async cache resolves both endpoints",
+		"-i interface", "-L rows", "-t snapshot", "-P ports",
+		"-n no-resolve", "-v version", "h / ? / Esc close help",
 	} {
 		if !strings.Contains(help, want) {
 			t.Fatalf("help missing %q:\n%s", want, help)

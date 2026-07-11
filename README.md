@@ -73,7 +73,8 @@ remote peers with ASN, provider, and location data. The dashboard daemon
 remains Linux-only.
 
 In an interactive terminal, press `n` to enable or disable PTR lookups, `h` or
-`?` for key help, and `q` or Ctrl-C to quit. `--no-resolve`/`-n` starts with
+`?` for help (`h`, `?`, or Esc closes it), and `q` or Ctrl-C to quit.
+`--no-resolve`/`-n` starts with
 PTR lookups disabled; the runtime `n` key can enable them later.
 
 Build and run it normally:
