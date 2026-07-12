@@ -6,12 +6,14 @@ independently; neither package requires the other.
 
 ## Release packages
 
-[GitHub Releases](https://github.com/awlx/bandwidth-monitor/releases) provide:
+[GitHub Releases](https://github.com/awlx/bandwidth-monitor/releases) and the
+project package repositories provide:
 
 | Format | Platforms |
 |---|---|
 | `.deb` | Debian, Ubuntu, and Raspbian on amd64 or arm64 |
 | `.rpm` | Fedora, RHEL, and compatible distributions on amd64 or arm64 |
+| `.pkg.tar.zst` | Arch Linux and Arch Linux ARM on x86_64 or aarch64 |
 | `.ipk` | OpenWrt 23.05 targets |
 | `.apk` | OpenWrt snapshot targets |
 | `.tar.gz` | Standalone macOS `bandwidth-top` on amd64 or arm64 |
@@ -54,6 +56,30 @@ For the CLI only:
 
 ```bash
 sudo dpkg -i bandwidth-top_*.deb
+```
+
+## Arch Linux
+
+Add the signed repository and refresh package databases:
+
+```bash
+curl -fsSL https://awlx.github.io/bandwidth-monitor/install-arch-repo.sh | sudo sh
+```
+
+The setup command does not install or upgrade any packages. Install the daemon,
+the terminal viewer, or both explicitly:
+
+```bash
+sudo pacman -Syu bandwidth-monitor
+sudo pacman -Syu bandwidth-top
+sudo pacman -Syu bandwidth-monitor bandwidth-top
+```
+
+Enable the daemon after configuring it:
+
+```bash
+sudoedit /etc/bandwidth-monitor/env
+sudo systemctl enable --now bandwidth-monitor
 ```
 
 ## Fedora and RHEL

@@ -68,6 +68,26 @@ assert_not_contains "$repo/nfpm-top.yaml" "/etc/"
 assert_not_contains "$repo/nfpm-top.yaml" "/var/"
 assert_not_contains "$repo/nfpm-top.yaml" "scripts:"
 assert_not_contains "$repo/nfpm-top.yaml" "depends:"
+assert_contains "$repo/nfpm-arch.yaml" "name: bandwidth-monitor"
+assert_contains "$repo/nfpm-arch.yaml" "dst: /etc/bandwidth-monitor/env"
+assert_contains "$repo/nfpm-arch.yaml" "type: config|noreplace"
+assert_contains "$repo/nfpm-arch.yaml" "dst: /usr/lib/systemd/system/bandwidth-monitor.service"
+assert_not_contains "$repo/nfpm-arch.yaml" "scripts:"
+assert_contains "$repo/nfpm-top-arch.yaml" "name: bandwidth-top"
+assert_contains "$repo/nfpm-top-arch.yaml" "dst: /usr/bin/bandwidth-top"
+assert_not_contains "$repo/nfpm-top-arch.yaml" "/etc/"
+assert_not_contains "$repo/nfpm-top-arch.yaml" "scripts:"
+assert_contains "$repo/packaging/install-arch-repo.sh" "pacman -Sy"
+assert_not_contains "$repo/packaging/install-arch-repo.sh" "pacman -S "
+assert_contains "$repo/packaging/install-arch-repo.sh" "No packages were installed."
+assert_contains "$repo/packaging/create-pacman-repository.sh" "bandwidth-monitor bandwidth-top"
+assert_contains "$repo/.github/workflows/release.yml" "nfpm package -p archlinux -f nfpm-arch.yaml"
+assert_contains "$repo/.github/workflows/release.yml" "nfpm package -p archlinux -f nfpm-top-arch.yaml"
+assert_contains "$repo/.github/workflows/release.yml" "./packaging/create-pacman-repository.sh artifacts repo/arch"
+assert_contains "$repo/.github/workflows/publish-package-repositories.yml" "workflow_dispatch:"
+assert_contains "$repo/.github/workflows/publish-package-repositories.yml" "ref: gh-pages"
+assert_contains "$repo/.github/workflows/publish-package-repositories.yml" "ref: refs/tags/\${{ inputs.release_tag }}"
+assert_not_contains "$repo/.github/workflows/publish-package-repositories.yml" "gh release create"
 assert_contains "$repo/.github/workflows/release.yml" 'cp "$TOP_BINARY" "$TOP_PKG_DIR/usr/bin/bandwidth-top"'
 assert_contains "$repo/.github/workflows/release.yml" 'bandwidth-top_${VERSION}_${ARCH}.ipk'
 assert_contains "$repo/.github/workflows/release.yml" 'bandwidth-top-${VERSION}-r1_${ARCH}.apk'
@@ -257,7 +277,9 @@ retry_openwrt_number=${retry_openwrt##*_git}
 
 if command -v nfpm >/dev/null 2>&1; then
 	mkdir -p "$tmp/build/packaging"
-	cp "$repo/nfpm.yaml" "$repo/nfpm-top.yaml" "$repo/env.example" "$tmp/build/"
+	cp "$repo/nfpm.yaml" "$repo/nfpm-top.yaml" \
+		"$repo/nfpm-arch.yaml" "$repo/nfpm-top-arch.yaml" \
+		"$repo/env.example" "$tmp/build/"
 	cp "$repo/packaging/bandwidth-monitor.service" \
 		"$repo/packaging/bandwidth-monitor.openrc" \
 		"$repo/packaging/preinstall.sh" \
@@ -275,11 +297,25 @@ if command -v nfpm >/dev/null 2>&1; then
 		VERSION=$newer_nfpm GOARCH=amd64 nfpm package -p rpm -f nfpm.yaml -t "$tmp/package.rpm" >/dev/null
 		VERSION=$newer_nfpm GOARCH=amd64 nfpm package -p deb -f nfpm-top.yaml -t "$tmp/top-package.deb" >/dev/null
 		VERSION=$newer_nfpm GOARCH=amd64 nfpm package -p rpm -f nfpm-top.yaml -t "$tmp/top-package.rpm" >/dev/null
+		VERSION=$newer_nfpm GOARCH=amd64 nfpm package -p archlinux -f nfpm-arch.yaml -t "$tmp/package.pkg.tar.zst" >/dev/null
+		VERSION=$newer_nfpm GOARCH=amd64 nfpm package -p archlinux -f nfpm-top-arch.yaml -t "$tmp/top-package.pkg.tar.zst" >/dev/null
 	)
 	[ -s "$tmp/package.deb" ] || fail "nfpm did not build a Debian package"
 	[ -s "$tmp/package.rpm" ] || fail "nfpm did not build an RPM package"
 	[ -s "$tmp/top-package.deb" ] || fail "nfpm did not build a bandwidth-top Debian package"
 	[ -s "$tmp/top-package.rpm" ] || fail "nfpm did not build a bandwidth-top RPM package"
+	[ -s "$tmp/package.pkg.tar.zst" ] || fail "nfpm did not build an Arch Linux package"
+	[ -s "$tmp/top-package.pkg.tar.zst" ] || fail "nfpm did not build a bandwidth-top Arch Linux package"
+
+	tar -tf "$tmp/package.pkg.tar.zst" | sort > "$tmp/monitor-arch-files"
+	tar -tf "$tmp/top-package.pkg.tar.zst" | sort > "$tmp/top-arch-files"
+	assert_contains "$tmp/monitor-arch-files" "usr/bin/bandwidth-monitor"
+	assert_contains "$tmp/monitor-arch-files" "etc/bandwidth-monitor/env"
+	assert_contains "$tmp/monitor-arch-files" "usr/lib/systemd/system/bandwidth-monitor.service"
+	assert_contains "$tmp/top-arch-files" "usr/bin/bandwidth-top"
+	assert_not_contains "$tmp/top-arch-files" "usr/bin/bandwidth-monitor"
+	assert_not_contains "$tmp/top-arch-files" "etc/"
+	assert_not_contains "$tmp/top-arch-files" "usr/lib/systemd/"
 
 	if command -v dpkg-deb >/dev/null 2>&1; then
 		dpkg-deb --info "$tmp/package.deb" > "$tmp/deb-info"

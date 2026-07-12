@@ -141,6 +141,15 @@ jobs:
           nfpm package -p rpm -f nfpm.yaml
           nfpm package -p rpm -f nfpm-top.yaml
 
+      - name: Build Arch Linux packages
+        env:
+          VERSION: ${{ env.PACKAGE_VERSION }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          export VERSION="${VERSION#v}"
+          nfpm package -p archlinux -f nfpm-arch.yaml
+          nfpm package -p archlinux -f nfpm-top-arch.yaml
+
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -148,6 +157,7 @@ jobs:
           path: |
             *.deb
             *.rpm
+            *.pkg.tar.zst
 
   # ─── OpenWrt (multiple targets) ────────────────────────────────────
   openwrt:
@@ -427,6 +437,7 @@ jobs:
           files: |
             artifacts/**/*.deb
             artifacts/**/*.rpm
+            artifacts/**/*.pkg.tar.zst
             artifacts/**/*.ipk
             artifacts/**/*.apk
             artifacts/**/*.tar.gz
@@ -453,13 +464,15 @@ jobs:
           test "$LINUX_PACKAGES_RESULT" = "success"
           test "$OPENWRT_RESULT" = "success"
 
-  # ─── APT Repository (GitHub Pages) ─────────────────────────────────
-  # Builds a Debian/Ubuntu apt repository from the .deb artifacts and
-  # deploys to gh-pages so users can: apt install bandwidth-monitor
+  # ─── Package Repositories (GitHub Pages) ────────────────────────────
+  # Builds APT and pacman repositories and deploys them together.
   apt-repo:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: [release]
     runs-on: ubuntu-latest
+    concurrency:
+      group: package-repositories
+      cancel-in-progress: false
 
     steps:
       - uses: actions/checkout@v4
@@ -518,23 +531,11 @@ jobs:
           # Export public key for users
           gpg --armor --export "$GPG_KEY_ID" > bandwidth-monitor.gpg.key
 
-          # Create an index page
-          cat > index.html << 'HTML'
-          <!DOCTYPE html>
-          <html><head><title>bandwidth-monitor APT Repository</title></head>
-          <body>
-          <h1>bandwidth-monitor APT Repository</h1>
-          <h2>Quick Install (Debian/Ubuntu)</h2>
-          <pre>
-          curl -fsSL https://awlx.github.io/bandwidth-monitor/bandwidth-monitor.gpg.key | sudo gpg --dearmor -o /etc/apt/keyrings/bandwidth-monitor.gpg
-          echo "deb [signed-by=/etc/apt/keyrings/bandwidth-monitor.gpg] https://awlx.github.io/bandwidth-monitor stable main" | sudo tee /etc/apt/sources.list.d/bandwidth-monitor.list
-          sudo apt update
-          sudo apt install bandwidth-monitor
-          sudo apt install bandwidth-top
-          sudo apt install bandwidth-monitor bandwidth-top
-          </pre>
-          </body></html>
-          HTML
+      - name: Build pacman repository
+        run: |
+          ./packaging/create-pacman-repository.sh artifacts repo/arch "$GPG_KEY_ID"
+          install -m 0755 packaging/install-arch-repo.sh repo/install-arch-repo.sh
+          install -m 0644 packaging/package-repository-index.html repo/index.html
 
       - name: Deploy to GitHub Pages
         uses: peaceiris/actions-gh-pages@v4
