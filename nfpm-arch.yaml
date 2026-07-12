@@ -1,0 +1,27 @@
+name: bandwidth-monitor
+arch: "${GOARCH}"
+platform: linux
+version: "${VERSION}"
+release: "1"
+maintainer: "Annika Wickert <awlx@users.noreply.github.com>"
+description: "Real-time network monitoring dashboard with embedded web UI"
+vendor: "awlx"
+homepage: "https://github.com/awlx/bandwidth-monitor"
+license: "AGPL-3.0-only"
+
+contents:
+  - src: ./bandwidth-monitor
+    dst: /usr/bin/bandwidth-monitor
+    file_info:
+      mode: 0755
+
+  - src: ./env.example
+    dst: /etc/bandwidth-monitor/env
+    type: config|noreplace
+    file_info:
+      mode: 0600
+
+  - src: ./packaging/bandwidth-monitor.service
+    dst: /usr/lib/systemd/system/bandwidth-monitor.service
+    file_info:
+      mode: 0644
