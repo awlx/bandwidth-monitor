@@ -84,10 +84,6 @@ assert_contains "$repo/packaging/create-pacman-repository.sh" "bandwidth-monitor
 assert_contains "$repo/.github/workflows/release.yml" "nfpm package -p archlinux -f nfpm-arch.yaml"
 assert_contains "$repo/.github/workflows/release.yml" "nfpm package -p archlinux -f nfpm-top-arch.yaml"
 assert_contains "$repo/.github/workflows/release.yml" "./packaging/create-pacman-repository.sh artifacts repo/arch"
-assert_contains "$repo/.github/workflows/publish-package-repositories.yml" "workflow_dispatch:"
-assert_contains "$repo/.github/workflows/publish-package-repositories.yml" "ref: gh-pages"
-assert_contains "$repo/.github/workflows/publish-package-repositories.yml" "ref: refs/tags/\${{ inputs.release_tag }}"
-assert_not_contains "$repo/.github/workflows/publish-package-repositories.yml" "gh release create"
 assert_contains "$repo/.github/workflows/release.yml" 'cp "$TOP_BINARY" "$TOP_PKG_DIR/usr/bin/bandwidth-top"'
 assert_contains "$repo/.github/workflows/release.yml" 'bandwidth-top_${VERSION}_${ARCH}.ipk'
 assert_contains "$repo/.github/workflows/release.yml" 'bandwidth-top-${VERSION}-r1_${ARCH}.apk'

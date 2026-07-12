@@ -477,7 +477,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download deb artifacts
+      - name: Download package artifacts
         uses: actions/download-artifact@v4
         with:
           path: artifacts
