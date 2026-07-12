@@ -381,7 +381,11 @@
     // ── Latency Monitor ──
     BM.updateLatency = function(targets) {
         var sec = document.getElementById('latencySection');
-        if (!targets || !targets.length) return;
+        if (!targets || !targets.length) {
+            sec.style.display = 'none';
+            return;
+        }
+        sec.style.display = '';
 
         var el = document.getElementById('latencyTargets');
         el.style.display = 'grid';

@@ -145,10 +145,12 @@ Override the built-in speed test endpoint or latency targets when desired:
 
 ```bash
 SPEEDTEST_SERVER=https://speed.ffmuc.net
+LATENCY_MONITORING=false
 LATENCY_TARGETS=anycast01.ffmuc.net,anycast02.ffmuc.net,dns.quad9.net
 ```
 
-Latency targets are probed with ICMP and HTTPS. See
+Set `LATENCY_MONITORING=false` to disable latency monitoring completely.
+Otherwise, latency targets are probed with ICMP and HTTPS. See
 [external services](integrations.md#external-services) before exposing the
 daemon to a network with strict egress requirements.
 

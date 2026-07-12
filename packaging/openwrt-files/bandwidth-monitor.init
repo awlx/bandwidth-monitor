@@ -25,6 +25,7 @@ start_service() {
         GEO_CITY="${GEO_CITY:-${GEO_COUNTRY:-/etc/bandwidth-monitor/GeoLite2-City.mmdb}}" \
         GEO_COUNTRY="${GEO_COUNTRY:-}" \
         INTERFACES="${INTERFACES:-}" \
+        LATENCY_MONITORING="${LATENCY_MONITORING:-true}" \
         LATENCY_TARGETS="${LATENCY_TARGETS:-}" \
         LISTEN="${LISTEN:-:8080}" \
         LISTEN_PROTOCOL="${LISTEN_PROTOCOL:-http}" \

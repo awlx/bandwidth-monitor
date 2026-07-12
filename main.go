@@ -264,18 +264,27 @@ func main() {
 	log.Printf("Speed test server: %s", speedtestServer)
 
 	// Latency monitor: continuous ICMP + HTTPS probes.
-	// LATENCY_TARGETS: comma-separated hostnames/IPs. Defaults to FFMUC + GitHub.
-	var latencyTargets []string
-	if raw := os.Getenv("LATENCY_TARGETS"); raw != "" {
-		for _, t := range strings.Split(raw, ",") {
-			t = strings.TrimSpace(t)
-			if t != "" {
-				latencyTargets = append(latencyTargets, t)
+	latencyMonitoring, err := strconv.ParseBool(env("LATENCY_MONITORING", "true"))
+	if err != nil {
+		log.Fatalf("LATENCY_MONITORING: invalid value %q (expected true or false)", os.Getenv("LATENCY_MONITORING"))
+	}
+	var latencyMonitor *latency.Monitor
+	if latencyMonitoring {
+		// LATENCY_TARGETS: comma-separated hostnames/IPs. Uses defaults when unset.
+		var latencyTargets []string
+		if raw := os.Getenv("LATENCY_TARGETS"); raw != "" {
+			for _, t := range strings.Split(raw, ",") {
+				t = strings.TrimSpace(t)
+				if t != "" {
+					latencyTargets = append(latencyTargets, t)
+				}
 			}
 		}
+		latencyMonitor = latency.New(latencyTargets)
+		go latencyMonitor.Run()
+	} else {
+		log.Println("Latency monitoring disabled")
 	}
-	latencyMonitor := latency.New(latencyTargets)
-	go latencyMonitor.Run()
 
 	topoScanner := topology.New(dnsResolver, wifiProvider, localNets, 30*time.Second)
 	topoScanner.SetWANInterfacesFunc(func() []string {

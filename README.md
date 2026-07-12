@@ -259,6 +259,7 @@ Useful common settings:
 | `WAN_INTERFACE` | Override WAN auto-detection |
 | `GEO_CITY`, `GEO_ASN` | MaxMind MMDB paths |
 | `LOCAL_NETS`, `SPAN_DEVICE` | Direction detection for routed or mirror traffic |
+| `LATENCY_MONITORING` | Set to `false` to disable latency monitoring |
 | `LATENCY_TARGETS` | Hosts probed by the latency monitor |
 | `SPEEDTEST_SERVER` | Speed test endpoint |
 

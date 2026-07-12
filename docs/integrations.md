@@ -76,7 +76,7 @@ checks. The following built-in features make outbound requests:
 | Service | Component and trigger | Data sent | Disable or replace |
 |---|---|---|---|
 | `speed.ffmuc.net` | Speed test started by a user | Random download/upload test data | Set `SPEEDTEST_SERVER` |
-| Configured latency targets | Continuous latency monitor | ICMP echo and HTTPS requests | Set `LATENCY_TARGETS` |
+| Configured latency targets | Continuous latency monitor | ICMP echo and HTTPS requests | Set `LATENCY_MONITORING=false`, or replace targets with `LATENCY_TARGETS` |
 | Public DNS resolvers and resolver-test domains | DNS diagnostic started by a user | User-entered domain and diagnostic DNS queries | Do not run the diagnostic |
 | `ip.ffmuc.net` | SwiftBar public-address display | Request revealing the monitor's public address | `BW_SHOW_EXTERNAL_IP=false` |
 | `anycast-v4.ffmuc.net`, `anycast-v6.ffmuc.net` | Windows and GNOME public-address display | Request revealing the monitor's public address | `BW_SHOW_EXTERNAL_IP=false` |
