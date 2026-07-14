@@ -329,6 +329,8 @@ func main() {
 	mux.HandleFunc("/api/interfaces/history", handler.InterfaceHistory(statsCollector))
 	mux.HandleFunc("/api/talkers/bandwidth", handler.TopTalkersBandwidth(talkerTracker))
 	mux.HandleFunc("/api/talkers/volume", handler.TopTalkersVolume(talkerTracker))
+	mux.HandleFunc("/api/clients/bandwidth", handler.TopClientsBandwidth(talkerTracker))
+	mux.HandleFunc("/api/clients/volume", handler.TopClientsVolume(talkerTracker))
 	mux.HandleFunc("/api/talkers/country", handler.CountryTalkers(talkerTracker))
 	mux.HandleFunc("/api/talkers/asn", handler.ASNTalkers(talkerTracker))
 	mux.HandleFunc("/api/dns", handler.DNSSummary(dnsProvider, dnsResolver))

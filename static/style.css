@@ -494,6 +494,10 @@ body {
     gap: 12px;
 }
 
+.client-overview {
+    margin-top: 20px;
+}
+
 /* ── Four-column layout for breakdown charts ── */
 .breakdown-row {
     display: grid;

@@ -72,6 +72,18 @@ func TopTalkersVolume(t *talkers.Tracker) http.HandlerFunc {
 	}
 }
 
+func TopClientsBandwidth(t *talkers.Tracker) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		httputil.WriteJSON(w, t.TopClientsByBandwidth(10))
+	}
+}
+
+func TopClientsVolume(t *talkers.Tracker) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		httputil.WriteJSON(w, t.TopClientsByVolume(10))
+	}
+}
+
 // CountryTalkers returns the top IPs (by 24h volume) for a given GeoIP
 // country code. Unlike the global Top Talkers lists, this searches every
 // known IP rather than just the overall top-10, so it can power a
@@ -881,21 +893,23 @@ func buildPayload(c *collector.Collector, t *talkers.Tracker, dp dns.Provider, w
 	}
 
 	payload := map[string]interface{}{
-		"interfaces":          c.GetAll(),
-		"sparklines":          c.GetSparklines(5*time.Minute, 50),
-		"protocols":           t.GetProtocolBreakdown(),
-		"ip_versions":         t.GetIPVersionBreakdown(),
-		"countries":           geo.Countries,
-		"asns":                geo.ASNs,
-		"top_bandwidth":       t.TopByBandwidth(10),
-		"topology_bandwidth":  topologyBandwidth,
-		"top_volume":          t.TopByVolume(10),
-		"unique_ips":          t.UniqueIPs(),
-		"uptime_secs":         readUptime(),
-		"process_uptime_secs": time.Since(processStartTime).Seconds(),
-		"load_avg":            readLoadAvg(),
-		"processes":           func() map[string]int { r, t := readProcessCount(); return map[string]int{"running": r, "total": t} }(),
-		"timestamp":           time.Now().UnixMilli(),
+		"interfaces":            c.GetAll(),
+		"sparklines":            c.GetSparklines(5*time.Minute, 50),
+		"protocols":             t.GetProtocolBreakdown(),
+		"ip_versions":           t.GetIPVersionBreakdown(),
+		"countries":             geo.Countries,
+		"asns":                  geo.ASNs,
+		"top_bandwidth":         t.TopRemoteByBandwidth(10),
+		"top_clients_bandwidth": t.TopClientsByBandwidth(10),
+		"topology_bandwidth":    topologyBandwidth,
+		"top_volume":            t.TopRemoteByVolume(10),
+		"top_clients_volume":    t.TopClientsByVolume(10),
+		"unique_ips":            t.UniqueIPs(),
+		"uptime_secs":           readUptime(),
+		"process_uptime_secs":   time.Since(processStartTime).Seconds(),
+		"load_avg":              readLoadAvg(),
+		"processes":             func() map[string]int { r, t := readProcessCount(); return map[string]int{"running": r, "total": t} }(),
+		"timestamp":             time.Now().UnixMilli(),
 	}
 	if origin != nil {
 		if og := origin.resolve(c); og != nil {

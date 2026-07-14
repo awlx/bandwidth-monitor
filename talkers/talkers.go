@@ -64,6 +64,14 @@ type TalkerStat struct {
 	IsLocal     bool    `json:"is_local,omitempty"`
 }
 
+type talkerScope uint8
+
+const (
+	talkerScopeAll talkerScope = iota
+	talkerScopeRemote
+	talkerScopeClient
+)
+
 // DirectTalkerStat is a remote peer observed by a direct single-interface
 // capture, with rates expressed relative to the packet's actual local endpoint.
 type DirectTalkerStat struct {
@@ -410,6 +418,22 @@ func (t *Tracker) startWorker(fn func()) {
 }
 
 func (t *Tracker) TopByVolume(n int) []TalkerStat {
+	return t.topByVolume(n, talkerScopeAll)
+}
+
+// TopRemoteByVolume returns the highest-volume non-local hosts without local
+// clients consuming slots in the requested limit.
+func (t *Tracker) TopRemoteByVolume(n int) []TalkerStat {
+	return t.topByVolume(n, talkerScopeRemote)
+}
+
+// TopClientsByVolume returns the highest-volume local clients over the rolling
+// 24-hour window, excluding the router's own addresses.
+func (t *Tracker) TopClientsByVolume(n int) []TalkerStat {
+	return t.topByVolume(n, talkerScopeClient)
+}
+
+func (t *Tracker) topByVolume(n int, scope talkerScope) []TalkerStat {
 	// Step 1: Copy raw data under lock
 	t.mu.RLock()
 	totals := make(map[string]*TalkerStat)
@@ -440,18 +464,17 @@ func (t *Tracker) TopByVolume(n int) []TalkerStat {
 	// Step 2: Sort + trim before enrichment to avoid unnecessary work
 	list := make([]TalkerStat, 0, len(totals))
 	for _, s := range totals {
-		ip := net.ParseIP(s.IP)
-		// Skip the router's own IPs (WAN, VPN tunnel endpoints, etc)
-		if _, isSelf := t.selfIPs[s.IP]; isSelf {
+		isLocal, include := t.talkerInScope(s.IP, scope)
+		if !include {
 			continue
 		}
-		if ip != nil && ip.IsLoopback() {
-			continue
-		}
-		s.IsLocal = ip != nil && netutil.IsLocal(ip, t.localNets)
+		s.IsLocal = isLocal
 		list = append(list, *s)
 	}
 	sort.Slice(list, func(i, j int) bool {
+		if list[i].TotalBytes == list[j].TotalBytes {
+			return list[i].IP < list[j].IP
+		}
 		return list[i].TotalBytes > list[j].TotalBytes
 	})
 	if len(list) > n {
@@ -466,6 +489,25 @@ func (t *Tracker) TopByVolume(n int) []TalkerStat {
 		t.geoDB.Enrich(list[i].IP, &list[i])
 	}
 	return list
+}
+
+func (t *Tracker) talkerInScope(ipStr string, scope talkerScope) (bool, bool) {
+	if _, isSelf := t.selfIPs[ipStr]; isSelf {
+		return false, false
+	}
+	ip := net.ParseIP(ipStr)
+	if ip != nil && ip.IsLoopback() {
+		return false, false
+	}
+	isLocal := ip != nil && netutil.IsLocal(ip, t.localNets)
+	switch scope {
+	case talkerScopeRemote:
+		return false, !isLocal
+	case talkerScopeClient:
+		return true, isLocal
+	default:
+		return isLocal, true
+	}
 }
 
 // TopByCountry returns the top n IPs (by 24h total bytes) whose GeoIP country
@@ -545,6 +587,22 @@ func (t *Tracker) TopByCountry(cc string, n int) []TalkerStat {
 }
 
 func (t *Tracker) TopByBandwidth(n int) []TalkerStat {
+	return t.topByBandwidth(n, talkerScopeAll)
+}
+
+// TopRemoteByBandwidth returns the busiest non-local hosts without local
+// clients consuming slots in the requested limit.
+func (t *Tracker) TopRemoteByBandwidth(n int) []TalkerStat {
+	return t.topByBandwidth(n, talkerScopeRemote)
+}
+
+// TopClientsByBandwidth returns the busiest local clients by current rate,
+// excluding the router's own addresses.
+func (t *Tracker) TopClientsByBandwidth(n int) []TalkerStat {
+	return t.topByBandwidth(n, talkerScopeClient)
+}
+
+func (t *Tracker) topByBandwidth(n int, scope talkerScope) []TalkerStat {
 	// Use the short rate ring (5s slots, ~30s window) for responsive rate
 	// calculation. The 1-minute buckets are still used for 24h volume.
 	t.mu.RLock()
@@ -559,15 +617,10 @@ func (t *Tracker) TopByBandwidth(n int) []TalkerStat {
 	// Step 2: Build stats, sort, and trim before enrichment
 	list := make([]TalkerStat, 0, len(rates))
 	for ip, r := range rates {
-		parsedIP := net.ParseIP(ip)
-		// Skip the router's own IPs (WAN, VPN tunnel endpoints, etc)
-		if _, isSelf := t.selfIPs[ip]; isSelf {
+		isLocal, include := t.talkerInScope(ip, scope)
+		if !include {
 			continue
 		}
-		if parsedIP != nil && parsedIP.IsLoopback() {
-			continue
-		}
-		isLocal := parsedIP != nil && netutil.IsLocal(parsedIP, t.localNets)
 		list = append(list, TalkerStat{
 			IP:         ip,
 			TotalBytes: r.bytes,
@@ -581,6 +634,9 @@ func (t *Tracker) TopByBandwidth(n int) []TalkerStat {
 		})
 	}
 	sort.Slice(list, func(i, j int) bool {
+		if list[i].RateBytes == list[j].RateBytes {
+			return list[i].IP < list[j].IP
+		}
 		return list[i].RateBytes > list[j].RateBytes
 	})
 	if len(list) > n {
@@ -1192,42 +1248,20 @@ func (t *Tracker) accountDirection(p *parsedPkt, current *bucket, rSlot *rateSlo
 			}
 		}
 	} else if p.srcLocal && p.dstLocal {
-		// Both endpoints are local. Use selfIPs to determine direction.
-		// "srcSelf → dstClient" means the router is forwarding TO the client,
-		// so from the CLIENT's perspective this is download (rx).
-		// "srcClient → dstSelf" means the client is sending through the router,
-		// so from the CLIENT's perspective this is upload (tx).
-		if p.srcSelf && !p.dstSelf {
-			// Router → Client: client is downloading (rx)
-			if h, ok := current.hosts[p.dstStr]; ok {
-				h.rxBytes += p.wireLen
-			}
-			if h, ok := current.hosts[p.srcStr]; ok {
+		// For routed traffic between local networks, direction is relative to
+		// each endpoint: the source uploads and the destination downloads.
+		if h, ok := current.hosts[p.srcStr]; ok {
+			h.txBytes += p.wireLen
+		}
+		if h, ok := current.hosts[p.dstStr]; ok {
+			h.rxBytes += p.wireLen
+		}
+		if rSlot != nil {
+			if h, ok := rSlot.hosts[p.srcStr]; ok {
 				h.txBytes += p.wireLen
 			}
-			if rSlot != nil {
-				if h, ok := rSlot.hosts[p.dstStr]; ok {
-					h.rxBytes += p.wireLen
-				}
-				if h, ok := rSlot.hosts[p.srcStr]; ok {
-					h.txBytes += p.wireLen
-				}
-			}
-		} else if p.dstSelf && !p.srcSelf {
-			// Client → Router: client is uploading (tx)
-			if h, ok := current.hosts[p.srcStr]; ok {
-				h.txBytes += p.wireLen
-			}
-			if h, ok := current.hosts[p.dstStr]; ok {
+			if h, ok := rSlot.hosts[p.dstStr]; ok {
 				h.rxBytes += p.wireLen
-			}
-			if rSlot != nil {
-				if h, ok := rSlot.hosts[p.srcStr]; ok {
-					h.txBytes += p.wireLen
-				}
-				if h, ok := rSlot.hosts[p.dstStr]; ok {
-					h.rxBytes += p.wireLen
-				}
 			}
 		}
 	}
