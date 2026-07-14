@@ -1,0 +1,51 @@
+-----BEGIN PGP SIGNED MESSAGE-----
+Hash: SHA512
+
+Origin: bandwidth-monitor
+Label: bandwidth-monitor
+Suite: stable
+Codename: stable
+Architectures: amd64 arm64
+Components: main
+Description: Bandwidth Monitor APT Repository
+Date: Tue, 14 Jul 2026 18:10:54 +0000
+MD5Sum:
+ 37307c84332aa06a778fd93e02a0b73c              210 Release
+ 4ad6cdac7936dcd28b0eb613a5170968             1013 main/binary-amd64/Packages
+ e3cc4ad238204bbb8d99ab41d43c852b              536 main/binary-amd64/Packages.gz
+ 3c0f85809704de669f742f7387e9e131             1012 main/binary-arm64/Packages
+ 94f5c505d1c08a918e89ac9d66362447              537 main/binary-arm64/Packages.gz
+SHA1:
+ 328c2c68bfb8b6c121ea50a17e8ea0a76ade0b7d              210 Release
+ 45bf14913e3a8331c436426052d244a9f4da14b6             1013 main/binary-amd64/Packages
+ ffeaa2dc54d9c069d314ca2d8c1c409e154b3c72              536 main/binary-amd64/Packages.gz
+ ef40c71df3f205bcc53b086d170b0ddd9e21a060             1012 main/binary-arm64/Packages
+ fb4cfdc5ddc0a066e292b8c833c7a1a9ee650998              537 main/binary-arm64/Packages.gz
+SHA256:
+ 1d91278896230a2b828253eeeae0d141fbdae9a2c0c548803d6b0565b79ea5a1              210 Release
+ 347bcc2b2a82f7c5733914f0bf732cf037cbf552103129370003d124a18b4c75             1013 main/binary-amd64/Packages
+ 9dd855ebcee5f7736fd584db5344e0d636e569c5b0d2e402a77db639352748d0              536 main/binary-amd64/Packages.gz
+ 00819600cb81c5e2283305e9cafa670d7e2f1e1f5075568214bac6d4e1a69ca7             1012 main/binary-arm64/Packages
+ bfbfe5f6d8f36bb68415f50f794de13d5694ecc25823713b79e56e0eb96b933e              537 main/binary-arm64/Packages.gz
+SHA512:
+ 94f738064f798e293fd6b00c7767924ca75da17375edc4edfd9f2fba5c6bbdb8e09592fdb2199780067e473c3dc28a2b47bed59a5dc4fdba74a6f36b7c16cc38              210 Release
+ 66f3dfe4eb8478969cff7cb87f5fbcd0b7b0adcd9f5ccbf30ae75f37c16bab3433f1e61d03ca00e60f812a8833c65be2b83633a605c9573eea7199b2905d64b0             1013 main/binary-amd64/Packages
+ ddddc827ad8ad44fe3b86e74854b719fd9e1bab20ed8614e570c2218046d095a3ac04c9bacf9e47b9e2007954b80e0c9741f8d8500691c1fa5c345bc495a07f7              536 main/binary-amd64/Packages.gz
+ 55ebae6436ff472568a288541ac86129e380e8cf248acc83f28b10b478d08c72961b20994259219f4898888bbe377c54a8e75cf0d605cf0523149665107b97ad             1012 main/binary-arm64/Packages
+ 54f69818677848895b218826978eac0cd46a855e820e189529b64af8a64f82f98bc97c7d2150347bedc639d304791dbc33612cdaa178bf8db3718d2c2e8d730b              537 main/binary-arm64/Packages.gz
+-----BEGIN PGP SIGNATURE-----
+
+iQIzBAEBCgAdFiEEL5x5I8RUNVqc8SMsS2Icn6ruDXEFAmpWe64ACgkQS2Icn6ru
+DXEt4w/+NLVJju9F0CJPMiOaKO8VQN3hY62CrEbXdr9Kjz5DuEHUXiH3U+oX25O1
+u7Rv3g2gzpp9KxYUEiFH+Y+z39JxhNvd7Be8XyyGdq6rMlcX0KqSYlgrS0ZUBjP9
+avEfp7VKcf+H7iJXh1u51B8XqjAEs0J/TcBUdtC2Yts51UedP2TgnyIvjyrCB+3Y
+jyD/caj/BKOkf+BAN6SsC8usb0KmvCGlUDwWvGPi7yEto++OxSmzHsz0lplgMXVr
+cM8umcvI94t4RBvQv0OvYRFeKgJlzXJ1sW6lvS8SiOHzlksuKnLYRdLkxqkxyKra
+fZsdBcO5AuPSliakcdnjIYHGhwHrVXt2mFZZlqHhCd2HtSpwd8AkkMPYf/1nX1Wa
+PGcmOzeTrgBqhUg4qK8PqN7cPrjU75y7lJongX3T9/y4RO/mL9uyu3djQQ1NDVck
+Pxkt5if3isC6KKJIMj7eEgfWRA/6/Tg5AqULAMuN+N5YBEM3C7kdKjra9K3+MhpQ
+rL+nMP3YhSBsdzehchEj5MVu0wS4Rxik6HxgYjICsw8xZXxeOp/NStWYWIafV5PM
+2kZ4J6XDWCXufXTSDDqhtjrtdJtNZxKAhodQ6K4Gf3gCske419ae/X4/ZuI5SPoU
+RaxgTflC2ahmRT15WEXW6L4jk9Ttr8rrf4og8gKwjRT9xHyaY0w=
+=+PVS
+-----END PGP SIGNATURE-----
