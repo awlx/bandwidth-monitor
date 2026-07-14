@@ -124,6 +124,8 @@
         var bw = d.top_bandwidth || [], vol = d.top_volume || [];
         var bwRemote = bw.filter(function(t) { return !t.is_local; });
         var volRemote = vol.filter(function(t) { return !t.is_local; });
+        var clientBw = d.top_clients_bandwidth || [];
+        var clientVol = d.top_clients_volume || [];
         if (tab === 'traffic') {
             if (BM.updateProtoChart) BM.updateProtoChart(d.protocols);
             if (BM.updateIPVersions) BM.updateIPVersions(d.ip_versions);
@@ -132,6 +134,8 @@
             if (BM.renderTalkers) {
                 BM.renderTalkers('bwTable', bwRemote, 'rate_bytes', BM.formatRate, 'bw');
                 BM.renderTalkers('volTable', volRemote, 'total_bytes', BM.formatBytes, 'vol');
+                BM.renderTalkers('clientBwTable', clientBw, 'rate_bytes', BM.formatRate, 'bw');
+                BM.renderTalkers('clientVolTable', clientVol, 'total_bytes', BM.formatBytes, 'vol');
             }
             if (!BM._historyLoaded && BM._loadInterfaceHistory) BM._loadInterfaceHistory();
         } else if (tab === 'monitor') {

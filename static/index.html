@@ -177,8 +177,8 @@
             <div class="card">
                 <div class="card-header">
                     <div>
-                        <div class="card-title">Top 10 &mdash; Bandwidth</div>
-                        <div class="card-subtitle">Current rate</div>
+                        <div class="card-title">Top 10 Remote Hosts &mdash; Bandwidth</div>
+                        <div class="card-subtitle">Current rate, ranked after excluding local clients</div>
                     </div>
                 </div>
                 <table>
@@ -192,13 +192,45 @@
             <div class="card">
                 <div class="card-header">
                     <div>
-                        <div class="card-title">Top 10 &mdash; Volume (24h)</div>
-                        <div class="card-subtitle">Total transferred</div>
+                        <div class="card-title">Top 10 Remote Hosts &mdash; Volume (24h)</div>
+                        <div class="card-subtitle">Total transferred, ranked after excluding local clients</div>
                     </div>
                 </div>
                 <table>
                     <thead><tr><th>#</th><th>Host</th><th>Total</th><th style="width:28%"></th></tr></thead>
                     <tbody id="volTable">
+                        <tr><td colspan="4" class="empty-state">Waiting for data</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <div class="two-col client-overview">
+            <div class="card">
+                <div class="card-header">
+                    <div>
+                        <div class="card-title">Top 10 Clients &mdash; Bandwidth</div>
+                        <div class="card-subtitle">Current download and upload rate by local client</div>
+                    </div>
+                </div>
+                <table>
+                    <thead><tr><th>#</th><th>Client</th><th>Rate</th><th style="width:28%"></th></tr></thead>
+                    <tbody id="clientBwTable">
+                        <tr><td colspan="4" class="empty-state">Waiting for data</td></tr>
+                    </tbody>
+                </table>
+            </div>
+
+            <div class="card">
+                <div class="card-header">
+                    <div>
+                        <div class="card-title">Top 10 Clients &mdash; Volume (24h)</div>
+                        <div class="card-subtitle">Total downloaded and uploaded by local client</div>
+                    </div>
+                </div>
+                <table>
+                    <thead><tr><th>#</th><th>Client</th><th>Total</th><th style="width:28%"></th></tr></thead>
+                    <tbody id="clientVolTable">
                         <tr><td colspan="4" class="empty-state">Waiting for data</td></tr>
                     </tbody>
                 </table>

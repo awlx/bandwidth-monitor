@@ -9,6 +9,8 @@ and companion clients use the same API.
 | `/api/interfaces/history` | GET | Interface history; optional `iface` and Unix-millisecond `since` parameters |
 | `/api/talkers/bandwidth` | GET | Top talkers by current bandwidth |
 | `/api/talkers/volume` | GET | Top talkers by rolling volume |
+| `/api/clients/bandwidth` | GET | Top local clients by current bandwidth |
+| `/api/clients/volume` | GET | Top local clients by rolling 24-hour volume |
 | `/api/talkers/country` | GET | Talkers grouped by country |
 | `/api/talkers/asn` | GET | Talkers grouped by autonomous system |
 | `/api/host?ip=<address>` | GET | Traffic, flow, and enrichment details for one host |
