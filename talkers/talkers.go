@@ -209,6 +209,16 @@ func NewDirect(device string, promiscuous bool, localNets []*net.IPNet, geoDB *g
 	return newTracker([]string{device}, promiscuous, localNets, geoDB, dns, true)
 }
 
+// isLANAddress reports whether ip marks its interface as LAN-facing:
+// inside a configured local network, or private when none are configured.
+// Link-local addresses never count — every interface has one.
+func isLANAddress(ip net.IP, localNets []*net.IPNet) bool {
+	if ip == nil || ip.IsLinkLocalUnicast() {
+		return false
+	}
+	return netutil.IsLocal(ip, localNets)
+}
+
 func newTracker(devices []string, promiscuous bool, localNets []*net.IPNet, geoDB *geoip.DB, dns *resolver.Resolver, direct bool) *Tracker {
 	// Build a set of the router's own interface IPs so we can resolve
 	// direction when both endpoints fall within localNets (e.g. the
@@ -234,10 +244,12 @@ func newTracker(devices []string, promiscuous bool, localNets []*net.IPNet, geoD
 	}
 
 	// Identify LAN-facing interfaces: L2 (Ethernet) interfaces that have
-	// at least one private (RFC 1918 / ULA) address. Only LAN interfaces
-	// count per-host traffic to avoid double-counting packets that traverse
-	// multiple interfaces (e.g. WAN → kernel routing → LAN, or tunnel →
-	// kernel → LAN).
+	// at least one address inside localNets (LOCAL_NETS), or — when no
+	// local networks are configured — a private (RFC 1918 / ULA) address.
+	// Publicly-addressed LANs (PI space) are only recognised via
+	// LOCAL_NETS. Only LAN interfaces count per-host traffic to avoid
+	// double-counting packets that traverse multiple interfaces (e.g.
+	// WAN → kernel routing → LAN, or tunnel → kernel → LAN).
 	//
 	// L3 interfaces (WireGuard, PPP, tun) are excluded even if they have
 	// private tunnel IPs (e.g. 10.x.x.x) — they are tunnel/WAN endpoints,
@@ -262,7 +274,7 @@ func newTracker(devices []string, promiscuous bool, localNets []*net.IPNet, geoD
 				if !ok {
 					continue
 				}
-				if ipnet.IP.IsPrivate() && !ipnet.IP.IsLinkLocalUnicast() {
+				if isLANAddress(ipnet.IP, localNets) {
 					lanDevices[iface.Name] = true
 					break
 				}
