@@ -51,9 +51,8 @@ type HistoryPoint struct {
 }
 
 const (
-	pollInterval   = 1 * time.Second
-	historyMaxAge  = 24 * time.Hour
-	historyPruneAt = 86400
+	defaultPollInterval = 1 * time.Second
+	historyMaxAge       = 24 * time.Hour
 )
 
 type Collector struct {
@@ -73,6 +72,8 @@ type Collector struct {
 	spanPrevTx     uint64
 	spanPrevTs     time.Time // timestamp of the last SPAN snapshot (own baseline)
 	spanHasPrev    bool
+	pollInterval   time.Duration
+	historyPruneAt int
 	poller.Runner
 }
 
@@ -98,6 +99,13 @@ func NewForTest(history map[string][]HistoryPoint) *Collector {
 }
 
 func New(vpnStatusFiles map[string]string, allowedIfaces []string, wanIfaces []string) *Collector {
+	return NewWithInterval(vpnStatusFiles, allowedIfaces, wanIfaces, defaultPollInterval)
+}
+
+func NewWithInterval(vpnStatusFiles map[string]string, allowedIfaces []string, wanIfaces []string, interval time.Duration) *Collector {
+	if interval <= 0 {
+		panic("collector: poll interval must be positive")
+	}
 	if vpnStatusFiles == nil {
 		vpnStatusFiles = make(map[string]string)
 	}
@@ -131,6 +139,8 @@ func New(vpnStatusFiles map[string]string, allowedIfaces []string, wanIfaces []s
 		wanIfaces:      wanSet,
 		nlHandle:       nlh,
 		addrCache:      make(map[int][]string),
+		pollInterval:   interval,
+		historyPruneAt: int(historyMaxAge/interval) + 1,
 	}
 	c.Runner.Init()
 	return c
@@ -147,7 +157,7 @@ func (c *Collector) Run() {
 	if c.span != nil {
 		go c.span.run()
 	}
-	c.Runner.Run(pollInterval, c.poll)
+	c.Runner.Run(c.pollInterval, c.poll)
 }
 
 func (c *Collector) Stop() {
@@ -470,7 +480,7 @@ func (c *Collector) poll() {
 				RxRate:    iface.RxRate,
 				TxRate:    iface.TxRate,
 			})
-			if len(c.history[name]) > historyPruneAt {
+			if len(c.history[name]) > c.historyPruneAt {
 				cutoff := now.Add(-historyMaxAge).UnixMilli()
 				idx := 0
 				for idx < len(c.history[name]) && c.history[name][idx].Timestamp < cutoff {

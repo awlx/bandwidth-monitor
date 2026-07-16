@@ -48,6 +48,19 @@ func env(key, fallback string) string {
 	return fallback
 }
 
+func collectorInterval() (time.Duration, error) {
+	const minimum = 100 * time.Millisecond
+	raw := env("COLLECTOR_INTERVAL", "1s")
+	interval, err := time.ParseDuration(raw)
+	if err != nil {
+		return 0, fmt.Errorf("invalid duration %q: %w", raw, err)
+	}
+	if interval < minimum {
+		return 0, fmt.Errorf("must be at least %s", minimum)
+	}
+	return interval, nil
+}
+
 func main() {
 	listenAddr := env("LISTEN", ":8080")
 	listenProto := strings.ToLower(strings.TrimSpace(env("LISTEN_PROTOCOL", "http")))
@@ -56,6 +69,10 @@ func main() {
 	promiscuous := env("PROMISCUOUS", "true")
 	promiscuousBool, _ := strconv.ParseBool(promiscuous)
 	debugHTTPLog, _ := strconv.ParseBool(env("DEBUG_HTTP_LOG", "false"))
+	statsInterval, err := collectorInterval()
+	if err != nil {
+		log.Fatalf("COLLECTOR_INTERVAL: %v", err)
+	}
 
 	if listenProto != "http" && listenProto != "https" {
 		log.Fatalf("LISTEN_PROTOCOL: invalid value %q (expected http or https)", listenProto)
@@ -202,7 +219,7 @@ func main() {
 		log.Printf("WAN_INTERFACE: %s", strings.Join(wanIfaces, ", "))
 	}
 
-	statsCollector := collector.New(vpnStatusFiles, allowedIfaces, wanIfaces)
+	statsCollector := collector.NewWithInterval(vpnStatusFiles, allowedIfaces, wanIfaces, statsInterval)
 
 	// Shared reverse-DNS resolver — used by talkers, conntrack, and debug.
 	dnsResolver := resolver.New()

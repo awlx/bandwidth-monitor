@@ -25,6 +25,8 @@ WAN_INTERFACE=ppp0
   all non-loopback interfaces are used.
 - `WAN_INTERFACE` overrides automatic WAN detection.
 - `PROMISCUOUS=false` disables promiscuous packet capture if it is not needed.
+- `COLLECTOR_INTERVAL` controls interface-statistics polling (default `1s`,
+  minimum `100ms`). Increasing it reduces polling work and history resolution.
 
 ## HTTPS
 
