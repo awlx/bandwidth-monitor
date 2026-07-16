@@ -158,12 +158,29 @@ type parsedPkt struct {
 	srcLocal, dstLocal   bool
 	srcSelf, dstSelf     bool
 	srcLoopLL, dstLoopLL bool
+	srcEndpoint          *packetEndpoint
+	dstEndpoint          *packetEndpoint
+	srcCurrent           *hostAccum
+	dstCurrent           *hostAccum
+	srcRate              *hostAccum
+	dstRate              *hostAccum
 	wireLen              uint64
 	proto                string
 	ipVersion            string
 	transportProtocol    string
 	srcPort, dstPort     uint16
 	hasPorts             bool
+}
+
+type packetEndpoint struct {
+	str           string
+	local         bool
+	self          bool
+	loopLL        bool
+	currentBucket *bucket
+	currentAccum  *hostAccum
+	rateSlot      *rateSlot
+	rateAccum     *hostAccum
 }
 
 type Tracker struct {
@@ -256,9 +273,17 @@ func newTracker(devices []string, promiscuous bool, localNets []*net.IPNet, geoD
 	// not LAN segments. Counting on the LAN side gives a single, consistent
 	// view of who is talking to whom.
 	lanDevices := make(map[string]bool)
+	defaultRouteIfaces, err := defaultRouteInterfaceIndexes()
+	if err != nil {
+		log.Printf("talkers: cannot identify default-route interfaces: %v", err)
+	}
 	if ifaces, err := net.Interfaces(); err == nil {
 		for _, iface := range ifaces {
 			if iface.Name == "lo" {
+				continue
+			}
+			if defaultRouteIfaces[iface.Index] {
+				log.Printf("talkers: excluding default-route interface %s from LAN capture", iface.Name)
 				continue
 			}
 			// Skip L3 interfaces — tunnels and WAN, never LAN
@@ -947,21 +972,11 @@ func (t *Tracker) captureDevice(device string) error {
 	defer ring.Close()
 	log.Printf("talkers: packet capture active on %s", device)
 
-	// IP string cache: avoids heap-allocating net.IP.String() for every
-	// packet. At 10 MB/s there are ~7000 pps but only 10-100 unique IPs.
-	// The cache hits 99%+ of lookups, eliminating the main GC bottleneck.
-	ipStrCache := make(map[[16]byte]string, 256)
-	ipCacheResets := 0
-	ipStr := func(ip net.IP) string {
-		var k [16]byte
-		copy(k[:], ip.To16())
-		if s, ok := ipStrCache[k]; ok {
-			return s
-		}
-		s := ip.String()
-		ipStrCache[k] = s
-		return s
-	}
+	// Cache all endpoint classification, not just string conversion. On a
+	// router the same small set of IPs occurs repeatedly, so this avoids CIDR
+	// scans and net.IP allocations for nearly every packet.
+	endpointCache := make(map[[16]byte]*packetEndpoint, 256)
+	cacheResets := 0
 
 	// Pre-allocate batch buffer (reused across blocks)
 	batch := make([]parsedPkt, 0, 256)
@@ -973,13 +988,13 @@ func (t *Tracker) captureDevice(device string) error {
 		default:
 		}
 
-		// Periodically reset the IP string cache to bound memory on
+		// Periodically reset the endpoint cache to bound memory on
 		// routers that see a large number of unique IPs over time.
-		if len(ipStrCache) > 100000 {
-			ipStrCache = make(map[[16]byte]string, 256)
-			ipCacheResets++
-			if ipCacheResets == 1 {
-				log.Printf("talkers: reset IP string cache on %s (>100k entries)", device)
+		if len(endpointCache) > 100000 {
+			endpointCache = make(map[[16]byte]*packetEndpoint, 256)
+			cacheResets++
+			if cacheResets == 1 {
+				log.Printf("talkers: reset endpoint cache on %s (>100k entries)", device)
 			}
 		}
 
@@ -993,10 +1008,8 @@ func (t *Tracker) captureDevice(device string) error {
 			}
 			srcIP := ipPacket.SrcIP
 			dstIP := ipPacket.DstIP
-			srcStr := ipStr(srcIP)
-			dstStr := ipStr(dstIP)
-			_, srcSelf := t.selfIPs[srcStr]
-			_, dstSelf := t.selfIPs[dstStr]
+			src := t.classifyEndpoint(srcIP, endpointCache)
+			dst := t.classifyEndpoint(dstIP, endpointCache)
 
 			ipVersion := "IPv4"
 			if ipPacket.Version != 4 {
@@ -1013,17 +1026,22 @@ func (t *Tracker) captureDevice(device string) error {
 			default:
 				proto = "Other"
 			}
-			transport := parseDirectTransport(pkt)
+			var transport directTransport
+			if t.direct {
+				transport = parseDirectTransport(pkt)
+			}
 
 			batch = append(batch, parsedPkt{
-				srcStr:            srcStr,
-				dstStr:            dstStr,
-				srcLocal:          t.packetIPIsLocal(srcIP),
-				dstLocal:          t.packetIPIsLocal(dstIP),
-				srcSelf:           srcSelf,
-				dstSelf:           dstSelf,
-				srcLoopLL:         srcIP.IsLoopback() || srcIP.IsLinkLocalUnicast(),
-				dstLoopLL:         dstIP.IsLoopback() || dstIP.IsLinkLocalUnicast(),
+				srcStr:            src.str,
+				dstStr:            dst.str,
+				srcLocal:          src.local,
+				dstLocal:          dst.local,
+				srcSelf:           src.self,
+				dstSelf:           dst.self,
+				srcLoopLL:         src.loopLL,
+				dstLoopLL:         dst.loopLL,
+				srcEndpoint:       src,
+				dstEndpoint:       dst,
 				wireLen:           uint64(wireLen),
 				proto:             proto,
 				ipVersion:         ipVersion,
@@ -1068,6 +1086,34 @@ func (t *Tracker) captureDevice(device string) error {
 		}
 		t.mu.Unlock()
 	}
+}
+
+func (t *Tracker) classifyEndpoint(ip net.IP, cache map[[16]byte]*packetEndpoint) *packetEndpoint {
+	key := packetIPKey(ip)
+	if endpoint, ok := cache[key]; ok {
+		return endpoint
+	}
+	str := ip.String()
+	_, self := t.selfIPs[str]
+	endpoint := &packetEndpoint{
+		str:    str,
+		local:  t.packetIPIsLocal(ip),
+		self:   self,
+		loopLL: ip.IsLoopback() || ip.IsLinkLocalUnicast(),
+	}
+	cache[key] = endpoint
+	return endpoint
+}
+
+func packetIPKey(ip net.IP) (key [16]byte) {
+	if len(ip) == net.IPv4len {
+		key[10] = 0xff
+		key[11] = 0xff
+		copy(key[12:], ip)
+		return key
+	}
+	copy(key[:], ip)
+	return key
 }
 
 func (t *Tracker) packetIPIsLocal(ip net.IP) bool {
@@ -1173,33 +1219,59 @@ func (t *Tracker) accountDirectFlow(p *parsedPkt, slot *directRateSlot) {
 // rate ring slot for both endpoints of a parsed packet.
 // Must be called with t.mu held.
 func (t *Tracker) accountPacket(p *parsedPkt, current *bucket, rSlot *rateSlot) {
-	for _, entry := range []struct {
-		ip     string
-		loopLL bool
-	}{
-		{p.srcStr, p.srcLoopLL},
-		{p.dstStr, p.dstLoopLL},
-	} {
-		if entry.loopLL {
-			continue
-		}
-		if _, ok := current.hosts[entry.ip]; !ok {
-			if len(current.hosts) >= maxHostsPerBucket {
-				continue
-			}
-			current.hosts[entry.ip] = &hostAccum{}
-		}
-		current.hosts[entry.ip].bytes += p.wireLen
-		current.hosts[entry.ip].packets++
-
-		if rSlot != nil {
-			if _, ok := rSlot.hosts[entry.ip]; !ok {
-				rSlot.hosts[entry.ip] = &hostAccum{}
-			}
-			rSlot.hosts[entry.ip].bytes += p.wireLen
-			rSlot.hosts[entry.ip].packets++
+	p.srcCurrent, p.srcRate = accountEndpoint(p.srcEndpoint, p.srcStr, p.srcLoopLL, current, rSlot)
+	p.dstCurrent, p.dstRate = accountEndpoint(p.dstEndpoint, p.dstStr, p.dstLoopLL, current, rSlot)
+	for _, acc := range []*hostAccum{p.srcCurrent, p.dstCurrent} {
+		if acc != nil {
+			acc.bytes += p.wireLen
+			acc.packets++
 		}
 	}
+	for _, acc := range []*hostAccum{p.srcRate, p.dstRate} {
+		if acc != nil {
+			acc.bytes += p.wireLen
+			acc.packets++
+		}
+	}
+}
+
+func accountEndpoint(endpoint *packetEndpoint, ip string, loopLL bool, current *bucket, rSlot *rateSlot) (*hostAccum, *hostAccum) {
+	if loopLL {
+		return nil, nil
+	}
+
+	var currentAccum *hostAccum
+	if endpoint != nil && endpoint.currentBucket == current {
+		currentAccum = endpoint.currentAccum
+	} else {
+		currentAccum = current.hosts[ip]
+		if currentAccum == nil && len(current.hosts) < maxHostsPerBucket {
+			currentAccum = &hostAccum{}
+			current.hosts[ip] = currentAccum
+		}
+		if endpoint != nil {
+			endpoint.currentBucket = current
+			endpoint.currentAccum = currentAccum
+		}
+	}
+
+	var rateAccum *hostAccum
+	if rSlot != nil {
+		if endpoint != nil && endpoint.rateSlot == rSlot {
+			rateAccum = endpoint.rateAccum
+		} else {
+			rateAccum = rSlot.hosts[ip]
+			if rateAccum == nil {
+				rateAccum = &hostAccum{}
+				rSlot.hosts[ip] = rateAccum
+			}
+			if endpoint != nil {
+				endpoint.rateSlot = rSlot
+				endpoint.rateAccum = rateAccum
+			}
+		}
+	}
+	return currentAccum, rateAccum
 }
 
 // accountDirection updates rx/tx byte counters based on local-net direction
@@ -1210,58 +1282,32 @@ func (t *Tracker) accountDirection(p *parsedPkt, current *bucket, rSlot *rateSlo
 		return
 	}
 	if p.srcLocal && !p.dstLocal {
-		if h, ok := current.hosts[p.srcStr]; ok {
-			h.txBytes += p.wireLen
-		}
-		if rSlot != nil {
-			if h, ok := rSlot.hosts[p.srcStr]; ok {
-				h.txBytes += p.wireLen
-			}
-		}
-		if h, ok := current.hosts[p.dstStr]; ok {
-			h.txBytes += p.wireLen
-		}
-		if rSlot != nil {
-			if h, ok := rSlot.hosts[p.dstStr]; ok {
-				h.txBytes += p.wireLen
+		for _, acc := range []*hostAccum{p.srcCurrent, p.dstCurrent, p.srcRate, p.dstRate} {
+			if acc != nil {
+				acc.txBytes += p.wireLen
 			}
 		}
 		// local (src) -> remote (dst): upload from the local host's perspective.
 		t.recordPair(current, p.srcStr, p.dstStr, p.wireLen, 0, p.wireLen)
 	} else if !p.srcLocal && p.dstLocal {
-		if h, ok := current.hosts[p.dstStr]; ok {
-			h.rxBytes += p.wireLen
-		}
-		if rSlot != nil {
-			if h, ok := rSlot.hosts[p.dstStr]; ok {
-				h.rxBytes += p.wireLen
+		for _, acc := range []*hostAccum{p.srcCurrent, p.dstCurrent, p.srcRate, p.dstRate} {
+			if acc != nil {
+				acc.rxBytes += p.wireLen
 			}
-		}
-		if h, ok := current.hosts[p.srcStr]; ok {
-			h.rxBytes += p.wireLen
 		}
 		// remote (src) -> local (dst): download from the local host's perspective.
 		t.recordPair(current, p.dstStr, p.srcStr, p.wireLen, p.wireLen, 0)
-		if rSlot != nil {
-			if h, ok := rSlot.hosts[p.srcStr]; ok {
-				h.rxBytes += p.wireLen
-			}
-		}
 	} else if p.srcLocal && p.dstLocal {
 		// For routed traffic between local networks, direction is relative to
 		// each endpoint: the source uploads and the destination downloads.
-		if h, ok := current.hosts[p.srcStr]; ok {
-			h.txBytes += p.wireLen
-		}
-		if h, ok := current.hosts[p.dstStr]; ok {
-			h.rxBytes += p.wireLen
-		}
-		if rSlot != nil {
-			if h, ok := rSlot.hosts[p.srcStr]; ok {
-				h.txBytes += p.wireLen
+		for _, acc := range []*hostAccum{p.srcCurrent, p.srcRate} {
+			if acc != nil {
+				acc.txBytes += p.wireLen
 			}
-			if h, ok := rSlot.hosts[p.dstStr]; ok {
-				h.rxBytes += p.wireLen
+		}
+		for _, acc := range []*hostAccum{p.dstCurrent, p.dstRate} {
+			if acc != nil {
+				acc.rxBytes += p.wireLen
 			}
 		}
 	}

@@ -257,6 +257,7 @@ Useful common settings:
 | `TLS_CERT_FILE`, `TLS_KEY_FILE` | PEM certificate and key for HTTPS |
 | `INTERFACES` | Interfaces shown and captured |
 | `WAN_INTERFACE` | Override WAN auto-detection |
+| `COLLECTOR_INTERVAL` | Interface-statistics polling interval (default `1s`) |
 | `GEO_CITY`, `GEO_ASN` | MaxMind MMDB paths |
 | `LOCAL_NETS`, `SPAN_DEVICE` | Direction detection for routed or mirror traffic |
 | `LATENCY_MONITORING` | Set to `false` to disable latency monitoring |

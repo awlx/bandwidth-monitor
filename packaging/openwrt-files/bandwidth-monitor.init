@@ -20,6 +20,7 @@ start_service() {
         APNS_KEY_ID="${APNS_KEY_ID:-}" \
         APNS_PUSH_INTERVAL="${APNS_PUSH_INTERVAL:-10s}" \
         APNS_TEAM_ID="${APNS_TEAM_ID:-}" \
+        COLLECTOR_INTERVAL="${COLLECTOR_INTERVAL:-1s}" \
         DEBUG_HTTP_LOG="${DEBUG_HTTP_LOG:-false}" \
         GEO_ASN="${GEO_ASN:-/etc/bandwidth-monitor/GeoLite2-ASN.mmdb}" \
         GEO_CITY="${GEO_CITY:-${GEO_COUNTRY:-/etc/bandwidth-monitor/GeoLite2-City.mmdb}}" \
