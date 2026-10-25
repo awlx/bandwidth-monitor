@@ -23,6 +23,7 @@ const (
 // numbers for the SPAN device.
 type spanOverlay struct {
 	device    string
+	isL3      bool // cached: the interface lookup is a netlink dump
 	promisc   bool
 	localNets []*net.IPNet
 
@@ -38,6 +39,7 @@ type spanOverlay struct {
 func newSpanOverlay(device string, promisc bool, localNets []*net.IPNet) *spanOverlay {
 	return &spanOverlay{
 		device:    device,
+		isL3:      packets.IsL3Device(device),
 		promisc:   promisc,
 		localNets: localNets,
 		stopCh:    make(chan struct{}),
@@ -110,7 +112,7 @@ func (s *spanOverlay) snapshot() (rxBytes, txBytes, rxPackets, txPackets uint64)
 }
 
 func (s *spanOverlay) processPacket(pkt []byte) {
-	ipPacket := packets.ParseIPPacket(pkt, packets.IsL3Device(s.device))
+	ipPacket := packets.ParseIPPacket(pkt, s.isL3)
 	if ipPacket.Version == 0 {
 		return // unparseable packet
 	}
