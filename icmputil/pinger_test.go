@@ -211,3 +211,162 @@ func TestPingerClose(t *testing.T) {
 		t.Fatal("Ping after Close should fail")
 	}
 }
+
+type fakeClock struct {
+	mu sync.Mutex
+	t  time.Time
+}
+
+func (c *fakeClock) now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.t
+}
+
+func (c *fakeClock) advance(d time.Duration) {
+	c.mu.Lock()
+	c.t = c.t.Add(d)
+	c.mu.Unlock()
+}
+
+func withClock(p *Pinger, c *fakeClock) {
+	p.mu.Lock()
+	p.now = c.now
+	p.idSince = c.now()
+	p.mu.Unlock()
+}
+
+// The identifier stays constant inside one rotate interval and changes
+// after it.
+func TestPingerIDRotation(t *testing.T) {
+	var mu sync.Mutex
+	var ids []uint16
+	c := newFakeConn(false, func(c *fakeConn, id, seq uint16, d net.IP) {
+		mu.Lock()
+		ids = append(ids, id)
+		mu.Unlock()
+		c.deliver(0, d, id, seq)
+	})
+	p := NewPingerConn(c, false, 0x5555)
+	defer p.Close()
+	clk := &fakeClock{t: time.Unix(1000, 0)}
+	withClock(p, clk)
+
+	for i := 0; i < 3; i++ {
+		if rtt := p.Ping(dstA, time.Second); rtt < 0 {
+			t.Fatalf("probe %d lost", i)
+		}
+		clk.advance(DefaultIDRotation / 4)
+	}
+	clk.advance(DefaultIDRotation)
+	if rtt := p.Ping(dstA, time.Second); rtt < 0 {
+		t.Fatal("probe after rotation lost")
+	}
+	if p.ID() == 0x5555 {
+		t.Fatal("ID() did not change after rotation")
+	}
+	clk.advance(DefaultIDRotation)
+	p.Ping(dstA, time.Second)
+
+	if len(ids) != 5 {
+		t.Fatalf("got %d probes, want 5", len(ids))
+	}
+	for i := 0; i < 3; i++ {
+		if ids[i] != 0x5555 {
+			t.Fatalf("probe %d used id %#x before rotation, want 0x5555", i, ids[i])
+		}
+	}
+	if ids[3] == ids[2] || ids[4] == ids[3] {
+		t.Fatalf("id not rotated: %#x", ids)
+	}
+}
+
+func TestPingerIDRotationDisabled(t *testing.T) {
+	var mu sync.Mutex
+	var ids []uint16
+	c := newFakeConn(false, func(c *fakeConn, id, seq uint16, d net.IP) {
+		mu.Lock()
+		ids = append(ids, id)
+		mu.Unlock()
+		c.deliver(0, d, id, seq)
+	})
+	p := NewPingerConn(c, false, 0x6666)
+	defer p.Close()
+	p.SetIDRotation(0)
+	clk := &fakeClock{t: time.Unix(1000, 0)}
+	withClock(p, clk)
+	for i := 0; i < 3; i++ {
+		p.Ping(dstA, time.Second)
+		clk.advance(time.Hour)
+	}
+	for _, id := range ids {
+		if id != 0x6666 {
+			t.Fatalf("id changed with rotation disabled: %#x", ids)
+		}
+	}
+}
+
+// A probe sent under the old identifier still gets its reply when the
+// reply arrives after the identifier changed.
+func TestPingerInFlightAcrossRotation(t *testing.T) {
+	type sent struct {
+		id, seq uint16
+		dst     net.IP
+	}
+	sentCh := make(chan sent, 4)
+	c := newFakeConn(false, func(c *fakeConn, id, seq uint16, d net.IP) {
+		sentCh <- sent{id, seq, d}
+	})
+	p := NewPingerConn(c, false, 0x7777)
+	defer p.Close()
+	clk := &fakeClock{t: time.Unix(1000, 0)}
+	withClock(p, clk)
+
+	oldRes := make(chan float64, 1)
+	go func() { oldRes <- p.Ping(dstA, time.Second) }()
+	old := <-sentCh
+
+	clk.advance(DefaultIDRotation)
+	newRes := make(chan float64, 1)
+	go func() { newRes <- p.Ping(dstB, time.Second) }()
+	cur := <-sentCh
+	if cur.id == old.id {
+		t.Fatalf("id did not rotate (%#x)", cur.id)
+	}
+
+	// Reply to the new probe first, then the late reply to the old probe.
+	c.deliver(0, cur.dst, cur.id, cur.seq)
+	c.deliver(10*time.Millisecond, old.dst, old.id, old.seq)
+	if rtt := <-newRes; rtt < 0 {
+		t.Fatal("probe under new id lost")
+	}
+	if rtt := <-oldRes; rtt < 0 {
+		t.Fatal("in-flight probe under old id lost across rotation")
+	}
+}
+
+// After a rotation, a reply that carries the old identifier must not be
+// credited to a new probe with the same sequence number and destination.
+func TestPingerStaleIDNotCrossMatched(t *testing.T) {
+	sentCh := make(chan [2]uint16, 4)
+	c := newFakeConn(false, func(c *fakeConn, id, seq uint16, d net.IP) {
+		sentCh <- [2]uint16{id, seq}
+	})
+	p := NewPingerConn(c, false, 0x8888)
+	defer p.Close()
+	clk := &fakeClock{t: time.Unix(1000, 0)}
+	withClock(p, clk)
+	clk.advance(DefaultIDRotation)
+
+	res := make(chan float64, 1)
+	go func() { res <- p.Ping(dstA, 100*time.Millisecond) }()
+	s := <-sentCh
+	if s[0] == 0x8888 {
+		t.Fatal("id did not rotate")
+	}
+	// Same seq and source, but the previous identifier.
+	c.deliver(time.Millisecond, dstA, 0x8888, s[1])
+	if rtt := <-res; rtt >= 0 {
+		t.Fatalf("reply with stale id accepted (rtt=%v)", rtt)
+	}
+}
