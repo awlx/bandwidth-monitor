@@ -1,0 +1,32 @@
+Origin: bandwidth-monitor
+Label: bandwidth-monitor
+Suite: stable
+Codename: stable
+Architectures: amd64 arm64
+Components: main
+Description: Bandwidth Monitor APT Repository
+Date: Sun, 25 Oct 2026 21:44:25 +0000
+MD5Sum:
+ 4c7fd1e02cd9633bac1a88ac8ef54854              210 Release
+ 33b856d00403a1807a0012a0b2135a6c             1013 main/binary-amd64/Packages
+ 7851d7ad7954d251cad5b567f61751ce              535 main/binary-amd64/Packages.gz
+ 6f812f26584767be56fbbf864a91ceb4             1012 main/binary-arm64/Packages
+ 1008e2c0d3cf177e2d70be70f9a539dd              536 main/binary-arm64/Packages.gz
+SHA1:
+ f6da77eccc6e54e7890d1a8c873c218ecc684bcf              210 Release
+ ed8b173a7207e2e1952693a89783c2f7d279409c             1013 main/binary-amd64/Packages
+ 327610cd5807103bec856f81bd4ce9e398f030d5              535 main/binary-amd64/Packages.gz
+ 40ca8cde33230523f7f8b553b64a6689780ded56             1012 main/binary-arm64/Packages
+ 10823a41851794b78315344e2da96b694b65b012              536 main/binary-arm64/Packages.gz
+SHA256:
+ 906ac90b80ee5069808a8a528311e651322c02bb33a0d86edcf1f82ee442c409              210 Release
+ ddfab1fe4dcf5fa2aecb38aa68e26ad6b92b0cf6489faec92a8076f1f884d838             1013 main/binary-amd64/Packages
+ ea268accee1e5280da88076fde674ffd28153a9b69a62ab1507827f68c13e8c4              535 main/binary-amd64/Packages.gz
+ ad8fd39145e966b870741cb354a45dca47e46b229acb7de4e9d8ce4f0ea8c3c4             1012 main/binary-arm64/Packages
+ c23984b87432a9ed0dce88d341c5fdbf3b74026df205f0dc5efc8ad7b51f0545              536 main/binary-arm64/Packages.gz
+SHA512:
+ 0c0873ecbd7bc48cd1de12dbc2e49d41f5343b3f216149f202adbfcf2cd0e297fab69f1d2876f82a423e7de3a56682ccf3ef01e2bf3b4b4bf0bd780a01df4f94              210 Release
+ 042d4dba7ac07e11d3d855582eed5918b002f6f0d502250ed45f10d8f3baeb76d2d29c1b611054b8f64d99e3270c35c179e767e9a28a4ab9e449e9c9b24bb804             1013 main/binary-amd64/Packages
+ a54587230e312eddcb56a917b4b3b4b6b4a84736d7ef682bcac95695c3e942f012eecebb8b4e401d85ffa8c89a2da8df270083e7e2ed563fd83c834268804919              535 main/binary-amd64/Packages.gz
+ caae64db8b1a3119d7fc3d3668d9f950f33b6705b874de259f937487ceb5cf90d7a8e1b4d51acebb27b77e6edbfcee9b07c6f3fb77850838ac1e8dde7e45e55a             1012 main/binary-arm64/Packages
+ 72e5704e752ae8f5c0215ce4c54d2fb50e2c3b6068a14e64c8ee38ff88c19eabe7bf619a2cd79738da7f2217810f91445fed1e8c2dd3d5eb7f78d9ad81817c06              536 main/binary-arm64/Packages.gz

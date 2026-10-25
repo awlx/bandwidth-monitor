@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html><head><title>bandwidth-monitor Package Repositories</title></head>
+<body>
+<h1>bandwidth-monitor Package Repositories</h1>
+<h2>Debian and Ubuntu</h2>
+<pre>
+curl -fsSL https://awlx.github.io/bandwidth-monitor/bandwidth-monitor.gpg.key | sudo gpg --dearmor -o /etc/apt/keyrings/bandwidth-monitor.gpg
+echo "deb [signed-by=/etc/apt/keyrings/bandwidth-monitor.gpg] https://awlx.github.io/bandwidth-monitor stable main" | sudo tee /etc/apt/sources.list.d/bandwidth-monitor.list
+sudo apt update
+sudo apt install bandwidth-monitor
+sudo apt install bandwidth-top
+</pre>
+<h2>Arch Linux</h2>
+<pre>
+curl -fsSL https://awlx.github.io/bandwidth-monitor/install-arch-repo.sh | sudo sh
+sudo pacman -Syu bandwidth-monitor
+sudo pacman -Syu bandwidth-top
+</pre>
+</body></html>
