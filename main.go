@@ -242,6 +242,12 @@ func main() {
 	go statsCollector.Run()
 
 	talkerTracker := talkers.New(allowedIfaces, promiscuousBool, localNets, geoDB, dnsResolver)
+	if spanDevice != "" {
+		// A mirror port has no address and may be the only NIC with a
+		// default route on a passive monitor host, so the LAN heuristics
+		// would skip it. Count its traffic explicitly.
+		talkerTracker.SetMonitorDevices([]string{spanDevice})
+	}
 	go talkerTracker.Run()
 
 	// DNS provider: AdGuard Home, NextDNS, or Pi-hole (mutually exclusive; first configured wins)
@@ -280,6 +286,9 @@ func main() {
 	conntrackTracker := conntrack.New(localNets, geoDB, dnsResolver)
 	go conntrackTracker.Run()
 	log.Println("Conntrack (NAT) tracking enabled")
+	if spanDevice != "" {
+		log.Println("Conntrack: SPAN_DEVICE is set; if this host is not the router, NAT/connection data only covers this host's own connections")
+	}
 
 	speedtestServer := env("SPEEDTEST_SERVER", "https://speed.ffmuc.net")
 	speedTester := speedtest.New(speedtestServer)

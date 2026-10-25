@@ -191,6 +191,10 @@ type Tracker struct {
 	localNets   []*net.IPNet        // LOCAL_NETS for direction detection
 	selfIPs     map[string]struct{} // router's own interface IPs for direction tiebreaker
 	lanDevices  map[string]bool     // LAN-facing interfaces (have private addrs) — only these count hosts
+	// monitorDevices are SPAN/mirror interfaces. They are captured even
+	// without addresses or when carrying the default route, and always in
+	// promiscuous mode since mirrored frames are addressed to other hosts.
+	monitorDevices map[string]bool
 
 	mu          sync.RWMutex
 	buckets     []*bucket
@@ -235,6 +239,21 @@ func New(devices []string, promiscuous bool, localNets []*net.IPNet, geoDB *geoi
 // ad-hoc tools; the server's New constructor retains LAN-only accounting.
 func NewDirect(device string, promiscuous bool, localNets []*net.IPNet, geoDB *geoip.DB, dns *resolver.Resolver) *Tracker {
 	return newTracker([]string{device}, promiscuous, localNets, geoDB, dns, true)
+}
+
+// SetMonitorDevices marks SPAN/mirror-port interfaces whose traffic should be
+// counted even though the host is not the router for it. Must be called
+// before Run.
+func (t *Tracker) SetMonitorDevices(devices []string) {
+	t.monitorDevices = make(map[string]bool, len(devices))
+	for _, d := range devices {
+		if d != "" {
+			t.monitorDevices[d] = true
+		}
+	}
+	if len(t.monitorDevices) > 0 {
+		log.Printf("talkers: monitor (SPAN) devices: %s", strings.Join(devices, ", "))
+	}
 }
 
 // isLANAddress reports whether ip marks its interface as LAN-facing:
@@ -401,7 +420,7 @@ func (t *Tracker) Run() {
 		t.startWorker(t.rotateDirectRateRing)
 	}
 	for _, dev := range devices {
-		if !t.direct && !t.lanDevices[dev] {
+		if !t.direct && !t.lanDevices[dev] && !t.monitorDevices[dev] {
 			log.Printf("talkers: skipping capture on %s (not LAN)", dev)
 			continue
 		}
@@ -910,7 +929,7 @@ func (t *Tracker) BandwidthForIPs(ips []string) []TalkerStat {
 
 func (t *Tracker) getDevices() ([]string, error) {
 	if len(t.devices) > 0 {
-		return t.devices, nil
+		return t.withMonitorDevices(t.devices), nil
 	}
 
 	devs, err := net.Interfaces()
@@ -928,11 +947,32 @@ func (t *Tracker) getDevices() ([]string, error) {
 		}
 		names = append(names, d.Name)
 	}
-	return names, nil
+	return t.withMonitorDevices(names), nil
+}
+
+// withMonitorDevices appends monitor devices missing from names. SPAN ports
+// usually have no address and are not part of an INTERFACES display list.
+func (t *Tracker) withMonitorDevices(names []string) []string {
+	if len(t.monitorDevices) == 0 {
+		return names
+	}
+	seen := make(map[string]bool, len(names))
+	for _, n := range names {
+		seen[n] = true
+	}
+	out := append([]string(nil), names...)
+	extra := make([]string, 0, len(t.monitorDevices))
+	for d := range t.monitorDevices {
+		if !seen[d] {
+			extra = append(extra, d)
+		}
+	}
+	sort.Strings(extra)
+	return append(out, extra...)
 }
 
 func (t *Tracker) captureDevice(device string) error {
-	ring, err := packets.NewRing(device, t.promiscuous)
+	ring, err := packets.NewRing(device, t.promiscuous || t.monitorDevices[device])
 	if err != nil {
 		return err
 	}

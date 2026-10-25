@@ -114,3 +114,44 @@ func TestCaptureErrorIsReported(t *testing.T) {
 	}
 	tracker.Stop()
 }
+
+func TestMonitorDeviceCapturedWithoutLANAddress(t *testing.T) {
+	started := make(chan string, 4)
+	var tracker *Tracker
+	tracker = lifecycleTestTracker(func(dev string) error {
+		started <- dev
+		<-tracker.stopCh
+		return nil
+	})
+	// INTERFACES lists only a display interface; the SPAN port has no
+	// address, is not LAN-facing, and must still be captured.
+	tracker.devices = []string{"eth0"}
+	tracker.lanDevices = map[string]bool{}
+	tracker.SetMonitorDevices([]string{"span0"})
+
+	go tracker.Run()
+	if dev := <-started; dev != "span0" {
+		t.Fatalf("captured %q, want span0", dev)
+	}
+	tracker.Stop()
+	select {
+	case dev := <-started:
+		t.Fatalf("unexpected capture on %q", dev)
+	default:
+	}
+}
+
+func TestWithMonitorDevicesDeduplicates(t *testing.T) {
+	tr := &Tracker{}
+	tr.SetMonitorDevices([]string{"span1", "eth1", "span0"})
+	got := tr.withMonitorDevices([]string{"eth0", "eth1"})
+	want := []string{"eth0", "eth1", "span0", "span1"}
+	if len(got) != len(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("got %v, want %v", got, want)
+		}
+	}
+}

@@ -134,6 +134,19 @@ On a mirror port, `SPAN_DEVICE` classifies direction from IP headers and
 `LOCAL_NETS` because the kernel reports all mirrored packets as received.
 This mode requires `CAP_NET_RAW`.
 
+Use this mode when bandwidth-monitor runs on a host that is *not* the router
+(a passive monitor fed by a switch mirror port):
+
+- The mirror interface needs no IP address. Top talkers always capture it, in
+  promiscuous mode, even if it carries the default route or is missing from
+  `INTERFACES`.
+- Set `LOCAL_NETS` to the networks behind the router. Auto-discovery only sees
+  the monitor host's own subnets.
+- Conntrack/NAT views only show the monitor host's own connections.
+- Mirror each packet once. Mirroring both ingress and egress of several switch
+  ports, or capturing the same traffic on another LAN interface of the
+  monitor host, counts it twice.
+
 ## VPN status on OpenWrt
 
 The OpenWrt package installs a hotplug helper that creates status files when
