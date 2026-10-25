@@ -895,6 +895,7 @@ func buildPayload(c *collector.Collector, t *talkers.Tracker, dp dns.Provider, w
 		"interfaces":            c.GetAll(),
 		"sparklines":            c.GetSparklines(5*time.Minute, 50),
 		"protocols":             t.GetProtocolBreakdown(),
+		"services":              t.GetServiceBreakdown(),
 		"ip_versions":           t.GetIPVersionBreakdown(),
 		"countries":             geo.Countries,
 		"asns":                  geo.ASNs,

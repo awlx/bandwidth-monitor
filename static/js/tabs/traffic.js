@@ -294,12 +294,14 @@
     }
 
     var protoChart = makeDoughnut('protoChart');
+    var serviceChart = makeDoughnut('serviceChart');
     var countryChart = makeDoughnut('countryChart');
     var asnChart = makeDoughnut('asnChart');
     var ipvChart = makeDoughnut('ipvChart');
 
     // Store charts needed by other modules
     BM._protoChart = protoChart;
+    BM._serviceChart = serviceChart;
     BM._countryChart = countryChart;
     BM._asnChart = asnChart;
     BM._ipvChart = ipvChart;
@@ -667,6 +669,27 @@
         updateSimpleDoughnut(protoChart, document.getElementById('protoLegend'), labels, values, colors, BM.formatBytes);
     };
 
+    var serviceColors = {
+        'HTTPS': '#3b82f6', 'QUIC': '#a78bfa', 'HTTP': '#60a5fa', 'DNS': '#34d399',
+        'DoT': '#2dd4bf', 'DoQ': '#4ade80', 'SSH': '#f472b6', 'NTP': '#fbbf24',
+        'WireGuard': '#e879f9', 'OpenVPN': '#c084fc', 'IPsec': '#818cf8', 'Mail': '#fb923c',
+        'ICMP': '#f59e0b', 'Other TCP': '#22d3ee', 'Other UDP': '#0e7490', 'Other': '#71717a'
+    };
+
+    // Services are sorted by volume; the long tail is folded into "Others"
+    // so the legend stays readable.
+    BM.updateServiceChart = function(data) {
+        if (!data) return;
+        var keys = Object.keys(data).sort(function(a, b) { return data[b] - data[a]; });
+        var labels = [], values = [], colors = [], rest = 0, max = 8;
+        for (var i = 0; i < keys.length; i++) {
+            if (i < max) { labels.push(keys[i]); values.push(data[keys[i]]); colors.push(serviceColors[keys[i]] || '#71717a'); }
+            else rest += data[keys[i]];
+        }
+        if (rest > 0) { labels.push('Others'); values.push(rest); colors.push('#52525b'); }
+        updateSimpleDoughnut(serviceChart, document.getElementById('serviceLegend'), labels, values, colors, BM.formatBytes);
+    };
+
     // Helper: populate a doughnut chart + legend used internally by traffic charts
     function fillDoughnut(chart, legendEl, items, labelFn, valueFn, fmtFn) {
         if (!items || !items.length) {
@@ -940,7 +963,7 @@
         trafficChart.options.plugins.tooltip.borderColor = bdr;
         trafficChart.update('none');
         // Update all doughnut charts
-        var doughnuts = [protoChart, countryChart, asnChart, ipvChart];
+        var doughnuts = [protoChart, serviceChart, countryChart, asnChart, ipvChart];
         if (BM._ssidChart) doughnuts.push(BM._ssidChart);
         if (BM._apClientsChart) doughnuts.push(BM._apClientsChart);
         if (BM._apTrafficChart) doughnuts.push(BM._apTrafficChart);

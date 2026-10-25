@@ -214,6 +214,9 @@ func collectTalkers(reg *registry, t *talkers.Tracker, n int) {
 	for proto, b := range t.GetProtocolBreakdown() {
 		reg.gauge(ns+"protocol_volume_bytes", "Traffic per L4 protocol over the rolling 24h window.", float64(b), l("protocol", proto))
 	}
+	for svc, b := range t.GetServiceBreakdown() {
+		reg.gauge(ns+"service_volume_bytes", "Traffic per service (classified by well-known port) over the rolling 24h window.", float64(b), l("service", svc))
+	}
 	for ver, b := range t.GetIPVersionBreakdown() {
 		reg.gauge(ns+"ip_version_volume_bytes", "Traffic per IP version over the rolling 24h window.", float64(b), l("ip_version", ver))
 	}

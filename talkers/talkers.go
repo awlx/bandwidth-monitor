@@ -126,6 +126,8 @@ type bucket struct {
 	hosts      map[string]*hostAccum
 	protoBytes map[string]uint64
 	ipVerBytes map[string]uint64
+	// serviceBytes is a fixed array so per-packet accounting never allocates.
+	serviceBytes [numServices]uint64
 
 	// pairs tracks per-(local host, remote host) byte/packet totals, keyed
 	// by local IP -> remote IP. This powers "which of my machines talk to
@@ -173,6 +175,7 @@ type parsedPkt struct {
 	transportProtocol    string
 	srcPort, dstPort     uint16
 	hasPorts             bool
+	service              serviceID
 }
 
 type packetEndpoint struct {
@@ -232,6 +235,7 @@ type Tracker struct {
 	closedHosts map[string]*hostAccum
 	closedProto map[string]uint64
 	closedIPVer map[string]uint64
+	closedSvc   [numServices]uint64
 }
 
 func New(devices []string, promiscuous bool, localNets []*net.IPNet, geoDB *geoip.DB, dns *resolver.Resolver) *Tracker {
@@ -1125,8 +1129,20 @@ func (t *Tracker) parsePacket(pkt []byte, wireLen uint32, endpointCache map[[16]
 		proto = "Other"
 	}
 	var transport directTransport
+	var service serviceID
 	if t.direct {
 		transport = parseDirectTransport(pkt)
+		l4 := ipPacket.Proto
+		switch transport.protocol {
+		case "TCP":
+			l4 = protocolTCP
+		case "UDP":
+			l4 = protocolUDP
+		}
+		service = classifyService(l4, transport.srcPort, transport.dstPort, transport.hasPorts)
+	} else {
+		l4, srcPort, dstPort, ok := quickL4Ports(pkt)
+		service = classifyService(l4, srcPort, dstPort, ok)
 	}
 
 	return parsedPkt{
@@ -1147,6 +1163,7 @@ func (t *Tracker) parsePacket(pkt []byte, wireLen uint32, endpointCache map[[16]
 		dstPort:           transport.dstPort,
 		hasPorts:          transport.hasPorts,
 		transportProtocol: transport.protocol,
+		service:           service,
 	}, true
 }
 
@@ -1174,6 +1191,7 @@ func (t *Tracker) applyBatch(batch []parsedPkt) {
 		}
 		t.current.protoBytes[p.proto] += p.wireLen
 		t.current.ipVerBytes[p.ipVersion] += p.wireLen
+		t.current.serviceBytes[p.service] += p.wireLen
 	}
 }
 
@@ -1514,6 +1532,9 @@ func (t *Tracker) appendClosedBucket(b *bucket) {
 	for k, v := range b.ipVerBytes {
 		t.closedIPVer[k] += v
 	}
+	for i, v := range b.serviceBytes {
+		t.closedSvc[i] += v
+	}
 }
 
 // expireBucket removes a bucket leaving the 24h window from the running
@@ -1541,6 +1562,9 @@ func (t *Tracker) expireBucket(b *bucket) {
 		if t.closedIPVer[k] -= v; t.closedIPVer[k] == 0 {
 			delete(t.closedIPVer, k)
 		}
+	}
+	for i, v := range b.serviceBytes {
+		t.closedSvc[i] -= v
 	}
 }
 
@@ -1743,6 +1767,28 @@ func (t *Tracker) GetProtocolBreakdown() map[string]uint64 {
 		}
 	}
 	return totals
+}
+
+// GetServiceBreakdown returns accumulated bytes per service over the 24h
+// window. Services are classified by well-known port and L4 protocol; only
+// services with traffic are included.
+func (t *Tracker) GetServiceBreakdown() map[string]uint64 {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
+	totals := t.closedSvc
+	if t.current != nil {
+		for i, v := range t.current.serviceBytes {
+			totals[i] += v
+		}
+	}
+	out := make(map[string]uint64, numServices)
+	for i, v := range totals {
+		if v > 0 {
+			out[serviceNames[i]] = v
+		}
+	}
+	return out
 }
 
 // GetIPVersionBreakdown returns accumulated bytes per IP version (IPv4/IPv6) over the 24h window.

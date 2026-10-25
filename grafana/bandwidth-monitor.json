@@ -2434,9 +2434,183 @@
         "uid": "${datasource}"
       },
       "gridPos": {
-        "h": 8,
+        "h": 10,
         "w": 6,
         "x": 0,
+        "y": 94
+      }
+    },
+    {
+      "type": "table",
+      "title": "Services (24h)",
+      "description": "Traffic per service over the rolling 24h window. The service is classified by well-known port and L4 protocol (for example HTTPS = TCP/443, QUIC = UDP/443). Other TCP and Other UDP hold traffic on unlisted ports.",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sort_desc(sum by (service) (bandwidth_monitor_service_volume_bytes{job=~\"$job\",instance=~\"$instance\"}))",
+          "legendFormat": "",
+          "refId": "A",
+          "instant": true,
+          "range": false,
+          "format": "table"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (service) (bandwidth_monitor_service_volume_bytes{job=~\"$job\",instance=~\"$instance\"}) / scalar(sum(bandwidth_monitor_service_volume_bytes{job=~\"$job\",instance=~\"$instance\"}))",
+          "legendFormat": "",
+          "refId": "B",
+          "instant": true,
+          "range": false,
+          "format": "table"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true
+            },
+            "indexByName": {
+              "service": 0,
+              "Value #A": 1,
+              "Value #B": 2
+            },
+            "renameByName": {
+              "service": "Service",
+              "Value #A": "Volume",
+              "Value #B": "Share"
+            }
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "sort": [
+              {
+                "field": "Volume",
+                "desc": true
+              }
+            ]
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            }
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Service"
+            },
+            "properties": [
+              {
+                "id": "custom.minWidth",
+                "value": 90
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Volume"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "bytes"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              },
+              {
+                "id": "custom.width",
+                "value": 95
+              },
+              {
+                "id": "custom.align",
+                "value": "right"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Share"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percentunit"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              },
+              {
+                "id": "custom.width",
+                "value": 135
+              },
+              {
+                "id": "min",
+                "value": 0
+              },
+              {
+                "id": "max",
+                "value": 1
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "continuous-BlPu"
+                }
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "gauge",
+                  "mode": "gradient",
+                  "valueDisplayMode": "text"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        }
+      },
+      "id": 85,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 6,
+        "x": 6,
         "y": 94
       }
     },
@@ -2608,9 +2782,9 @@
         "uid": "${datasource}"
       },
       "gridPos": {
-        "h": 8,
+        "h": 10,
         "w": 6,
-        "x": 6,
+        "x": 12,
         "y": 94
       }
     },
@@ -2679,9 +2853,9 @@
         "uid": "${datasource}"
       },
       "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
+        "h": 10,
+        "w": 6,
+        "x": 18,
         "y": 94
       }
     },
@@ -2753,7 +2927,7 @@
         "h": 9,
         "w": 24,
         "x": 0,
-        "y": 102
+        "y": 104
       }
     },
     {
@@ -2765,7 +2939,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 111
+        "y": 113
       },
       "panels": []
     },
@@ -2839,7 +3013,7 @@
         "h": 9,
         "w": 12,
         "x": 0,
-        "y": 112
+        "y": 114
       }
     },
     {
@@ -2912,7 +3086,7 @@
         "h": 9,
         "w": 12,
         "x": 12,
-        "y": 112
+        "y": 114
       }
     },
     {
@@ -2994,7 +3168,7 @@
         "h": 12,
         "w": 8,
         "x": 0,
-        "y": 121
+        "y": 123
       }
     },
     {
@@ -3067,7 +3241,7 @@
         "h": 12,
         "w": 8,
         "x": 8,
-        "y": 121
+        "y": 123
       }
     },
     {
@@ -3140,7 +3314,7 @@
         "h": 12,
         "w": 8,
         "x": 16,
-        "y": 121
+        "y": 123
       }
     },
     {
@@ -3218,7 +3392,7 @@
         "h": 6,
         "w": 24,
         "x": 0,
-        "y": 133
+        "y": 135
       }
     },
     {
@@ -3421,7 +3595,7 @@
         "h": 9,
         "w": 24,
         "x": 0,
-        "y": 139
+        "y": 141
       }
     },
     {
@@ -3433,7 +3607,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 148
+        "y": 150
       },
       "panels": []
     },
@@ -3497,7 +3671,7 @@
         "h": 4,
         "w": 6,
         "x": 0,
-        "y": 149
+        "y": 151
       }
     },
     {
@@ -3560,7 +3734,7 @@
         "h": 4,
         "w": 6,
         "x": 6,
-        "y": 149
+        "y": 151
       }
     },
     {
@@ -3631,7 +3805,7 @@
         "h": 4,
         "w": 6,
         "x": 12,
-        "y": 149
+        "y": 151
       }
     },
     {
@@ -3710,7 +3884,7 @@
         "h": 4,
         "w": 6,
         "x": 18,
-        "y": 149
+        "y": 151
       }
     },
     {
@@ -3783,7 +3957,7 @@
         "h": 13,
         "w": 8,
         "x": 0,
-        "y": 153
+        "y": 155
       }
     },
     {
@@ -3856,7 +4030,7 @@
         "h": 13,
         "w": 8,
         "x": 8,
-        "y": 153
+        "y": 155
       }
     },
     {
@@ -4030,7 +4204,7 @@
         "h": 13,
         "w": 8,
         "x": 16,
-        "y": 153
+        "y": 155
       }
     },
     {
@@ -4103,7 +4277,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 166
+        "y": 168
       }
     },
     {
@@ -4176,7 +4350,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 166
+        "y": 168
       }
     },
     {
@@ -4350,7 +4524,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 166
+        "y": 168
       }
     },
     {
@@ -4362,7 +4536,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 174
+        "y": 176
       },
       "panels": []
     },
@@ -4435,7 +4609,7 @@
         "h": 4,
         "w": 6,
         "x": 0,
-        "y": 175
+        "y": 177
       }
     },
     {
@@ -4498,7 +4672,7 @@
         "h": 4,
         "w": 6,
         "x": 6,
-        "y": 175
+        "y": 177
       }
     },
     {
@@ -4561,7 +4735,7 @@
         "h": 4,
         "w": 6,
         "x": 12,
-        "y": 175
+        "y": 177
       }
     },
     {
@@ -4624,7 +4798,7 @@
         "h": 4,
         "w": 6,
         "x": 18,
-        "y": 175
+        "y": 177
       }
     },
     {
@@ -4695,7 +4869,7 @@
         "h": 9,
         "w": 12,
         "x": 0,
-        "y": 179
+        "y": 181
       }
     },
     {
@@ -4766,7 +4940,7 @@
         "h": 9,
         "w": 12,
         "x": 12,
-        "y": 179
+        "y": 181
       }
     },
     {
@@ -4861,7 +5035,7 @@
         "h": 9,
         "w": 12,
         "x": 0,
-        "y": 188
+        "y": 190
       }
     },
     {
@@ -5016,7 +5190,7 @@
         "h": 9,
         "w": 12,
         "x": 12,
-        "y": 188
+        "y": 190
       }
     },
     {
@@ -5189,7 +5363,7 @@
         "h": 10,
         "w": 24,
         "x": 0,
-        "y": 197
+        "y": 199
       }
     },
     {
@@ -5201,7 +5375,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 207
+        "y": 209
       },
       "panels": []
     },
@@ -5321,7 +5495,7 @@
         "h": 9,
         "w": 12,
         "x": 0,
-        "y": 208
+        "y": 210
       }
     },
     {
@@ -5392,7 +5566,7 @@
         "h": 9,
         "w": 12,
         "x": 12,
-        "y": 208
+        "y": 210
       }
     },
     {
@@ -5566,7 +5740,7 @@
         "h": 7,
         "w": 6,
         "x": 0,
-        "y": 217
+        "y": 219
       }
     },
     {
@@ -5740,7 +5914,7 @@
         "h": 7,
         "w": 6,
         "x": 6,
-        "y": 217
+        "y": 219
       }
     },
     {
@@ -5914,7 +6088,7 @@
         "h": 7,
         "w": 6,
         "x": 12,
-        "y": 217
+        "y": 219
       }
     },
     {
@@ -6088,7 +6262,7 @@
         "h": 7,
         "w": 6,
         "x": 18,
-        "y": 217
+        "y": 219
       }
     },
     {
@@ -6161,7 +6335,7 @@
         "h": 14,
         "w": 12,
         "x": 0,
-        "y": 224
+        "y": 226
       }
     },
     {
@@ -6234,7 +6408,7 @@
         "h": 14,
         "w": 12,
         "x": 12,
-        "y": 224
+        "y": 226
       }
     },
     {
@@ -6246,7 +6420,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 238
+        "y": 240
       },
       "panels": []
     },
@@ -6345,7 +6519,7 @@
         "h": 9,
         "w": 12,
         "x": 0,
-        "y": 239
+        "y": 241
       }
     },
     {
@@ -6424,7 +6598,7 @@
         "h": 9,
         "w": 8,
         "x": 12,
-        "y": 239
+        "y": 241
       }
     },
     {
@@ -6487,7 +6661,7 @@
         "h": 9,
         "w": 4,
         "x": 20,
-        "y": 239
+        "y": 241
       }
     },
     {
@@ -6499,7 +6673,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 248
+        "y": 250
       },
       "panels": []
     },
@@ -6570,7 +6744,7 @@
         "h": 10,
         "w": 8,
         "x": 0,
-        "y": 249
+        "y": 251
       }
     },
     {
@@ -6650,7 +6824,7 @@
         "h": 10,
         "w": 8,
         "x": 8,
-        "y": 249
+        "y": 251
       }
     },
     {
@@ -6747,7 +6921,7 @@
         "h": 10,
         "w": 8,
         "x": 16,
-        "y": 249
+        "y": 251
       }
     },
     {
@@ -6819,7 +6993,7 @@
         "h": 10,
         "w": 8,
         "x": 0,
-        "y": 259
+        "y": 261
       }
     },
     {
@@ -6892,7 +7066,7 @@
         "h": 10,
         "w": 8,
         "x": 8,
-        "y": 259
+        "y": 261
       }
     },
     {
@@ -6964,7 +7138,7 @@
         "h": 10,
         "w": 8,
         "x": 16,
-        "y": 259
+        "y": 261
       }
     }
   ]

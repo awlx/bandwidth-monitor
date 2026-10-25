@@ -128,6 +128,7 @@
         var clientVol = d.top_clients_volume || [];
         if (tab === 'traffic') {
             if (BM.updateProtoChart) BM.updateProtoChart(d.protocols);
+            if (BM.updateServiceChart) BM.updateServiceChart(d.services);
             if (BM.updateIPVersions) BM.updateIPVersions(d.ip_versions);
             if (BM.updateCountries) BM.updateCountries(d.countries);
             if (BM.updateASNs) BM.updateASNs(d.asns);
