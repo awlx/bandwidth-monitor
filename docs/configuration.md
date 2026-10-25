@@ -160,6 +160,21 @@ Otherwise, latency targets are probed with ICMP and HTTPS. See
 [external services](integrations.md#external-services) before exposing the
 daemon to a network with strict egress requirements.
 
+## Prometheus metrics
+
+The daemon serves Prometheus metrics on `/metrics` of the main listener:
+
+```bash
+METRICS_ENABLED=true
+METRICS_TOP_N=10
+```
+
+Set `METRICS_ENABLED=false` to remove the endpoint. `METRICS_TOP_N` (1-100,
+default 10) caps every per-host, per-domain, and per-client list to bound
+label cardinality. Like the JSON API, `/metrics` has no authentication. See
+the [metrics reference](api.md#prometheus-metrics) and the bundled
+[Grafana dashboard](../grafana/README.md).
+
 ## iOS Live Activity
 
 Most installations need no APNs configuration. For operators using their own
