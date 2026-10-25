@@ -4,6 +4,7 @@ package netutil
 
 import (
 	"fmt"
+	"net"
 
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
@@ -64,4 +65,23 @@ func ResolveEgress(iface string, v6 bool) (Egress, error) {
 		addrs = append(addrs, policyAddr{IP: a.IP, LinkIndex: a.LinkIndex})
 	}
 	return resolveEgress(iface, link.Attrs().Index, routes, rules, addrs), nil
+}
+
+// SameRouteAsDefault reports whether traffic to dst sent via e takes the
+// same route (table, interface, gateway) as unbound host traffic to dst,
+// i.e. whether probing via e duplicates probing via the default route.
+func SameRouteAsDefault(e Egress, dst net.IP) (bool, error) {
+	def, err := netlink.RouteGet(dst)
+	if err != nil || len(def) == 0 {
+		return false, fmt.Errorf("route get %s: %v", dst, err)
+	}
+	via, err := netlink.RouteGetWithOptions(dst, &netlink.RouteGetOptions{Oif: e.Iface, Mark: e.Mark, SrcAddr: e.Src})
+	if err != nil || len(via) == 0 {
+		return false, fmt.Errorf("route get %s oif %s: %v", dst, e.Iface, err)
+	}
+	return sameRoute(def[0], via[0]), nil
+}
+
+func sameRoute(a, b netlink.Route) bool {
+	return a.LinkIndex == b.LinkIndex && a.Table == b.Table && a.Gw.Equal(b.Gw)
 }

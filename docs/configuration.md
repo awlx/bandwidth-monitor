@@ -187,7 +187,13 @@ binds them to a matching local address. If no rule lets host traffic reach the
 WAN's default route (for example, the table is only selected for forwarded
 traffic or specific destinations), that WAN and address family is reported as
 not routable and not probed, instead of showing 100% loss. Routing is
-re-checked every 10 seconds. Set
+re-checked every 10 seconds.
+
+When a WAN's probes take exactly the same route as the default route (same
+table, interface and gateway for every target), they are not duplicated: that
+WAN is probed once and shown as "default route (<wan>)" in the UI, Grafana and
+API, and its metrics carry `default="true"`. The marker moves if the default
+route changes. Set
 `LATENCY_PER_WAN=false` to probe only through the default route. With zero or
 one WAN, behaviour and output are unchanged. See
 [external services](integrations.md#external-services) before exposing the

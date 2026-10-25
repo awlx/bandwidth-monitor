@@ -50,6 +50,9 @@ type TargetStatus struct {
 	// default route. Per-WAN entries follow the default-route entry of the
 	// same target.
 	WAN string `json:"wan,omitempty"`
+	// Default is set on the WAN entry whose egress is the same route as
+	// the default route; no separate default-route entry is reported then.
+	Default bool `json:"default,omitempty"`
 	// Unroutable lists the address families ("ipv4", "ipv6") that host
 	// traffic cannot send via WAN (no default route, or the WAN's policy
 	// table is not selected by any usable ip rule). They are not probed.
@@ -101,6 +104,15 @@ type Monitor struct {
 	// resolveEgress looks up how to reach a WAN's default route under the
 	// host's policy routing (see netutil.ResolveEgress).
 	resolveEgress func(iface string, v6 bool) (netutil.Egress, error)
+	// sameAsDefault reports whether dst via eg takes the default route.
+	sameAsDefault func(eg netutil.Egress, dst net.IP) (bool, error)
+
+	// defaultWAN is the WAN path that duplicates the default route (its
+	// egress resolves to the same route for every target). The unbound
+	// default path is then not probed or reported. Written by the probe
+	// loop under mu.
+	defaultWAN string
+	defaultAt  time.Time
 
 	// wanSource, when set, returns the current WAN interfaces. It is
 	// polled every round and probe paths are added/removed to match.
@@ -250,7 +262,7 @@ func New(targets []string) *Monitor {
 }
 
 func newMonitor(targets []resolvedTarget, newPinger func(bool, netutil.Egress) (pinger, error)) *Monitor {
-	m := &Monitor{targets: targets, newPinger: newPinger, resolveEgress: netutil.ResolveEgress}
+	m := &Monitor{targets: targets, newPinger: newPinger, resolveEgress: netutil.ResolveEgress, sameAsDefault: netutil.SameRouteAsDefault}
 	m.Runner.Init()
 	m.paths = []*probePath{m.newPath("")}
 	return m
@@ -381,9 +393,9 @@ func (m *Monitor) SetWANSource(src func() []string) {
 // syncWANs reconciles the probe paths with the current WAN set. History
 // of WANs that remain is kept; removed WANs are dropped and their sockets
 // closed. Only called from the probe loop goroutine.
-func (m *Monitor) syncWANs() {
+func (m *Monitor) syncWANs() bool {
 	if m.wanSource == nil {
-		return
+		return false
 	}
 	var want []string
 	seen := map[string]bool{}
@@ -408,7 +420,7 @@ func (m *Monitor) syncWANs() {
 			}
 		}
 		if same {
-			return
+			return false
 		}
 	}
 
@@ -437,6 +449,7 @@ func (m *Monitor) syncWANs() {
 	for _, p := range byWAN {
 		p.close()
 	}
+	return true
 }
 
 func (p *probePath) close() {
@@ -448,6 +461,64 @@ func (p *probePath) close() {
 		p.ping6.Close()
 		p.ping6 = nil
 	}
+}
+
+// updateDefaultWAN finds the WAN path whose egress takes the same route
+// as the default route for every probed target, so it is probed once and
+// reported as "default route (<wan>)". Re-checked when the WAN set changes
+// and every egressRecheck, so the marker follows default route changes.
+// Only called from the probe loop goroutine.
+func (m *Monitor) updateDefaultWAN(paths []*probePath, force bool) {
+	now := time.Now()
+	if !force && now.Sub(m.defaultAt) < egressRecheck {
+		return
+	}
+	m.defaultAt = now
+	def := ""
+	for _, p := range paths[1:] {
+		if m.duplicatesDefault(p) {
+			def = p.wan
+			break
+		}
+	}
+	if def == m.defaultWAN {
+		return
+	}
+	m.mu.Lock()
+	m.defaultWAN = def
+	if def == "" {
+		// Resuming the unbound default path: its history is stale.
+		for _, st := range paths[0].state {
+			*st = targetState{httpC4: st.httpC4, httpC6: st.httpC6}
+		}
+	}
+	m.mu.Unlock()
+	if def != "" {
+		paths[0].close()
+		log.Printf("latency: default route is via %s; probing it once as \"default route (%s)\"", def, def)
+	} else {
+		log.Printf("latency: default route differs from every WAN path; probing it separately")
+	}
+}
+
+func (m *Monitor) duplicatesDefault(p *probePath) bool {
+	checked := false
+	for _, t := range m.targets {
+		for f, ip := range [2]net.IP{t.ipv4, t.ipv6} {
+			if ip == nil {
+				continue
+			}
+			if p.unroutable(f) {
+				return false
+			}
+			same, err := m.sameAsDefault(p.eg[f], ip)
+			if err != nil || !same {
+				return false
+			}
+			checked = true
+		}
+	}
+	return checked
 }
 
 // snapshotPaths returns the current probe paths.
@@ -494,9 +565,22 @@ func (m *Monitor) GetStatus() []TargetStatus {
 	defer m.mu.RUnlock()
 
 	result := make([]TargetStatus, 0, len(m.targets)*len(m.paths))
+	paths := m.paths
+	if m.defaultWAN != "" {
+		// The default route is reported as the WAN carrying it, first.
+		paths = make([]*probePath, 0, len(m.paths)-1)
+		for _, p := range m.paths[1:] {
+			if p.wan == m.defaultWAN {
+				paths = append([]*probePath{p}, paths...)
+			} else {
+				paths = append(paths, p)
+			}
+		}
+	}
 	for _, t := range m.targets {
-		for _, p := range m.paths {
+		for _, p := range paths {
 			ts := buildStatus(t, p.wan, p.state[t.name])
+			ts.Default = p.wan != "" && p.wan == m.defaultWAN
 			for f, ip := range [2]net.IP{t.ipv4, t.ipv6} {
 				if ip == nil {
 					continue
@@ -664,9 +748,13 @@ func computeStats(pts []Point) (avg, min, max, jitter float64) {
 // stateful middleboxes expiring their ICMP state and dropping the reply,
 // which showed up as large phantom loss.
 func (m *Monitor) probeAll() {
-	m.syncWANs()
+	changed := m.syncWANs()
 	paths := m.snapshotPaths()
 	m.refreshEgress(paths)
+	m.updateDefaultWAN(paths, changed)
+	if m.defaultWAN != "" {
+		paths = paths[1:]
+	}
 	m.ensurePingers(paths)
 	m.probeICMP(paths)
 	m.startHTTPS(paths)

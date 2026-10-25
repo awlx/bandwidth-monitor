@@ -223,6 +223,25 @@ func TestLatencyWANLabel(t *testing.T) {
 	if strings.Contains(out, `latency_rtt_seconds{target="t.example",wan="wan1"`) {
 		t.Error("lost probe exported an RTT")
 	}
+	reg = newRegistry()
+	collectLatencyStatus(reg, []latency.TargetStatus{
+		{Name: "t.example", WAN: "wan0", Default: true, Alive: true, ICMPStats: st},
+		{Name: "t.example", WAN: "wan1", Alive: true, ICMPStats: st},
+	})
+	merged := render(t, reg)
+	validate(t, merged)
+	for _, want := range []string{
+		`bandwidth_monitor_latency_target_up{target="t.example",wan="wan0",default="true"} 1`,
+		`bandwidth_monitor_latency_loss_ratio{target="t.example",wan="wan0",default="true",probe="icmp"} 0.05`,
+		`bandwidth_monitor_latency_target_up{target="t.example",wan="wan1"} 1`,
+	} {
+		if !strings.Contains(merged, want+"\n") {
+			t.Errorf("missing %q in:\n%s", want, merged)
+		}
+	}
+	if strings.Contains(merged, `latency_target_up{target="t.example"}`) {
+		t.Error("separate default-route series exported for merged path")
+	}
 	if strings.Contains(out, `target="u.example"`) {
 		t.Error("unroutable path exported target metrics")
 	}

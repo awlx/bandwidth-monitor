@@ -85,4 +85,13 @@ var cards = elements.latencyTargets.innerHTML;
 assert.ok(cards.indexOf('NOT ROUTABLE') >= 0 && cards.indexOf('ipv4 not routable') >= 0, cards);
 assert.strictEqual((cards.match(/DOWN/g) || []).length, 0, 'unroutable WAN must not show DOWN');
 
+// Default route carried by a WAN: one column/card labelled "default route (<wan>)".
+var dflt = target('a.example', 'wanA', 10, 0); dflt.default = true;
+BM.updateLatency([dflt, target('a.example', 'wanB', 25, 0)]);
+cmp = elements.latencyWANCompare.innerHTML;
+assert.ok(cmp.indexOf('default route (wanA)') >= 0, cmp);
+assert.strictEqual((cmp.match(/<th/g) || []).length, 3, 'label column + two paths: ' + cmp);
+cards = elements.latencyTargets.innerHTML;
+assert.ok(cards.indexOf('default route (wanA)') >= 0 && cards.indexOf('via wanB') >= 0, cards);
+
 console.log('monitor.test.js: ok');

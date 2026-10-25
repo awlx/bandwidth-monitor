@@ -421,7 +421,7 @@
             h += '<div style="font-weight:600;font-size:14px">' + BM.escHtml(t.name);
             if (multiWAN) {
                 h += ' <span style="font-size:10px;font-weight:600;color:var(--text-2);background:var(--bg-1);padding:1px 5px;border-radius:3px;margin-left:4px">' +
-                    (t.wan ? 'via ' + BM.escHtml(t.wan) : 'default route') + '</span>';
+                    pathLabel(t, 'via ') + '</span>';
                 unroutable.forEach(function(f) {
                     h += ' <span title="No route or ip rule lets host traffic use this WAN; not probed" style="font-size:10px;font-weight:600;color:var(--warning, #f59e0b);background:var(--bg-1);padding:1px 5px;border-radius:3px;margin-left:4px">' +
                         BM.escHtml(f) + ' not routable</span>';
@@ -515,19 +515,26 @@
         el.innerHTML = h;
     };
 
+    // "default route", "default route (<wan>)" when a WAN carries it, else prefix + wan.
+    function pathLabel(t, prefix) {
+        if (!t.wan) return 'default route';
+        if (t.default) return 'default route (' + BM.escHtml(t.wan) + ')';
+        return prefix + BM.escHtml(t.wan);
+    }
+
     // Target × path table: ICMP avg RTT and loss via the default route and each WAN.
     function renderWANCompare(targets) {
-        var paths = [''], names = [], rows = {};
+        var paths = [], heads = {}, names = [], rows = {};
         targets.forEach(function(t) {
             var w = t.wan || '';
-            if (paths.indexOf(w) < 0) paths.push(w);
+            if (paths.indexOf(w) < 0) { paths.push(w); heads[w] = pathLabel(t, ''); }
             if (!rows[t.name]) { rows[t.name] = {}; names.push(t.name); }
             rows[t.name][w] = t;
         });
         var th = 'padding:4px 8px;font-size:10px;color:var(--text-2);font-weight:600;text-align:right';
         var h = '<table style="width:100%;border-collapse:collapse;font-size:12px;font-variant-numeric:tabular-nums">';
         h += '<tr><th style="' + th + ';text-align:left">ICMP avg RTT / loss</th>';
-        paths.forEach(function(w) { h += '<th style="' + th + '">' + (w ? BM.escHtml(w) : 'default route') + '</th>'; });
+        paths.forEach(function(w) { h += '<th style="' + th + '">' + heads[w] + '</th>'; });
         h += '</tr>';
         names.forEach(function(n) {
             h += '<tr style="border-top:1px solid var(--border)"><td style="padding:4px 8px">' + BM.escHtml(n) + '</td>';

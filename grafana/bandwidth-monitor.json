@@ -149,7 +149,7 @@
           "type": "prometheus",
           "uid": "${datasource}"
         },
-        "description": "Latency probe path. Per-WAN probes exist only on multi-WAN hosts; All also includes default-route probes, which have no wan label.",
+        "description": "Latency probe path. Per-WAN probes exist only on multi-WAN hosts; All also includes default-route probes, which have no wan label. A WAN carrying the default route is shown as \"default route (<wan>)\".",
         "query": {
           "query": "label_values(bandwidth_monitor_latency_target_up{job=~\"$job\",instance=~\"$instance\"}, wan)",
           "refId": "wan"
@@ -2779,7 +2779,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "bandwidth_monitor_latency_rtt_seconds{job=~\"$job\",instance=~\"$instance\",wan=~\"$wan\",probe=\"icmp\"}",
+          "expr": "label_replace(label_join(bandwidth_monitor_latency_rtt_seconds{job=~\"$job\",instance=~\"$instance\",wan=~\"$wan\",probe=\"icmp\"}, \"_dw\", \";\", \"default\", \"wan\"), \"wan\", \"default route ($1)\", \"_dw\", \"true;(.+)\")",
           "legendFormat": "{{target}} {{wan}}",
           "refId": "A"
         }
@@ -2852,7 +2852,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "bandwidth_monitor_latency_rtt_seconds{job=~\"$job\",instance=~\"$instance\",wan=~\"$wan\",probe=\"https\"}",
+          "expr": "label_replace(label_join(bandwidth_monitor_latency_rtt_seconds{job=~\"$job\",instance=~\"$instance\",wan=~\"$wan\",probe=\"https\"}, \"_dw\", \";\", \"default\", \"wan\"), \"wan\", \"default route ($1)\", \"_dw\", \"true;(.+)\")",
           "legendFormat": "{{target}} {{wan}}",
           "refId": "A"
         }
@@ -2925,7 +2925,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "bandwidth_monitor_latency_rtt_p95_seconds{job=~\"$job\",instance=~\"$instance\",wan=~\"$wan\"}",
+          "expr": "label_replace(label_join(bandwidth_monitor_latency_rtt_p95_seconds{job=~\"$job\",instance=~\"$instance\",wan=~\"$wan\"}, \"_dw\", \";\", \"default\", \"wan\"), \"wan\", \"default route ($1)\", \"_dw\", \"true;(.+)\")",
           "legendFormat": "p95 {{target}} {{wan}} {{probe}}",
           "refId": "A"
         },
@@ -2934,7 +2934,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "bandwidth_monitor_latency_rtt_p99_seconds{job=~\"$job\",instance=~\"$instance\",wan=~\"$wan\"}",
+          "expr": "label_replace(label_join(bandwidth_monitor_latency_rtt_p99_seconds{job=~\"$job\",instance=~\"$instance\",wan=~\"$wan\"}, \"_dw\", \";\", \"default\", \"wan\"), \"wan\", \"default route ($1)\", \"_dw\", \"true;(.+)\")",
           "legendFormat": "p99 {{target}} {{wan}} {{probe}}",
           "refId": "B"
         }
@@ -3007,7 +3007,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "bandwidth_monitor_latency_jitter_seconds{job=~\"$job\",instance=~\"$instance\",wan=~\"$wan\"}",
+          "expr": "label_replace(label_join(bandwidth_monitor_latency_jitter_seconds{job=~\"$job\",instance=~\"$instance\",wan=~\"$wan\"}, \"_dw\", \";\", \"default\", \"wan\"), \"wan\", \"default route ($1)\", \"_dw\", \"true;(.+)\")",
           "legendFormat": "{{target}} {{wan}} {{probe}}",
           "refId": "A"
         }
@@ -3080,7 +3080,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "bandwidth_monitor_latency_loss_ratio{job=~\"$job\",instance=~\"$instance\",wan=~\"$wan\"}",
+          "expr": "label_replace(label_join(bandwidth_monitor_latency_loss_ratio{job=~\"$job\",instance=~\"$instance\",wan=~\"$wan\"}, \"_dw\", \";\", \"default\", \"wan\"), \"wan\", \"default route ($1)\", \"_dw\", \"true;(.+)\")",
           "legendFormat": "{{target}} {{wan}} {{probe}}",
           "refId": "A"
         }
@@ -3152,7 +3152,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "bandwidth_monitor_latency_target_up{job=~\"$job\",instance=~\"$instance\",wan=~\"$wan\"}",
+          "expr": "label_replace(label_join(bandwidth_monitor_latency_target_up{job=~\"$job\",instance=~\"$instance\",wan=~\"$wan\"}, \"_dw\", \";\", \"default\", \"wan\"), \"wan\", \"default route ($1)\", \"_dw\", \"true;(.+)\")",
           "legendFormat": "{{target}} {{wan}}",
           "refId": "A"
         }
@@ -3236,7 +3236,7 @@
           "range": false,
           "format": "table",
           "legendFormat": "",
-          "expr": "label_replace(max by (target, wan) (bandwidth_monitor_latency_rtt_avg_seconds{job=~\"$job\",instance=~\"$instance\",wan=~\"$wan\",probe=\"icmp\"}), \"wan\", \"default route\", \"wan\", \"\")"
+          "expr": "label_replace(max by (target, wan) (label_replace(label_join(bandwidth_monitor_latency_rtt_avg_seconds{job=~\"$job\",instance=~\"$instance\",wan=~\"$wan\",probe=\"icmp\"}, \"_dw\", \";\", \"default\", \"wan\"), \"wan\", \"default route ($1)\", \"_dw\", \"true;(.+)\")), \"wan\", \"default route\", \"wan\", \"\")"
         },
         {
           "datasource": {
@@ -3248,7 +3248,7 @@
           "range": false,
           "format": "table",
           "legendFormat": "",
-          "expr": "label_replace(max by (target, wan) (bandwidth_monitor_latency_rtt_p95_seconds{job=~\"$job\",instance=~\"$instance\",wan=~\"$wan\",probe=\"icmp\"}), \"wan\", \"default route\", \"wan\", \"\")"
+          "expr": "label_replace(max by (target, wan) (label_replace(label_join(bandwidth_monitor_latency_rtt_p95_seconds{job=~\"$job\",instance=~\"$instance\",wan=~\"$wan\",probe=\"icmp\"}, \"_dw\", \";\", \"default\", \"wan\"), \"wan\", \"default route ($1)\", \"_dw\", \"true;(.+)\")), \"wan\", \"default route\", \"wan\", \"\")"
         },
         {
           "datasource": {
@@ -3260,7 +3260,7 @@
           "range": false,
           "format": "table",
           "legendFormat": "",
-          "expr": "label_replace(max by (target, wan) (bandwidth_monitor_latency_jitter_seconds{job=~\"$job\",instance=~\"$instance\",wan=~\"$wan\",probe=\"icmp\"}), \"wan\", \"default route\", \"wan\", \"\")"
+          "expr": "label_replace(max by (target, wan) (label_replace(label_join(bandwidth_monitor_latency_jitter_seconds{job=~\"$job\",instance=~\"$instance\",wan=~\"$wan\",probe=\"icmp\"}, \"_dw\", \";\", \"default\", \"wan\"), \"wan\", \"default route ($1)\", \"_dw\", \"true;(.+)\")), \"wan\", \"default route\", \"wan\", \"\")"
         },
         {
           "datasource": {
@@ -3272,7 +3272,7 @@
           "range": false,
           "format": "table",
           "legendFormat": "",
-          "expr": "label_replace(max by (target, wan) (bandwidth_monitor_latency_loss_ratio{job=~\"$job\",instance=~\"$instance\",wan=~\"$wan\",probe=\"icmp\"}), \"wan\", \"default route\", \"wan\", \"\")"
+          "expr": "label_replace(max by (target, wan) (label_replace(label_join(bandwidth_monitor_latency_loss_ratio{job=~\"$job\",instance=~\"$instance\",wan=~\"$wan\",probe=\"icmp\"}, \"_dw\", \";\", \"default\", \"wan\"), \"wan\", \"default route ($1)\", \"_dw\", \"true;(.+)\")), \"wan\", \"default route\", \"wan\", \"\")"
         }
       ],
       "transformations": [

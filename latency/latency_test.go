@@ -357,3 +357,70 @@ func TestEgressChangeFollowed(t *testing.T) {
 		t.Fatalf("fallback: %+v", got)
 	}
 }
+
+// A WAN whose egress is the default route is probed once and reported as
+// the default; the marker follows default route changes.
+func TestDefaultRouteMergedIntoWAN(t *testing.T) {
+	opened := map[string][]*egressPinger{}
+	m := newMonitor(testTargets[1:], func(v6 bool, eg netutil.Egress) (pinger, error) {
+		if v6 {
+			return nil, errors.New("no v6")
+		}
+		p := &egressPinger{eg: eg}
+		opened[eg.Iface] = append(opened[eg.Iface], p)
+		return p, nil
+	})
+	m.resolveEgress = plainEgress
+	defIface := "wanA"
+	m.sameAsDefault = func(eg netutil.Egress, _ net.IP) (bool, error) { return eg.Iface == defIface, nil }
+	m.wanSource = func() []string { return []string{"wanA", "wanB"} }
+	defer m.Stop()
+
+	key := func() []string {
+		var out []string
+		for _, s := range m.GetStatus() {
+			k := s.WAN
+			if s.Default {
+				k += "*"
+			}
+			out = append(out, k)
+		}
+		return out
+	}
+	eq := func(got []string, want ...string) {
+		t.Helper()
+		if len(got) != len(want) {
+			t.Fatalf("got %v, want %v", got, want)
+		}
+		for i := range want {
+			if got[i] != want[i] {
+				t.Fatalf("got %v, want %v", got, want)
+			}
+		}
+	}
+
+	m.probeAll()
+	m.probeAll()
+	eq(key(), "wanA*", "wanB")
+	if len(opened[""]) != 0 {
+		t.Fatal("unbound default path probed although merged")
+	}
+	if st := m.GetStatus(); len(st[0].ICMPv4) != 2 {
+		t.Fatalf("merged path history: %d", len(st[0].ICMPv4))
+	}
+
+	// Default route moves to wanB: marker moves, order follows.
+	defIface = "wanB"
+	m.defaultAt = time.Time{}
+	m.probeAll()
+	eq(key(), "wanB*", "wanA")
+
+	// Default route via neither WAN: separate default-route entry again.
+	defIface = "none"
+	m.defaultAt = time.Time{}
+	m.probeAll()
+	eq(key(), "", "wanA", "wanB")
+	if len(opened[""]) != 1 || len(m.GetStatus()[0].ICMPv4) != 1 {
+		t.Fatal("default path not resumed with fresh history")
+	}
+}

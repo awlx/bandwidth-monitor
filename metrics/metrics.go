@@ -445,6 +445,11 @@ func collectLatencyStatus(reg *registry, status []latency.TargetStatus) {
 		tl := []Label{l("target", t.Name)}
 		if t.WAN != "" {
 			tl = append(tl, l("wan", t.WAN))
+			if t.Default {
+				// This WAN carries the default route; no separate
+				// default-route series is exported.
+				tl = append(tl, l("default", "true"))
+			}
 			unr := map[string]bool{}
 			for _, f := range t.Unroutable {
 				unr[f] = true
