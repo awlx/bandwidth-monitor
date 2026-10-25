@@ -255,6 +255,11 @@ func (r *Ring) Close() {
 	r.buffer = nil
 }
 
+// Stats is not implemented for the Darwin BPF backend.
+func (r *Ring) Stats() (RingStats, error) {
+	return RingStats{}, ErrStatsUnsupported
+}
+
 // IsL3 reports true because the Darwin backend normalizes supported link-layer
 // records to raw IPv4 or IPv6 before invoking PacketHandler.
 func (r *Ring) IsL3() bool {

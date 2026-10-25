@@ -126,3 +126,55 @@ func TestParseIPPacketRejectsTruncatedEthernetAndVLANFrames(t *testing.T) {
 		}
 	}
 }
+
+func udp4(srcPort, dstPort uint16, payload []byte) []byte {
+	pkt := make([]byte, 28+len(payload))
+	pkt[0] = 0x45
+	pkt[2], pkt[3] = byte(len(pkt)>>8), byte(len(pkt))
+	pkt[9] = 17
+	copy(pkt[12:16], []byte{192, 0, 2, 10})
+	copy(pkt[16:20], []byte{198, 51, 100, 1})
+	pkt[20], pkt[21] = byte(srcPort>>8), byte(srcPort)
+	pkt[22], pkt[23] = byte(dstPort>>8), byte(dstPort)
+	copy(pkt[28:], payload)
+	return pkt
+}
+
+func TestDetectTunnelUDP(t *testing.T) {
+	quicShort := []byte{0x48, 0x9a, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88}
+	openvpnData := []byte{0x48, 0x00, 0x00, 0x01, 0xde, 0xad, 0xbe, 0xef, 0x00, 0x01}
+	wgData := []byte{0x04, 0x00, 0x00, 0x00, 0x01, 0x02, 0x03, 0x04}
+	tests := []struct {
+		name string
+		pkt  []byte
+		want bool
+	}{
+		{"QUIC short header on 443", udp4(443, 51000, quicShort), false},
+		{"DNS response", udp4(53, 40000, []byte{0x42, 0x81, 0x81, 0x80, 0, 1, 0, 1, 0, 0}), false},
+		{"OpenVPN P_DATA_V2 on 1194", udp4(40000, 1194, openvpnData), true},
+		{"OpenVPN reply from 1194", udp4(1194, 40000, openvpnData), true},
+		{"WireGuard data", udp4(51820, 40000, wgData), true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := packets.ParseIPPacket(tt.pkt, true).IsTunnel; got != tt.want {
+				t.Fatalf("IsTunnel = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestDetectTunnelFalsePositiveRate checks that arbitrary first payload
+// bytes on non-VPN ports are not classified as tunnels.
+func TestDetectTunnelFalsePositiveRate(t *testing.T) {
+	hits := 0
+	for b := 0; b < 256; b++ {
+		payload := []byte{byte(b), 0x9a, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66}
+		if packets.ParseIPPacket(udp4(443, 51000, payload), true).IsTunnel {
+			hits++
+		}
+	}
+	if hits != 0 {
+		t.Fatalf("%d/256 first-byte values on port 443 classified as tunnel", hits)
+	}
+}
