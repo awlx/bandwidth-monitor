@@ -10,16 +10,14 @@ import (
 	"math"
 	"net"
 	"net/http"
-	"os"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"bandwidth-monitor/httputil"
 	"bandwidth-monitor/icmputil"
 	"bandwidth-monitor/poller"
-
-	"golang.org/x/net/icmp"
 )
 
 const (
@@ -86,6 +84,32 @@ type Monitor struct {
 	mu      sync.RWMutex
 	state   map[string]*targetState
 	poller.Runner
+
+	// ICMP pingers are long-lived so in-flight replies are never lost to a
+	// socket being closed, and are opened lazily (retried each round).
+	newPinger    func(v6 bool) (pinger, error)
+	ping4, ping6 pinger
+	icmpV4Logged bool
+	icmpV6Logged bool
+
+	// HTTPS probes run asynchronously so a slow handshake cannot stretch
+	// the ICMP probe cadence.
+	httpsBusy atomic.Bool
+	httpsWG   sync.WaitGroup
+}
+
+// pinger is implemented by *icmputil.Pinger.
+type pinger interface {
+	Ping(dst net.IP, timeout time.Duration) float64
+	Close() error
+}
+
+func defaultNewPinger(v6 bool) (pinger, error) {
+	p, err := icmputil.NewPinger(v6)
+	if err != nil {
+		return nil, err
+	}
+	return p, nil
 }
 
 type resolvedTarget struct {
@@ -170,8 +194,9 @@ func New(targets []string) *Monitor {
 	}
 
 	m := &Monitor{
-		targets: resolved,
-		state:   make(map[string]*targetState, len(resolved)),
+		targets:   resolved,
+		state:     make(map[string]*targetState, len(resolved)),
+		newPinger: defaultNewPinger,
 	}
 	m.Runner.Init()
 	for _, t := range resolved {
@@ -207,8 +232,20 @@ func (m *Monitor) Run() {
 	m.Runner.Run(probeInterval, m.probeAll)
 }
 
-// Stop terminates the probe loop.
-func (m *Monitor) Stop() { m.Runner.Stop() }
+// Stop terminates the probe loop, waits for in-flight probes and closes
+// the ICMP sockets.
+func (m *Monitor) Stop() {
+	m.Runner.Stop()
+	m.httpsWG.Wait()
+	if m.ping4 != nil {
+		m.ping4.Close()
+		m.ping4 = nil
+	}
+	if m.ping6 != nil {
+		m.ping6.Close()
+		m.ping6 = nil
+	}
+}
 
 // GetStatus returns the current status of all targets.
 func (m *Monitor) GetStatus() []TargetStatus {
@@ -359,61 +396,129 @@ func computeStats(pts []Point) (avg, min, max, jitter float64) {
 	return
 }
 
+// probeAll runs one probe round. ICMP probes for every target and address
+// family are sent concurrently at the start of each tick so each target is
+// pinged on a steady probeInterval cadence. Irregular, longer gaps (e.g.
+// ~4s when serial HTTPS probes overran the tick) can coincide with
+// stateful middleboxes expiring their ICMP state and dropping the reply,
+// which showed up as large phantom loss.
 func (m *Monitor) probeAll() {
-	now := time.Now()
-	ts := now.UnixMilli()
+	m.ensurePingers()
+	m.probeICMP()
+	m.startHTTPS()
+}
 
-	// Open ICMP sockets for both v4 and v6
-	conn4, err4 := icmp.ListenPacket("ip4:icmp", "0.0.0.0")
-	if err4 != nil && !icmpV4Logged {
-		log.Printf("latency: ICMPv4 unavailable (need root/CAP_NET_RAW): %v", err4)
-		icmpV4Logged = true
+func (m *Monitor) ensurePingers() {
+	if m.ping4 == nil {
+		p, err := m.newPinger(false)
+		if err != nil {
+			if !m.icmpV4Logged {
+				log.Printf("latency: ICMPv4 unavailable (need root/CAP_NET_RAW): %v", err)
+				m.icmpV4Logged = true
+			}
+		} else {
+			m.ping4 = p
+		}
 	}
-	if conn4 != nil {
-		defer conn4.Close()
+	if m.ping6 == nil {
+		p, err := m.newPinger(true)
+		if err != nil {
+			if !m.icmpV6Logged {
+				log.Printf("latency: ICMPv6 unavailable: %v", err)
+				m.icmpV6Logged = true
+			}
+		} else {
+			m.ping6 = p
+		}
 	}
+}
 
-	conn6, err6 := icmp.ListenPacket("ip6:ipv6-icmp", "::")
-	if err6 != nil && !icmpV6Logged {
-		log.Printf("latency: ICMPv6 unavailable: %v", err6)
-		icmpV6Logged = true
-	}
-	if conn6 != nil {
-		defer conn6.Close()
-	}
-
+func (m *Monitor) probeICMP() {
+	ts := time.Now().UnixMilli()
+	v4 := make([]float64, len(m.targets))
+	v6 := make([]float64, len(m.targets))
+	var wg sync.WaitGroup
 	for i, t := range m.targets {
-		var icmpV4RTT, icmpV6RTT float64 = -1, -1
-		var httpsV4RTT, httpsV6RTT float64 = -1, -1
+		v4[i], v6[i] = -1, -1
+		if m.ping4 != nil && t.ipv4 != nil {
+			wg.Add(1)
+			go func(i int, ip net.IP) {
+				defer wg.Done()
+				v4[i] = m.ping4.Ping(ip, icmpTimeout)
+			}(i, t.ipv4)
+		}
+		if m.ping6 != nil && t.ipv6 != nil {
+			wg.Add(1)
+			go func(i int, ip net.IP) {
+				defer wg.Done()
+				v6[i] = m.ping6.Ping(ip, icmpTimeout)
+			}(i, t.ipv6)
+		}
+	}
+	wg.Wait()
 
-		// ICMPv4
-		if conn4 != nil && t.ipv4 != nil {
-			icmpV4RTT = pingOneV4(conn4, t.ipv4, i)
-		}
-		// ICMPv6
-		if conn6 != nil && t.ipv6 != nil {
-			icmpV6RTT = pingOneV6(conn6, t.ipv6, i)
-		}
-		// HTTPSv4 -- connect directly to the resolved IPv4 address (no DNS)
-		if t.ipv4 != nil {
-			httpsV4RTT = m.probeHTTPS(m.state[t.name].httpC4, t.name)
-		}
-		// HTTPSv6 -- connect directly to the resolved IPv6 address (no DNS)
-		if t.ipv6 != nil {
-			httpsV6RTT = m.probeHTTPS(m.state[t.name].httpC6, t.name)
-		}
-
-		m.mu.Lock()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i, t := range m.targets {
 		st := m.state[t.name]
 		if t.ipv4 != nil {
-			st.icmpV4Hist = appendAndTrim(st.icmpV4Hist, Point{Timestamp: ts, RTT: icmpV4RTT})
-			st.httpsV4Hist = appendAndTrim(st.httpsV4Hist, Point{Timestamp: ts, RTT: httpsV4RTT})
+			st.icmpV4Hist = appendAndTrim(st.icmpV4Hist, Point{Timestamp: ts, RTT: v4[i]})
 		}
 		if t.ipv6 != nil {
-			st.icmpV6Hist = appendAndTrim(st.icmpV6Hist, Point{Timestamp: ts, RTT: icmpV6RTT})
-			st.httpsV6Hist = appendAndTrim(st.httpsV6Hist, Point{Timestamp: ts, RTT: httpsV6RTT})
+			st.icmpV6Hist = appendAndTrim(st.icmpV6Hist, Point{Timestamp: ts, RTT: v6[i]})
 		}
-		m.mu.Unlock()
+	}
+}
+
+// startHTTPS launches an HTTPS probe round in the background unless the
+// previous one is still running.
+func (m *Monitor) startHTTPS() {
+	if !m.httpsBusy.CompareAndSwap(false, true) {
+		return
+	}
+	m.httpsWG.Add(1)
+	go func() {
+		defer m.httpsWG.Done()
+		defer m.httpsBusy.Store(false)
+		m.probeHTTPSAll()
+	}()
+}
+
+func (m *Monitor) probeHTTPSAll() {
+	ts := time.Now().UnixMilli()
+	v4 := make([]float64, len(m.targets))
+	v6 := make([]float64, len(m.targets))
+	var wg sync.WaitGroup
+	for i, t := range m.targets {
+		v4[i], v6[i] = -1, -1
+		st := m.state[t.name]
+		if t.ipv4 != nil {
+			wg.Add(1)
+			go func(i int, c *http.Client, name string) {
+				defer wg.Done()
+				v4[i] = m.probeHTTPS(c, name)
+			}(i, st.httpC4, t.name)
+		}
+		if t.ipv6 != nil {
+			wg.Add(1)
+			go func(i int, c *http.Client, name string) {
+				defer wg.Done()
+				v6[i] = m.probeHTTPS(c, name)
+			}(i, st.httpC6, t.name)
+		}
+	}
+	wg.Wait()
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i, t := range m.targets {
+		st := m.state[t.name]
+		if t.ipv4 != nil {
+			st.httpsV4Hist = appendAndTrim(st.httpsV4Hist, Point{Timestamp: ts, RTT: v4[i]})
+		}
+		if t.ipv6 != nil {
+			st.httpsV6Hist = appendAndTrim(st.httpsV6Hist, Point{Timestamp: ts, RTT: v6[i]})
+		}
 	}
 }
 
@@ -425,19 +530,6 @@ func appendAndTrim(s []Point, p Point) []Point {
 		return trimmed
 	}
 	return s
-}
-
-var (
-	icmpV4Logged bool
-	icmpV6Logged bool
-)
-
-func pingOneV4(conn *icmp.PacketConn, dest net.IP, seq int) float64 {
-	return icmputil.PingOne(conn, dest, uint16(os.Getpid()&0xFFFF), uint16(seq), 1, icmpTimeout)
-}
-
-func pingOneV6(conn *icmp.PacketConn, dest net.IP, seq int) float64 {
-	return icmputil.PingOne(conn, dest, uint16(os.Getpid()&0xFFFF), uint16(seq), 58, icmpTimeout)
 }
 
 func (m *Monitor) probeHTTPS(client *http.Client, hostname string) float64 {
