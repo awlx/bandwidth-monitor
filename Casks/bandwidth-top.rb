@@ -1,13 +1,13 @@
 cask "bandwidth-top" do
-  version "0.0.40"
+  version "0.0.41"
 
   on_arm do
-    sha256 "b1376c1ae339bac016cb2b490f5c421c21541748696c87ed643cb0c4181f65a0"
+    sha256 "c4855cc93a9ad8803a694799a2a2e8cc606062746626d251b1d14f5fe060a3ec"
 
     url "https://github.com/awlx/bandwidth-monitor/releases/download/v#{version}/bandwidth-top_#{version}_darwin_arm64.tar.gz"
   end
   on_intel do
-    sha256 "ac935dd77ad7940e68029875fbdc1c1d99f2cf8e4b49e3326f5901819e20c681"
+    sha256 "95342b31e7c0c0c121559d137cc8a559463cb298868ee29213ee4c4c6a880c04"
 
     url "https://github.com/awlx/bandwidth-monitor/releases/download/v#{version}/bandwidth-top_#{version}_darwin_amd64.tar.gz"
   end
