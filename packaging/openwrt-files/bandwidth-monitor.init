@@ -27,6 +27,7 @@ start_service() {
         GEO_COUNTRY="${GEO_COUNTRY:-}" \
         INTERFACES="${INTERFACES:-}" \
         LATENCY_MONITORING="${LATENCY_MONITORING:-true}" \
+        LATENCY_PER_WAN="${LATENCY_PER_WAN:-true}" \
         LATENCY_TARGETS="${LATENCY_TARGETS:-}" \
         LISTEN="${LISTEN:-:8080}" \
         LISTEN_PROTOCOL="${LISTEN_PROTOCOL:-http}" \
