@@ -434,9 +434,46 @@ func collectLatency(reg *registry, m *latency.Monitor) {
 	if m == nil {
 		return
 	}
-	for _, t := range m.GetStatus() {
-		tl := l("target", t.Name)
-		reg.gauge(ns+"latency_target_up", "1 if the latency target answered recently.", boolFloat(t.Alive), tl)
+	collectLatencyStatus(reg, m.GetStatus())
+}
+
+// collectLatencyStatus exports latency stats. Per-WAN probes carry a "wan"
+// label; default-route probes have none, so single-WAN output is unchanged.
+func collectLatencyStatus(reg *registry, status []latency.TargetStatus) {
+	routable := map[[2]string]bool{}
+	for _, t := range status {
+		tl := []Label{l("target", t.Name)}
+		if t.WAN != "" {
+			tl = append(tl, l("wan", t.WAN))
+			if t.Default {
+				// This WAN carries the default route; no separate
+				// default-route series is exported.
+				tl = append(tl, l("default", "true"))
+			}
+			unr := map[string]bool{}
+			for _, f := range t.Unroutable {
+				unr[f] = true
+			}
+			fams := 0
+			for _, f := range []struct {
+				name string
+				addr string
+			}{{"ipv4", t.IPv4}, {"ipv6", t.IPv6}} {
+				if f.addr == "" {
+					continue
+				}
+				fams++
+				k := [2]string{t.WAN, f.name}
+				if _, ok := routable[k]; !ok {
+					routable[k] = !unr[f.name]
+					reg.gauge(ns+"latency_wan_routable", "1 if host traffic can be routed via the WAN for the address family (probes run), 0 if no route or ip rule allows it (probes skipped).", boolFloat(!unr[f.name]), l("wan", t.WAN), l("family", f.name))
+				}
+			}
+			if fams > 0 && len(unr) >= fams {
+				continue // not probed at all; see latency_wan_routable
+			}
+		}
+		reg.gauge(ns+"latency_target_up", "1 if the latency target answered recently.", boolFloat(t.Alive), tl...)
 		for _, p := range []struct {
 			probe string
 			st    *latency.ProbeStats
@@ -444,7 +481,7 @@ func collectLatency(reg *registry, m *latency.Monitor) {
 			if p.st == nil {
 				continue
 			}
-			pl := []Label{tl, l("probe", p.probe)}
+			pl := append(append([]Label(nil), tl...), l("probe", p.probe))
 			ms := func(name, help string, v float64) {
 				if v >= 0 {
 					reg.gauge(ns+name, help, v/1000, pl...)

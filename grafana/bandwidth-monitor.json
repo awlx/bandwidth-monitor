@@ -140,6 +140,28 @@
         "current": {},
         "sort": 1,
         "hide": 0
+      },
+      {
+        "name": "wan",
+        "label": "WAN",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "description": "Latency probe path. Per-WAN probes exist only on multi-WAN hosts; All also includes default-route probes, which have no wan label. A WAN carrying the default route is shown as \"default route (<wan>)\".",
+        "query": {
+          "query": "label_values(bandwidth_monitor_latency_target_up{job=~\"$job\",instance=~\"$instance\"}, wan)",
+          "refId": "wan"
+        },
+        "definition": "label_values(bandwidth_monitor_latency_target_up{job=~\"$job\",instance=~\"$instance\"}, wan)",
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "allValue": ".*",
+        "current": {},
+        "sort": 1,
+        "hide": 0
       }
     ]
   },
@@ -550,7 +572,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "avg(bandwidth_monitor_latency_rtt_avg_seconds{job=~\"$job\",instance=~\"$instance\",probe=\"icmp\"})",
+          "expr": "avg(bandwidth_monitor_latency_rtt_avg_seconds{job=~\"$job\",instance=~\"$instance\",wan=~\"$wan\",probe=\"icmp\"})",
           "legendFormat": "",
           "refId": "A"
         }
@@ -621,7 +643,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "max(bandwidth_monitor_latency_loss_ratio{job=~\"$job\",instance=~\"$instance\",probe=\"icmp\"})",
+          "expr": "max(bandwidth_monitor_latency_loss_ratio{job=~\"$job\",instance=~\"$instance\",wan=~\"$wan\",probe=\"icmp\"})",
           "legendFormat": "",
           "refId": "A"
         }
@@ -2757,8 +2779,8 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "bandwidth_monitor_latency_rtt_seconds{job=~\"$job\",instance=~\"$instance\",probe=\"icmp\"}",
-          "legendFormat": "{{target}}",
+          "expr": "label_replace(label_join(bandwidth_monitor_latency_rtt_seconds{job=~\"$job\",instance=~\"$instance\",wan=~\"$wan\",probe=\"icmp\"}, \"_dw\", \";\", \"default\", \"wan\"), \"wan\", \"default route ($1)\", \"_dw\", \"true;(.+)\")",
+          "legendFormat": "{{target}} {{wan}}",
           "refId": "A"
         }
       ],
@@ -2830,8 +2852,8 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "bandwidth_monitor_latency_rtt_seconds{job=~\"$job\",instance=~\"$instance\",probe=\"https\"}",
-          "legendFormat": "{{target}}",
+          "expr": "label_replace(label_join(bandwidth_monitor_latency_rtt_seconds{job=~\"$job\",instance=~\"$instance\",wan=~\"$wan\",probe=\"https\"}, \"_dw\", \";\", \"default\", \"wan\"), \"wan\", \"default route ($1)\", \"_dw\", \"true;(.+)\")",
+          "legendFormat": "{{target}} {{wan}}",
           "refId": "A"
         }
       ],
@@ -2903,8 +2925,8 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "bandwidth_monitor_latency_rtt_p95_seconds{job=~\"$job\",instance=~\"$instance\"}",
-          "legendFormat": "p95 {{target}} {{probe}}",
+          "expr": "label_replace(label_join(bandwidth_monitor_latency_rtt_p95_seconds{job=~\"$job\",instance=~\"$instance\",wan=~\"$wan\"}, \"_dw\", \";\", \"default\", \"wan\"), \"wan\", \"default route ($1)\", \"_dw\", \"true;(.+)\")",
+          "legendFormat": "p95 {{target}} {{wan}} {{probe}}",
           "refId": "A"
         },
         {
@@ -2912,8 +2934,8 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "bandwidth_monitor_latency_rtt_p99_seconds{job=~\"$job\",instance=~\"$instance\"}",
-          "legendFormat": "p99 {{target}} {{probe}}",
+          "expr": "label_replace(label_join(bandwidth_monitor_latency_rtt_p99_seconds{job=~\"$job\",instance=~\"$instance\",wan=~\"$wan\"}, \"_dw\", \";\", \"default\", \"wan\"), \"wan\", \"default route ($1)\", \"_dw\", \"true;(.+)\")",
+          "legendFormat": "p99 {{target}} {{wan}} {{probe}}",
           "refId": "B"
         }
       ],
@@ -2985,8 +3007,8 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "bandwidth_monitor_latency_jitter_seconds{job=~\"$job\",instance=~\"$instance\"}",
-          "legendFormat": "{{target}} {{probe}}",
+          "expr": "label_replace(label_join(bandwidth_monitor_latency_jitter_seconds{job=~\"$job\",instance=~\"$instance\",wan=~\"$wan\"}, \"_dw\", \";\", \"default\", \"wan\"), \"wan\", \"default route ($1)\", \"_dw\", \"true;(.+)\")",
+          "legendFormat": "{{target}} {{wan}} {{probe}}",
           "refId": "A"
         }
       ],
@@ -3058,8 +3080,8 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "bandwidth_monitor_latency_loss_ratio{job=~\"$job\",instance=~\"$instance\"}",
-          "legendFormat": "{{target}} {{probe}}",
+          "expr": "label_replace(label_join(bandwidth_monitor_latency_loss_ratio{job=~\"$job\",instance=~\"$instance\",wan=~\"$wan\"}, \"_dw\", \";\", \"default\", \"wan\"), \"wan\", \"default route ($1)\", \"_dw\", \"true;(.+)\")",
+          "legendFormat": "{{target}} {{wan}} {{probe}}",
           "refId": "A"
         }
       ],
@@ -3130,8 +3152,8 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "bandwidth_monitor_latency_target_up{job=~\"$job\",instance=~\"$instance\"}",
-          "legendFormat": "{{target}}",
+          "expr": "label_replace(label_join(bandwidth_monitor_latency_target_up{job=~\"$job\",instance=~\"$instance\",wan=~\"$wan\"}, \"_dw\", \";\", \"default\", \"wan\"), \"wan\", \"default route ($1)\", \"_dw\", \"true;(.+)\")",
+          "legendFormat": "{{target}} {{wan}}",
           "refId": "A"
         }
       ],
@@ -3200,6 +3222,209 @@
       }
     },
     {
+      "type": "table",
+      "title": "Per-WAN ICMP comparison",
+      "description": "Current ICMP latency and loss per target and probe path. On multi-WAN hosts each WAN is probed separately (sockets bound to the interface); \"default route\" is the unbound probe.",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "A",
+          "instant": true,
+          "range": false,
+          "format": "table",
+          "legendFormat": "",
+          "expr": "label_replace(max by (target, wan) (label_replace(label_join(bandwidth_monitor_latency_rtt_avg_seconds{job=~\"$job\",instance=~\"$instance\",wan=~\"$wan\",probe=\"icmp\"}, \"_dw\", \";\", \"default\", \"wan\"), \"wan\", \"default route ($1)\", \"_dw\", \"true;(.+)\")), \"wan\", \"default route\", \"wan\", \"\")"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "B",
+          "instant": true,
+          "range": false,
+          "format": "table",
+          "legendFormat": "",
+          "expr": "label_replace(max by (target, wan) (label_replace(label_join(bandwidth_monitor_latency_rtt_p95_seconds{job=~\"$job\",instance=~\"$instance\",wan=~\"$wan\",probe=\"icmp\"}, \"_dw\", \";\", \"default\", \"wan\"), \"wan\", \"default route ($1)\", \"_dw\", \"true;(.+)\")), \"wan\", \"default route\", \"wan\", \"\")"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "C",
+          "instant": true,
+          "range": false,
+          "format": "table",
+          "legendFormat": "",
+          "expr": "label_replace(max by (target, wan) (label_replace(label_join(bandwidth_monitor_latency_jitter_seconds{job=~\"$job\",instance=~\"$instance\",wan=~\"$wan\",probe=\"icmp\"}, \"_dw\", \";\", \"default\", \"wan\"), \"wan\", \"default route ($1)\", \"_dw\", \"true;(.+)\")), \"wan\", \"default route\", \"wan\", \"\")"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "D",
+          "instant": true,
+          "range": false,
+          "format": "table",
+          "legendFormat": "",
+          "expr": "label_replace(max by (target, wan) (label_replace(label_join(bandwidth_monitor_latency_loss_ratio{job=~\"$job\",instance=~\"$instance\",wan=~\"$wan\",probe=\"icmp\"}, \"_dw\", \";\", \"default\", \"wan\"), \"wan\", \"default route ($1)\", \"_dw\", \"true;(.+)\")), \"wan\", \"default route\", \"wan\", \"\")"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true
+            },
+            "indexByName": {
+              "target": 0,
+              "wan": 1,
+              "Value #A": 2,
+              "Value #B": 3,
+              "Value #C": 4,
+              "Value #D": 5
+            },
+            "renameByName": {
+              "target": "Target",
+              "wan": "Path",
+              "Value #A": "Avg RTT",
+              "Value #B": "p95 RTT",
+              "Value #C": "Jitter",
+              "Value #D": "Loss"
+            }
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "sort": [
+              {
+                "field": "Target"
+              }
+            ]
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "filterable": true
+          },
+          "unit": "s",
+          "decimals": 1
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Loss"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percentunit"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": null
+                    },
+                    {
+                      "color": "yellow",
+                      "value": 0.01
+                    },
+                    {
+                      "color": "red",
+                      "value": 0.05
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background",
+                  "mode": "basic"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Avg RTT"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "gauge",
+                  "mode": "basic",
+                  "valueDisplayMode": "text"
+                }
+              },
+              {
+                "id": "min",
+                "value": 0
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "continuous-GrYlRd"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        },
+        "sortBy": [
+          {
+            "displayName": "Target",
+            "desc": false
+          }
+        ]
+      },
+      "id": 84,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 139
+      }
+    },
+    {
       "type": "row",
       "title": "DNS",
       "id": 43,
@@ -3208,7 +3433,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 139
+        "y": 148
       },
       "panels": []
     },
@@ -3272,7 +3497,7 @@
         "h": 4,
         "w": 6,
         "x": 0,
-        "y": 140
+        "y": 149
       }
     },
     {
@@ -3335,7 +3560,7 @@
         "h": 4,
         "w": 6,
         "x": 6,
-        "y": 140
+        "y": 149
       }
     },
     {
@@ -3406,7 +3631,7 @@
         "h": 4,
         "w": 6,
         "x": 12,
-        "y": 140
+        "y": 149
       }
     },
     {
@@ -3485,7 +3710,7 @@
         "h": 4,
         "w": 6,
         "x": 18,
-        "y": 140
+        "y": 149
       }
     },
     {
@@ -3558,7 +3783,7 @@
         "h": 13,
         "w": 8,
         "x": 0,
-        "y": 144
+        "y": 153
       }
     },
     {
@@ -3631,7 +3856,7 @@
         "h": 13,
         "w": 8,
         "x": 8,
-        "y": 144
+        "y": 153
       }
     },
     {
@@ -3805,7 +4030,7 @@
         "h": 13,
         "w": 8,
         "x": 16,
-        "y": 144
+        "y": 153
       }
     },
     {
@@ -3878,7 +4103,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 157
+        "y": 166
       }
     },
     {
@@ -3951,7 +4176,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 157
+        "y": 166
       }
     },
     {
@@ -4125,7 +4350,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 157
+        "y": 166
       }
     },
     {
@@ -4137,7 +4362,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 165
+        "y": 174
       },
       "panels": []
     },
@@ -4210,7 +4435,7 @@
         "h": 4,
         "w": 6,
         "x": 0,
-        "y": 166
+        "y": 175
       }
     },
     {
@@ -4273,7 +4498,7 @@
         "h": 4,
         "w": 6,
         "x": 6,
-        "y": 166
+        "y": 175
       }
     },
     {
@@ -4336,7 +4561,7 @@
         "h": 4,
         "w": 6,
         "x": 12,
-        "y": 166
+        "y": 175
       }
     },
     {
@@ -4399,7 +4624,7 @@
         "h": 4,
         "w": 6,
         "x": 18,
-        "y": 166
+        "y": 175
       }
     },
     {
@@ -4470,7 +4695,7 @@
         "h": 9,
         "w": 12,
         "x": 0,
-        "y": 170
+        "y": 179
       }
     },
     {
@@ -4541,7 +4766,7 @@
         "h": 9,
         "w": 12,
         "x": 12,
-        "y": 170
+        "y": 179
       }
     },
     {
@@ -4636,7 +4861,7 @@
         "h": 9,
         "w": 12,
         "x": 0,
-        "y": 179
+        "y": 188
       }
     },
     {
@@ -4791,7 +5016,7 @@
         "h": 9,
         "w": 12,
         "x": 12,
-        "y": 179
+        "y": 188
       }
     },
     {
@@ -4964,7 +5189,7 @@
         "h": 10,
         "w": 24,
         "x": 0,
-        "y": 188
+        "y": 197
       }
     },
     {
@@ -4976,7 +5201,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 198
+        "y": 207
       },
       "panels": []
     },
@@ -5096,7 +5321,7 @@
         "h": 9,
         "w": 12,
         "x": 0,
-        "y": 199
+        "y": 208
       }
     },
     {
@@ -5167,7 +5392,7 @@
         "h": 9,
         "w": 12,
         "x": 12,
-        "y": 199
+        "y": 208
       }
     },
     {
@@ -5341,7 +5566,7 @@
         "h": 7,
         "w": 6,
         "x": 0,
-        "y": 208
+        "y": 217
       }
     },
     {
@@ -5515,7 +5740,7 @@
         "h": 7,
         "w": 6,
         "x": 6,
-        "y": 208
+        "y": 217
       }
     },
     {
@@ -5689,7 +5914,7 @@
         "h": 7,
         "w": 6,
         "x": 12,
-        "y": 208
+        "y": 217
       }
     },
     {
@@ -5863,7 +6088,7 @@
         "h": 7,
         "w": 6,
         "x": 18,
-        "y": 208
+        "y": 217
       }
     },
     {
@@ -5936,7 +6161,7 @@
         "h": 14,
         "w": 12,
         "x": 0,
-        "y": 215
+        "y": 224
       }
     },
     {
@@ -6009,7 +6234,7 @@
         "h": 14,
         "w": 12,
         "x": 12,
-        "y": 215
+        "y": 224
       }
     },
     {
@@ -6021,7 +6246,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 229
+        "y": 238
       },
       "panels": []
     },
@@ -6120,7 +6345,7 @@
         "h": 9,
         "w": 12,
         "x": 0,
-        "y": 230
+        "y": 239
       }
     },
     {
@@ -6199,7 +6424,7 @@
         "h": 9,
         "w": 8,
         "x": 12,
-        "y": 230
+        "y": 239
       }
     },
     {
@@ -6262,7 +6487,7 @@
         "h": 9,
         "w": 4,
         "x": 20,
-        "y": 230
+        "y": 239
       }
     },
     {
@@ -6274,7 +6499,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 239
+        "y": 248
       },
       "panels": []
     },
@@ -6345,7 +6570,7 @@
         "h": 10,
         "w": 8,
         "x": 0,
-        "y": 240
+        "y": 249
       }
     },
     {
@@ -6425,7 +6650,7 @@
         "h": 10,
         "w": 8,
         "x": 8,
-        "y": 240
+        "y": 249
       }
     },
     {
@@ -6522,7 +6747,7 @@
         "h": 10,
         "w": 8,
         "x": 16,
-        "y": 240
+        "y": 249
       }
     },
     {
@@ -6594,7 +6819,7 @@
         "h": 10,
         "w": 8,
         "x": 0,
-        "y": 250
+        "y": 259
       }
     },
     {
@@ -6667,7 +6892,7 @@
         "h": 10,
         "w": 8,
         "x": 8,
-        "y": 250
+        "y": 259
       }
     },
     {
@@ -6739,7 +6964,7 @@
         "h": 10,
         "w": 8,
         "x": 16,
-        "y": 250
+        "y": 259
       }
     }
   ]

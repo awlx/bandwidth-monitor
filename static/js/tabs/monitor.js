@@ -381,6 +381,8 @@
     // ── Latency Monitor ──
     BM.updateLatency = function(targets) {
         var sec = document.getElementById('latencySection');
+        // WANs the host cannot route through are not probed; don't render them.
+        targets = (targets || []).filter(function(t) { return !fullyUnroutable(t); });
         if (!targets || !targets.length) {
             sec.style.display = 'none';
             return;
@@ -391,6 +393,12 @@
         el.style.display = 'grid';
         el.style.gridTemplateColumns = 'repeat(auto-fill,minmax(380px,1fr))';
         el.style.gap = '16px';
+
+        // Per-WAN probes (multi-WAN hosts) carry t.wan; default-route probes don't.
+        var multiWAN = targets.some(function(t) { return !!t.wan; });
+        var cmp = document.getElementById('latencyWANCompare');
+        if (cmp) cmp.style.display = multiWAN ? '' : 'none';
+        if (multiWAN && cmp) cmp.innerHTML = renderWANCompare(targets);
 
         var h = '';
         for (var i = 0; i < targets.length; i++) {
@@ -406,7 +414,12 @@
 
             h += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">';
             h += '<div>';
-            h += '<div style="font-weight:600;font-size:14px">' + BM.escHtml(t.name) + '</div>';
+            h += '<div style="font-weight:600;font-size:14px">' + BM.escHtml(t.name);
+            if (multiWAN) {
+                h += ' <span style="font-size:10px;font-weight:600;color:var(--text-2);background:var(--bg-1);padding:1px 5px;border-radius:3px;margin-left:4px">' +
+                    pathLabel(t, 'via ') + '</span>';
+            }
+            h += '</div>';
             h += '<div style="font-size:10px;color:var(--text-2);font-family:var(--font-mono, monospace)">';
             if (hasV4) h += '<span style="background:var(--bg-1);padding:1px 4px;border-radius:3px;margin-right:4px">v4 ' + BM.escHtml(t.ipv4) + '</span>';
             if (hasV6) h += '<span style="background:var(--bg-1);padding:1px 4px;border-radius:3px">v6 ' + BM.escHtml(t.ipv6) + '</span>';
@@ -492,6 +505,76 @@
             h += '</div>';
         }
         el.innerHTML = h;
+    };
+
+    function fullyUnroutable(t) {
+        var n = t.unroutable ? t.unroutable.length : 0;
+        return n > 0 && n >= (t.ipv4 ? 1 : 0) + (t.ipv6 ? 1 : 0);
+    }
+
+    // "default route", "default route (<wan>)" when a WAN carries it, else prefix + wan.
+    function pathLabel(t, prefix) {
+        if (!t.wan) return 'default route';
+        if (t.default) return 'default route (' + BM.escHtml(t.wan) + ')';
+        return prefix + BM.escHtml(t.wan);
+    }
+
+    // Target × path table: ICMP avg RTT and loss via the default route and each WAN.
+    function renderWANCompare(targets) {
+        var paths = [], heads = {}, names = [], rows = {};
+        targets.forEach(function(t) {
+            var w = t.wan || '';
+            if (paths.indexOf(w) < 0) { paths.push(w); heads[w] = pathLabel(t, ''); }
+            if (!rows[t.name]) { rows[t.name] = {}; names.push(t.name); }
+            rows[t.name][w] = t;
+        });
+        var th = 'padding:4px 8px;font-size:10px;color:var(--text-2);font-weight:600;text-align:right';
+        var h = '<table style="width:100%;border-collapse:collapse;font-size:12px;font-variant-numeric:tabular-nums">';
+        h += '<tr><th style="' + th + ';text-align:left">ICMP avg RTT / loss</th>';
+        paths.forEach(function(w) { h += '<th style="' + th + '">' + heads[w] + '</th>'; });
+        h += '</tr>';
+        names.forEach(function(n) {
+            h += '<tr style="border-top:1px solid var(--border)"><td style="padding:4px 8px">' + BM.escHtml(n) + '</td>';
+            paths.forEach(function(w) {
+                var t = rows[n][w], s = t && t.icmp_stats;
+                var cell = '—';
+                if (s) {
+                    var lossColor = s.loss_pct >= 5 ? 'var(--danger, #ef4444)' : s.loss_pct > 0 ? 'var(--warning, #f59e0b)' : 'var(--text-2)';
+                    cell = (s.avg_rtt_ms > 0 ? s.avg_rtt_ms.toFixed(1) + ' ms' : '—') +
+                        ' <span style="color:' + lossColor + '">' + s.loss_pct.toFixed(1) + '%</span>';
+                }
+                h += '<td style="padding:4px 8px;text-align:right">' + cell + '</td>';
+            });
+            h += '</tr>';
+        });
+        return h + '</table>';
+    }
+
+    // ── Capture health ──
+    // Thresholds match the Grafana drop-ratio panels; status comes from the server.
+    BM.updateCaptureHealth = function(devices) {
+        var sec = document.getElementById('captureHealthSection');
+        if (!sec) return;
+        if (!devices || !devices.length) {
+            sec.style.display = 'none';
+            return;
+        }
+        sec.style.display = '';
+        var colors = { ok: 'var(--success, #22c55e)', warn: 'var(--warning, #f59e0b)', alert: 'var(--danger, #ef4444)' };
+        var th = 'padding:4px 8px;font-size:10px;color:var(--text-2);font-weight:600;text-align:right';
+        var h = '<table style="width:100%;border-collapse:collapse;font-size:12px;font-variant-numeric:tabular-nums">';
+        h += '<tr><th style="' + th + ';text-align:left">Device</th><th style="' + th + '">Packets/s</th><th style="' + th + '">Drops/s</th><th style="' + th + '">Drop ratio</th><th style="' + th + '">Status</th></tr>';
+        devices.forEach(function(d) {
+            var c = colors[d.status] || colors.ok;
+            h += '<tr style="border-top:1px solid var(--border)">';
+            h += '<td style="padding:4px 8px;font-family:var(--font-mono, monospace)">' + BM.escHtml(d.device) + '</td>';
+            h += '<td style="padding:4px 8px;text-align:right">' + Math.round(d.packets_per_sec).toLocaleString() + '</td>';
+            h += '<td style="padding:4px 8px;text-align:right">' + (d.drops_per_sec > 0 && d.drops_per_sec < 10 ? d.drops_per_sec.toFixed(1) : Math.round(d.drops_per_sec).toLocaleString()) + '</td>';
+            h += '<td style="padding:4px 8px;text-align:right;color:' + c + '">' + (d.drop_ratio * 100).toFixed(3) + '%</td>';
+            h += '<td style="padding:4px 8px;text-align:right"><span style="font-size:10px;font-weight:700;color:' + c + '">' + BM.escHtml((d.status || 'ok').toUpperCase()) + '</span></td>';
+            h += '</tr>';
+        });
+        document.getElementById('captureHealth').innerHTML = h + '</table>';
     };
 
     function renderLatencyChart(points, strokeColor, fillHex) {

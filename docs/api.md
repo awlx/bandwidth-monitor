@@ -19,7 +19,7 @@ and companion clients use the same API.
 | `/api/wifi` | GET | Configured WiFi controller summary |
 | `/api/conntrack` | GET | Conntrack and NAT summary |
 | `/api/topology` | GET | Discovered local network topology |
-| `/api/latency` | GET | Latency monitor status |
+| `/api/latency` | GET | Latency monitor status: one entry per target via the default route, followed by one entry per WAN interface (`wan` field) on multi-WAN hosts. If a WAN's egress is the same route as the default route, there is no separate default-route entry; that WAN's entry comes first and has `default: true`. Per-WAN entries may carry `unroutable` (address families not routable for host traffic via that WAN, not probed) and `egress` (per family, e.g. `fwmark 0x6`, when policy routing requires a mark or source address) |
 | `/api/summary` | GET | Compact summary for companion clients |
 | `/api/events` | GET | Server-Sent Events stream for live dashboard data |
 | `/api/speedtest/run` | POST | Start a speed test and stream progress |
@@ -35,6 +35,12 @@ and companion clients use the same API.
 `/api/events` streams interface rates, talkers, DNS, WiFi, latency, and related
 live summaries. Conntrack and topology are polled through their dedicated
 endpoints.
+
+Where the kernel exposes capture-ring counters (Linux), each event also has a
+`capture` array with one entry per capture device: `device`,
+`packets_per_sec`, `drops_per_sec`, `drop_ratio` (drops / (packets + drops)
+over the last ~10s) and `status` (`ok`, `warn` at ≥0.1%, `alert` at ≥1%,
+matching the Grafana thresholds). The field is omitted elsewhere.
 
 ## Prometheus metrics
 
@@ -68,7 +74,8 @@ Subsystems that are not configured simply emit no series.
 | DNS | `dns_up`, `dns_queries`, `dns_blocked_queries`, `dns_blocked_ratio`, `dns_latency_seconds`, `dns_top_domain_queries`, `dns_top_blocked_domain_queries`, `dns_top_client_queries`, `dns_upstream_responses`, `dns_upstream_latency_seconds` | `provider`, `domain`, `ip`, `hostname`, `upstream` |
 | WiFi | `wifi_up`, `wifi_access_points`, `wifi_clients`, `wifi_wired_clients`, `wifi_switches`, `wifi_ap_up`, `wifi_ap_clients`, `wifi_ap_uptime_seconds`, `wifi_ap_bytes_total`, `wifi_ap_rate_bytes_per_second`, `wifi_ssid_clients`, `wifi_ssid_rate_bytes_per_second`, `wifi_clients_by_signal`, `wifi_top_client_signal_dbm`, `wifi_top_client_rate_bytes_per_second` | `provider`, `ap`, `mac`, `model`, `ssid`, `radio`, `quality`, `hostname`, `direction` |
 | Conntrack | `conntrack_entries`, `conntrack_entries_limit`, `conntrack_entries_by_family`, `conntrack_entries_by_protocol`, `conntrack_entries_by_state`, `conntrack_entries_by_nat_type`, `conntrack_top_lan_client_connections`, `conntrack_top_lan_client_bytes`, `conntrack_top_remote_connections`, `conntrack_top_remote_bytes` | `family`, `protocol`, `state`, `nat_type`, `ip`, `hostname` |
-| Latency | `latency_target_up`, `latency_rtt_seconds`, `latency_rtt_avg_seconds`, `latency_rtt_min_seconds`, `latency_rtt_max_seconds`, `latency_rtt_p95_seconds`, `latency_rtt_p99_seconds`, `latency_jitter_seconds`, `latency_loss_ratio` | `target`, `probe` (`icmp`, `https`) |
+| Latency | `latency_target_up`, `latency_rtt_seconds`, `latency_rtt_avg_seconds`, `latency_rtt_min_seconds`, `latency_rtt_max_seconds`, `latency_rtt_p95_seconds`, `latency_rtt_p99_seconds`, `latency_jitter_seconds`, `latency_loss_ratio` | `target`, `probe` (`icmp`, `https`), `wan` (WAN interface; only on per-WAN probes, absent for the default route), `default="true"` (on the WAN that carries the default route; no separate default-route series is exported then) |
+| Latency per-WAN routing | `latency_wan_routable` (1 = probed, 0 = no route or ip rule lets host traffic use the WAN; target metrics are omitted for it) | `wan`, `family` (`ipv4`, `ipv6`) |
 | Speed test | `speedtest_running`, `speedtest_results`, `speedtest_download_bits_per_second`, `speedtest_upload_bits_per_second`, `speedtest_download_single_stream_bits_per_second`, `speedtest_upload_single_stream_bits_per_second`, `speedtest_ping_seconds`, `speedtest_jitter_seconds`, `speedtest_last_run_timestamp_seconds` | `interface` |
 | Topology | `topology_nodes`, `topology_links` | `type` |
 

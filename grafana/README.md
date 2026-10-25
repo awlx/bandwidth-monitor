@@ -33,6 +33,7 @@ jq '{dashboard: ., overwrite: true}' grafana/bandwidth-monitor.json |
 | `job` | Scrape job(s) exposing `bandwidth_monitor_build_info` |
 | `instance` | One or more Bandwidth Monitor instances |
 | `interface` | Interfaces for the per-interface panels |
+| `wan` | Latency probe paths on multi-WAN hosts. **All** also matches default-route probes, which carry no `wan` label; single-WAN hosts have no values. A WAN carrying the default route is labelled "default route (&lt;wan&gt;)" in legends |
 
 Panels for subsystems that are not configured (for example DNS or WiFi
 without a provider, or speed tests that have not run since the last restart)

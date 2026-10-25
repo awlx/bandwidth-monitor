@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"bandwidth-monitor/dns"
+	"bandwidth-monitor/latency"
 	"bandwidth-monitor/wifi"
 )
 
@@ -178,5 +179,70 @@ func TestHandler(t *testing.T) {
 	h(rec, httptest.NewRequest(http.MethodPost, "/metrics", nil))
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Errorf("POST status %d, want 405", rec.Code)
+	}
+}
+
+func TestLatencyWANLabel(t *testing.T) {
+	reg := newRegistry()
+	st := &latency.ProbeStats{RTT: 10, AvgRTT: 12, LossPct: 5}
+	collectLatencyStatus(reg, []latency.TargetStatus{
+		{Name: "t.example", Alive: true, ICMPStats: st},
+		{Name: "t.example", WAN: "wan0", Alive: true, ICMPStats: st},
+		{Name: "t.example", WAN: "wan1", ICMPStats: &latency.ProbeStats{RTT: -1, LossPct: 100}},
+	})
+	out0 := render(t, reg)
+	if strings.Contains(out0, "latency_wan_routable") {
+		t.Error("routable metric exported for statuses without addresses")
+	}
+	reg = newRegistry()
+	collectLatencyStatus(reg, []latency.TargetStatus{
+		{Name: "t.example", IPv4: "192.0.2.1", IPv6: "2001:db8::1", Alive: true, ICMPStats: st},
+		{Name: "t.example", IPv4: "192.0.2.1", IPv6: "2001:db8::1", WAN: "wan0", Alive: true, ICMPStats: st},
+		{Name: "t.example", IPv4: "192.0.2.1", IPv6: "2001:db8::1", WAN: "wan1", ICMPStats: &latency.ProbeStats{RTT: -1, LossPct: 100}, Unroutable: []string{"ipv6"}},
+		{Name: "u.example", IPv4: "192.0.2.2", WAN: "wan2", Unroutable: []string{"ipv4"}},
+	})
+	out := render(t, reg)
+	validate(t, out)
+	for _, want := range []string{
+		`bandwidth_monitor_latency_target_up{target="t.example"} 1`,
+		`bandwidth_monitor_latency_target_up{target="t.example",wan="wan0"} 1`,
+		`bandwidth_monitor_latency_target_up{target="t.example",wan="wan1"} 0`,
+		`bandwidth_monitor_latency_rtt_seconds{target="t.example",probe="icmp"} 0.01`,
+		`bandwidth_monitor_latency_rtt_seconds{target="t.example",wan="wan0",probe="icmp"} 0.01`,
+		`bandwidth_monitor_latency_loss_ratio{target="t.example",probe="icmp"} 0.05`,
+		`bandwidth_monitor_latency_loss_ratio{target="t.example",wan="wan1",probe="icmp"} 1`,
+		`bandwidth_monitor_latency_wan_routable{wan="wan0",family="ipv4"} 1`,
+		`bandwidth_monitor_latency_wan_routable{wan="wan1",family="ipv4"} 1`,
+		`bandwidth_monitor_latency_wan_routable{wan="wan1",family="ipv6"} 0`,
+		`bandwidth_monitor_latency_wan_routable{wan="wan2",family="ipv4"} 0`,
+	} {
+		if !strings.Contains(out, want+"\n") {
+			t.Errorf("missing %q in:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, `latency_rtt_seconds{target="t.example",wan="wan1"`) {
+		t.Error("lost probe exported an RTT")
+	}
+	reg = newRegistry()
+	collectLatencyStatus(reg, []latency.TargetStatus{
+		{Name: "t.example", WAN: "wan0", Default: true, Alive: true, ICMPStats: st},
+		{Name: "t.example", WAN: "wan1", Alive: true, ICMPStats: st},
+	})
+	merged := render(t, reg)
+	validate(t, merged)
+	for _, want := range []string{
+		`bandwidth_monitor_latency_target_up{target="t.example",wan="wan0",default="true"} 1`,
+		`bandwidth_monitor_latency_loss_ratio{target="t.example",wan="wan0",default="true",probe="icmp"} 0.05`,
+		`bandwidth_monitor_latency_target_up{target="t.example",wan="wan1"} 1`,
+	} {
+		if !strings.Contains(merged, want+"\n") {
+			t.Errorf("missing %q in:\n%s", want, merged)
+		}
+	}
+	if strings.Contains(merged, `latency_target_up{target="t.example"}`) {
+		t.Error("separate default-route series exported for merged path")
+	}
+	if strings.Contains(out, `target="u.example"`) {
+		t.Error("unroutable path exported target metrics")
 	}
 }

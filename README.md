@@ -264,6 +264,7 @@ Useful common settings:
 | `LOCAL_NETS`, `SPAN_DEVICE` | Direction detection for routed or mirror traffic |
 | `LATENCY_MONITORING` | Set to `false` to disable latency monitoring |
 | `LATENCY_TARGETS` | Hosts probed by the latency monitor |
+| `LATENCY_PER_WAN` | Set to `false` to skip per-WAN latency probes on multi-WAN hosts |
 | `SPEEDTEST_SERVER` | Speed test endpoint |
 | `METRICS_ENABLED`, `METRICS_TOP_N` | Prometheus `/metrics` endpoint and its top-N cap |
 

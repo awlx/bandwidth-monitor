@@ -75,8 +75,32 @@ func DialerForInterface(iface string) *net.Dialer {
 	if iface == "" {
 		return d
 	}
-	d.Control = bindControl(iface)
+	d.Control = egressControl(Egress{Iface: iface})
 	return d
+}
+
+// DialerForEgress returns a TCP dialer that sends via e (interface
+// binding, firewall mark and source address); see ResolveEgress. A zero
+// Egress yields a plain dialer.
+func DialerForEgress(e Egress) *net.Dialer {
+	d := &net.Dialer{Timeout: 5 * time.Second}
+	if e.Iface == "" && e.Mark == 0 {
+		return d
+	}
+	d.Control = egressControl(e)
+	if e.Src != nil {
+		d.LocalAddr = &net.TCPAddr{IP: e.Src}
+	}
+	return d
+}
+
+// ListenConfigForEgress is the ListenConfig counterpart of DialerForEgress.
+// Callers listen on e.Src (if set) to use the source address.
+func ListenConfigForEgress(e Egress) *net.ListenConfig {
+	if e.Iface == "" && e.Mark == 0 {
+		return &net.ListenConfig{}
+	}
+	return &net.ListenConfig{Control: egressControl(e)}
 }
 
 // ListenConfigForInterface returns a *net.ListenConfig bound the same way
@@ -86,5 +110,5 @@ func ListenConfigForInterface(iface string) *net.ListenConfig {
 	if iface == "" {
 		return &net.ListenConfig{}
 	}
-	return &net.ListenConfig{Control: bindControl(iface)}
+	return &net.ListenConfig{Control: egressControl(Egress{Iface: iface})}
 }

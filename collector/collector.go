@@ -183,6 +183,22 @@ func (c *Collector) GetAll() []InterfaceStat {
 	return stats
 }
 
+// WANInterfaces returns the names of interfaces currently classified as
+// WAN (explicit WAN_INTERFACE list, or auto-detected) that are not down,
+// sorted by name. Unlike GetAll it ignores the INTERFACES display filter.
+func (c *Collector) WANInterfaces() []string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	var out []string
+	for _, s := range c.current {
+		if s.WAN && s.OperState != "down" {
+			out = append(out, s.Name)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
 func (c *Collector) GetHistory() map[string][]HistoryPoint {
 	return c.GetHistoryFiltered("", 0)
 }

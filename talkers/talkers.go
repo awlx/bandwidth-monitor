@@ -197,22 +197,23 @@ type Tracker struct {
 	// promiscuous mode since mirrored frames are addressed to other hosts.
 	monitorDevices map[string]bool
 
-	statsMu      sync.Mutex
-	captureStats map[string]packets.RingStats // cumulative kernel counters per device
-	mu           sync.RWMutex
-	buckets      []*bucket
-	current      *bucket
-	stopCh       chan struct{}
-	doneCh       chan struct{}
-	dns          *resolver.Resolver
-	geoDB        *geoip.DB
-	lifecycleMu  sync.Mutex
-	workers      sync.WaitGroup
-	started      bool
-	stopped      bool
-	direct       bool
-	errCh        chan error
-	captureFn    func(string) error
+	statsMu       sync.Mutex
+	captureStats  map[string]packets.RingStats // cumulative kernel counters per device
+	captureRecent map[string][]captureSample   // recent deltas for CaptureHealth rates
+	mu            sync.RWMutex
+	buckets       []*bucket
+	current       *bucket
+	stopCh        chan struct{}
+	doneCh        chan struct{}
+	dns           *resolver.Resolver
+	geoDB         *geoip.DB
+	lifecycleMu   sync.Mutex
+	workers       sync.WaitGroup
+	started       bool
+	stopped       bool
+	direct        bool
+	errCh         chan error
+	captureFn     func(string) error
 
 	// Rate ring: short circular buffer (5s slots) for responsive rate calc.
 	// Protected by the same mu as buckets/current.
@@ -1084,6 +1085,7 @@ func (t *Tracker) recordCaptureStats(device string, delta packets.RingStats) {
 	cur.Packets += delta.Packets
 	cur.Drops += delta.Drops
 	t.captureStats[device] = cur
+	t.addCaptureSampleLocked(device, delta, time.Now())
 }
 
 // CaptureStats returns cumulative kernel capture counters per device.

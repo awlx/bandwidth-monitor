@@ -169,7 +169,35 @@ LATENCY_TARGETS=anycast01.ffmuc.net,anycast02.ffmuc.net,dns.quad9.net
 ```
 
 Set `LATENCY_MONITORING=false` to disable latency monitoring completely.
-Otherwise, latency targets are probed with ICMP and HTTPS. See
+Otherwise, latency targets are probed with ICMP and HTTPS through the default
+route.
+
+On Linux hosts with two or more WAN interfaces, every target is also probed
+through each WAN, using sockets bound to that interface (`SO_BINDTODEVICE`,
+like `ping -I`). The WAN set comes from the same source as the rest of the
+dashboard: `WAN_INTERFACE` when set, otherwise auto-detection. It is
+re-evaluated every probe round, so probes start and stop as uplinks come up,
+go down or gain/lose their default route.
+
+Per-WAN probes follow the host's policy routing (read via netlink, nothing is
+changed). If a WAN's default route is only in a policy table, the probes use
+the ip rule that selects that table: an `fwmark` rule sets that mark on the
+probe sockets (`SO_MARK`, needs `CAP_NET_ADMIN`), and a `from <prefix>` rule
+binds them to a matching local address. If no rule lets host traffic reach the
+WAN's default route (for example, the table is only selected for forwarded
+traffic or specific destinations), that WAN and address family is reported as
+not routable and not probed, instead of showing 100% loss. Such a WAN is hidden
+in the web UI and Grafana (it has no latency series); the API `unroutable`
+field and `latency_wan_routable` metric still report it. Routing is
+re-checked every 10 seconds.
+
+When a WAN's probes take exactly the same route as the default route (same
+table, interface and gateway for every target), they are not duplicated: that
+WAN is probed once and shown as "default route (<wan>)" in the UI, Grafana and
+API, and its metrics carry `default="true"`. The marker moves if the default
+route changes. Set
+`LATENCY_PER_WAN=false` to probe only through the default route. With zero or
+one WAN, behaviour and output are unchanged. See
 [external services](integrations.md#external-services) before exposing the
 daemon to a network with strict egress requirements.
 

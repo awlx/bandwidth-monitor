@@ -312,6 +312,15 @@ func main() {
 			}
 		}
 		latencyMonitor = latency.New(latencyTargets)
+		// LATENCY_PER_WAN: with two or more WAN interfaces (WAN_INTERFACE or
+		// auto-detected), also probe every target through each WAN.
+		perWAN, err := strconv.ParseBool(env("LATENCY_PER_WAN", "true"))
+		if err != nil {
+			log.Fatalf("LATENCY_PER_WAN: invalid value %q (expected true or false)", os.Getenv("LATENCY_PER_WAN"))
+		}
+		if perWAN {
+			latencyMonitor.SetWANSource(statsCollector.WANInterfaces)
+		}
 		go latencyMonitor.Run()
 	} else {
 		log.Println("Latency monitoring disabled")
