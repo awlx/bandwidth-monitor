@@ -950,6 +950,9 @@ func buildPayload(c *collector.Collector, t *talkers.Tracker, dp dns.Provider, w
 // logic that PR #18 added to the old WebSocket handler).
 func SSE(c *collector.Collector, t *talkers.Tracker, dp dns.Provider, wp wifi.Provider, lm *latency.Monitor, ts *topology.Scanner, dnsRes *resolver.Resolver, geoDB *geoip.DB) http.HandlerFunc {
 	origin := newOriginResolver(geoDB)
+	shared := newSharedPayload(sseSharedMaxAge, func() ([]byte, error) {
+		return json.Marshal(buildPayload(c, t, dp, wp, lm, ts, dnsRes, origin))
+	})
 	return func(w http.ResponseWriter, r *http.Request) {
 		flusher, ok := w.(http.Flusher)
 		if !ok {
@@ -995,7 +998,7 @@ func SSE(c *collector.Collector, t *talkers.Tracker, dp dns.Provider, wp wifi.Pr
 		}()
 
 		// Send initial payload immediately.
-		data, err := json.Marshal(buildPayload(c, t, dp, wp, lm, ts, dnsRes, origin))
+		data, err := shared.get()
 		if err != nil {
 			close(sendCh)
 			return
@@ -1014,7 +1017,7 @@ func SSE(c *collector.Collector, t *talkers.Tracker, dp dns.Provider, wp wifi.Pr
 			case <-writerDone:
 				return
 			case <-ticker.C:
-				data, err := json.Marshal(buildPayload(c, t, dp, wp, lm, ts, dnsRes, origin))
+				data, err := shared.get()
 				if err != nil {
 					continue
 				}
@@ -1032,6 +1035,45 @@ func SSE(c *collector.Collector, t *talkers.Tracker, dp dns.Provider, wp wifi.Pr
 			}
 		}
 	}
+}
+
+// sseSharedMaxAge bounds how stale a shared SSE payload may be. It is just
+// under the 1s tick so each client still sees fresh data every tick, while
+// clients whose tickers fire within the same window share one build.
+const sseSharedMaxAge = 900 * time.Millisecond
+
+// sharedPayload builds the SSE payload at most once per maxAge for all
+// connected clients. Without it every open dashboard tab rebuilt and
+// re-marshaled the full payload (talker rankings, GeoIP breakdown, ...)
+// every second, holding the talker read lock once per client.
+type sharedPayload struct {
+	mu     sync.Mutex
+	maxAge time.Duration
+	build  func() ([]byte, error)
+	now    func() time.Time
+	at     time.Time
+	data   []byte
+}
+
+func newSharedPayload(maxAge time.Duration, build func() ([]byte, error)) *sharedPayload {
+	return &sharedPayload{maxAge: maxAge, build: build, now: time.Now}
+}
+
+// get returns the cached payload, rebuilding it when older than maxAge.
+// Concurrent callers wait for a single in-flight build.
+func (s *sharedPayload) get() ([]byte, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := s.now()
+	if s.data != nil && now.Sub(s.at) < s.maxAge {
+		return s.data, nil
+	}
+	data, err := s.build()
+	if err != nil {
+		return nil, err
+	}
+	s.data, s.at = data, now
+	return data, nil
 }
 
 // processStartTime records when this handler package was initialised, used to compute the
