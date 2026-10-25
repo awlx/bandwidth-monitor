@@ -186,7 +186,9 @@ probe sockets (`SO_MARK`, needs `CAP_NET_ADMIN`), and a `from <prefix>` rule
 binds them to a matching local address. If no rule lets host traffic reach the
 WAN's default route (for example, the table is only selected for forwarded
 traffic or specific destinations), that WAN and address family is reported as
-not routable and not probed, instead of showing 100% loss. Routing is
+not routable and not probed, instead of showing 100% loss. Such a WAN is hidden
+in the web UI and Grafana (it has no latency series); the API `unroutable`
+field and `latency_wan_routable` metric still report it. Routing is
 re-checked every 10 seconds.
 
 When a WAN's probes take exactly the same route as the default route (same

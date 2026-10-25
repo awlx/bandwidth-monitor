@@ -76,14 +76,22 @@ assert.ok(cmp.indexOf('25.0 ms') >= 0 && cmp.indexOf('2.5%') >= 0, cmp);
 assert.strictEqual((cmp.match(/<tr/g) || []).length, 2, 'one header + one row per target');
 assert.ok(elements.latencyTargets.innerHTML.indexOf('via wanB') >= 0);
 
-// A WAN not routable for host traffic: no samples, shown as such rather than as loss.
+// A WAN not routable for host traffic is not rendered at all.
 var unr = { name: 'a.example', wan: 'wanC', alive: false, ipv4: '192.0.2.1', unroutable: ['ipv4'] };
 BM.updateLatency([target('a.example', undefined, 10, 0), target('a.example', 'wanA', 10, 0), unr]);
 cmp = elements.latencyWANCompare.innerHTML;
-assert.ok(cmp.indexOf('not routable') >= 0, cmp);
+assert.ok(cmp.indexOf('wanC') < 0 && cmp.indexOf('routable') < 0, cmp);
+assert.strictEqual((cmp.match(/<th/g) || []).length, 3, 'label column + two routable paths: ' + cmp);
 var cards = elements.latencyTargets.innerHTML;
-assert.ok(cards.indexOf('NOT ROUTABLE') >= 0 && cards.indexOf('ipv4 not routable') >= 0, cards);
+assert.ok(cards.indexOf('wanC') < 0 && cards.indexOf('routable') < 0, cards);
 assert.strictEqual((cards.match(/DOWN/g) || []).length, 0, 'unroutable WAN must not show DOWN');
+
+// Only an unroutable WAN beside one routable path: single-path view, no comparison table.
+var dw = target('a.example', 'wanA', 10, 0); dw.default = true;
+BM.updateLatency([dw, unr]);
+assert.strictEqual(elements.latencyWANCompare.style.display, '');
+BM.updateLatency([unr]);
+assert.strictEqual(elements.latencySection.style.display, 'none');
 
 // Default route carried by a WAN: one column/card labelled "default route (<wan>)".
 var dflt = target('a.example', 'wanA', 10, 0); dflt.default = true;
