@@ -24,10 +24,10 @@
 
         bandwidth-monitor = pkgs.buildGoModule {
           pname = "bandwidth-monitor";
-          version = "0.0.17";
+          version = "0.0.40";
           src = ./.;
 
-          vendorHash = null;
+          vendorHash = "sha256-AGjp3mJtlYnCe5Fu5hlX61s0hjtwoRE3kIEecrRZsP4=";
 
           buildInputs = [ pkgs.libpcap ];
           nativeBuildInputs = [ pkgs.pkg-config ];
@@ -61,7 +61,7 @@
           pname = "bandwidth-top";
           version = bandwidth-monitor.version;
           src = ./.;
-          vendorHash = null;
+          vendorHash = "sha256-AGjp3mJtlYnCe5Fu5hlX61s0hjtwoRE3kIEecrRZsP4=";
           subPackages = [ "cmd/bandwidth-top" ];
           ldflags = [
             "-s" "-w"
