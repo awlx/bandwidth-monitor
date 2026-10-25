@@ -10,10 +10,12 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
 	"bandwidth-monitor/apns"
+	"bandwidth-monitor/httputil"
 )
 
 func env(key, fallback string) string {
@@ -24,7 +26,10 @@ func env(key, fallback string) string {
 }
 
 func main() {
-	listenAddr := env("LISTEN", ":8443")
+	listenAddrs, err := httputil.ParseListenAddrs(env("LISTEN", ":8443"))
+	if err != nil {
+		log.Fatalf("LISTEN: %v", err)
+	}
 	tlsCertFile := env("TLS_CERT_FILE", "")
 	tlsKeyFile := env("TLS_KEY_FILE", "")
 
@@ -69,19 +74,19 @@ func main() {
 	})
 
 	log.Printf("apnsgateway: starting on %s (HTTPS) tls-cert=%s tls-key=%s, apns-key-id=%s team=%s bundle=%s push-interval=%s max-response-bytes=%d",
-		listenAddr, tlsCertFile, tlsKeyFile, keyID, teamID, bundleID, interval, maxResponseBytes)
+		strings.Join(listenAddrs, ", "), tlsCertFile, tlsKeyFile, keyID, teamID, bundleID, interval, maxResponseBytes)
 
-	srv := &http.Server{
-		Addr:              listenAddr,
-		Handler:           mux,
-		ReadHeaderTimeout: 10 * time.Second,
-		IdleTimeout:       120 * time.Second,
-	}
+	srv := httputil.NewServers(listenAddrs, func(addr string) *http.Server {
+		return &http.Server{
+			Handler:           mux,
+			ReadHeaderTimeout: 10 * time.Second,
+			IdleTimeout:       120 * time.Second,
+		}
+	})
 
 	go awaitShutdown(srv)
 
-	serveErr := srv.ListenAndServeTLS(tlsCertFile, tlsKeyFile)
-	if serveErr != nil && serveErr != http.ErrServerClosed {
+	if serveErr := srv.ListenAndServe(tlsCertFile, tlsKeyFile); serveErr != nil {
 		log.Fatalf("apnsgateway: server failed: %v", serveErr)
 	}
 	relay.Stop()
@@ -89,7 +94,7 @@ func main() {
 
 // awaitShutdown blocks until SIGINT/SIGTERM, then gracefully shuts srv down (drains active
 // connections, up to 5s).
-func awaitShutdown(srv *http.Server) {
+func awaitShutdown(srv *httputil.Servers) {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	<-sigCh

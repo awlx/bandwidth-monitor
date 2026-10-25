@@ -21,6 +21,7 @@ import (
 	"bandwidth-monitor/dns"
 	"bandwidth-monitor/geoip"
 	"bandwidth-monitor/handler"
+	"bandwidth-monitor/httputil"
 	"bandwidth-monitor/latency"
 	"bandwidth-monitor/liveactivity"
 	"bandwidth-monitor/nextdns"
@@ -62,7 +63,10 @@ func collectorInterval() (time.Duration, error) {
 }
 
 func main() {
-	listenAddr := env("LISTEN", ":8080")
+	listenAddrs, err := httputil.ParseListenAddrs(env("LISTEN", ":8080"))
+	if err != nil {
+		log.Fatalf("LISTEN: %v", err)
+	}
 	listenProto := strings.ToLower(strings.TrimSpace(env("LISTEN_PROTOCOL", "http")))
 	tlsCertFile := env("TLS_CERT_FILE", "")
 	tlsKeyFile := env("TLS_KEY_FILE", "")
@@ -400,11 +404,13 @@ func main() {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
-	log.Printf("server: bandwidth-monitor %s starting on %s (%s)", version.String(), listenAddr, strings.ToUpper(listenProto))
-	if strings.HasPrefix(listenAddr, ":") {
-		log.Printf("server: open %s://localhost%s in your browser", listenProto, listenAddr)
-	} else {
-		log.Printf("server: open %s://%s in your browser", listenProto, listenAddr)
+	log.Printf("server: bandwidth-monitor %s starting on %s (%s)", version.String(), strings.Join(listenAddrs, ", "), strings.ToUpper(listenProto))
+	for _, addr := range listenAddrs {
+		if strings.HasPrefix(addr, ":") {
+			log.Printf("server: open %s://localhost%s in your browser", listenProto, addr)
+		} else {
+			log.Printf("server: open %s://%s in your browser", listenProto, addr)
+		}
 	}
 	if listenProto == "https" {
 		log.Printf("server: TLS enabled cert=%s key=%s", tlsCertFile, tlsKeyFile)
@@ -416,30 +422,31 @@ func main() {
 	}
 	handler = withSignature(handler)
 
-	srv := &http.Server{
-		Addr:              listenAddr,
-		Handler:           handler,
-		ReadHeaderTimeout: 10 * time.Second,
-		IdleTimeout:       120 * time.Second,
-	}
+	// One server per LISTEN address, so a specific v4 and v6 address can be
+	// served without falling back to the wildcard bind.
+	srv := httputil.NewServers(listenAddrs, func(addr string) *http.Server {
+		return &http.Server{
+			Handler:           handler,
+			ReadHeaderTimeout: 10 * time.Second,
+			IdleTimeout:       120 * time.Second,
+		}
+	})
 
 	go func() {
 		<-sigCh
 		fmt.Println("\nShutting down...")
 
-		// Gracefully shut down the HTTP server (drains active connections).
+		// Gracefully shut down the HTTP servers (drains active connections).
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		srv.Shutdown(ctx)
 	}()
 
-	serveErr := error(nil)
+	certFile, keyFile := "", ""
 	if listenProto == "https" {
-		serveErr = srv.ListenAndServeTLS(tlsCertFile, tlsKeyFile)
-	} else {
-		serveErr = srv.ListenAndServe()
+		certFile, keyFile = tlsCertFile, tlsKeyFile
 	}
-	if serveErr != nil && serveErr != http.ErrServerClosed {
+	if serveErr := srv.ListenAndServe(certFile, keyFile); serveErr != nil {
 		log.Fatalf("Server failed: %v", serveErr)
 	}
 

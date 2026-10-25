@@ -228,9 +228,11 @@ examples.
 | `make install` or manual `/opt` install | `/opt/bandwidth-monitor/.env` |
 | NixOS module | `services.bandwidth-monitor` options or an environment file |
 
-The default `LISTEN=:8080` serves the dashboard on all interfaces. A typical
-minimal configuration limits capture to selected interfaces and optionally
-enables one DNS and one WiFi provider:
+The default `LISTEN=:8080` serves the dashboard on all interfaces; a
+comma-separated list binds only the addresses given, e.g.
+`LISTEN=192.0.2.9:8080,[2001:db8::9]:8080`. A typical minimal configuration
+limits capture to selected interfaces and optionally enables one DNS and one
+WiFi provider:
 
 ```bash
 LISTEN=:8080
@@ -253,7 +255,7 @@ Useful common settings:
 
 | Setting | Purpose |
 |---|---|
-| `LISTEN`, `LISTEN_PROTOCOL` | Bind address and HTTP/HTTPS mode |
+| `LISTEN`, `LISTEN_PROTOCOL` | Bind address(es) and HTTP/HTTPS mode |
 | `TLS_CERT_FILE`, `TLS_KEY_FILE` | PEM certificate and key for HTTPS |
 | `INTERFACES` | Interfaces shown and captured |
 | `WAN_INTERFACE` | Override WAN auto-detection |

@@ -20,7 +20,11 @@ INTERFACES=eth0,ppp0,wg0
 WAN_INTERFACE=ppp0
 ```
 
-- `LISTEN` controls the web bind address.
+- `LISTEN` controls the web bind address. It accepts a comma-separated list to
+  serve specific addresses rather than every interface; IPv6 literals must be
+  bracketed, as in `LISTEN=192.0.2.9:8080,[2001:db8::9]:8080`. Every address is
+  bound before the dashboard starts serving, so a wrong or busy address fails
+  at startup instead of leaving part of the list unserved.
 - `INTERFACES` limits both displayed interfaces and packet capture. Without it,
   all non-loopback interfaces are used.
 - `WAN_INTERFACE` overrides automatic WAN detection.

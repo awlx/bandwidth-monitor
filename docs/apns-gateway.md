@@ -31,7 +31,7 @@ All configuration is via environment variables. Every variable except the TLS pa
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `LISTEN` | `:8443` | Listen address. The gateway always serves HTTPS (iOS App Transport Security rejects plain HTTP). |
+| `LISTEN` | `:8443` | Listen address, or a comma-separated list of them (`192.0.2.9:8443,[2001:db8::9]:8443`; bracket IPv6 literals). The gateway always serves HTTPS (iOS App Transport Security rejects plain HTTP). |
 | `TLS_CERT_FILE` | *(required)* | Path to the TLS certificate (PEM). |
 | `TLS_KEY_FILE` | *(required)* | Path to the TLS private key (PEM). |
 | `APNS_KEY_FILE` | *(required)* | Path to the APNs auth key (`.p8`) from [developer.apple.com](https://developer.apple.com) (Keys → Apple Push Notification service). Keep it `chmod 0600`. |
