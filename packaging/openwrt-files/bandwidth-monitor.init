@@ -31,6 +31,8 @@ start_service() {
         LISTEN="${LISTEN:-:8080}" \
         LISTEN_PROTOCOL="${LISTEN_PROTOCOL:-http}" \
         LOCAL_NETS="${LOCAL_NETS:-}" \
+        METRICS_ENABLED="${METRICS_ENABLED:-true}" \
+        METRICS_TOP_N="${METRICS_TOP_N:-10}" \
         NEXTDNS_API_KEY="${NEXTDNS_API_KEY:-}" \
         NEXTDNS_PROFILE="${NEXTDNS_PROFILE:-}" \
         OMADA_PASS="${OMADA_PASS:-}" \

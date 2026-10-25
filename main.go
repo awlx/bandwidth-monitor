@@ -24,6 +24,7 @@ import (
 	"bandwidth-monitor/httputil"
 	"bandwidth-monitor/latency"
 	"bandwidth-monitor/liveactivity"
+	"bandwidth-monitor/metrics"
 	"bandwidth-monitor/nextdns"
 	"bandwidth-monitor/omada"
 	"bandwidth-monitor/pihole"
@@ -374,6 +375,34 @@ func main() {
 	if liveActivityMgr != nil {
 		mux.HandleFunc("/api/liveactivity/register", handler.LiveActivityRegister(liveActivityMgr))
 	}
+
+	// Prometheus metrics (optional, enabled by default).
+	metricsEnabled, err := strconv.ParseBool(env("METRICS_ENABLED", "true"))
+	if err != nil {
+		log.Fatalf("METRICS_ENABLED: invalid value %q (expected true or false)", os.Getenv("METRICS_ENABLED"))
+	}
+	if metricsEnabled {
+		topN, err := strconv.Atoi(env("METRICS_TOP_N", strconv.Itoa(metrics.DefaultTopN)))
+		if err != nil || topN < 1 || topN > metrics.MaxTopN {
+			log.Fatalf("METRICS_TOP_N: invalid value %q (expected 1-%d)", os.Getenv("METRICS_TOP_N"), metrics.MaxTopN)
+		}
+		src := metrics.Sources{
+			Collector: statsCollector,
+			Talkers:   talkerTracker,
+			DNS:       dnsProvider,
+			Resolver:  dnsResolver,
+			WiFi:      wifiProvider,
+			Conntrack: conntrackTracker,
+			Latency:   latencyMonitor,
+			Speedtest: speedTester,
+			Topology:  topoScanner,
+		}
+		mux.HandleFunc("/metrics", metrics.Handler(src, metrics.Options{TopN: topN}))
+		log.Printf("Prometheus metrics: enabled on /metrics (top-N %d)", topN)
+	} else {
+		log.Println("Prometheus metrics: disabled")
+	}
+
 	staticSub, err := fs.Sub(staticFiles, "static")
 	if err != nil {
 		log.Fatalf("Failed to create sub filesystem: %v", err)

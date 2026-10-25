@@ -265,6 +265,7 @@ Useful common settings:
 | `LATENCY_MONITORING` | Set to `false` to disable latency monitoring |
 | `LATENCY_TARGETS` | Hosts probed by the latency monitor |
 | `SPEEDTEST_SERVER` | Speed test endpoint |
+| `METRICS_ENABLED`, `METRICS_TOP_N` | Prometheus `/metrics` endpoint and its top-N cap |
 
 See [Configuration](docs/configuration.md) for TLS, conntrack accounting,
 SPAN/mirror ports, VPN status files, and provider examples.
@@ -308,7 +309,8 @@ for endpoints and opt-out controls.
 
 Setup instructions are in [Integrations](docs/integrations.md). The dashboard
 also exposes a JSON and Server-Sent Events API documented in
-[API reference](docs/api.md).
+[API reference](docs/api.md), plus Prometheus metrics on `/metrics` with a
+ready-to-import [Grafana dashboard](grafana/README.md).
 
 ## Development
 
