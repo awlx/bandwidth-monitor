@@ -11,12 +11,10 @@ import (
 	"net/http"
 	"sort"
 	"sync"
-	"syscall"
 	"time"
 
-	"golang.org/x/sys/unix"
-
 	"bandwidth-monitor/httputil"
+	"bandwidth-monitor/netutil"
 )
 
 // Result holds the outcome of a single speed test run.
@@ -391,7 +389,8 @@ func detectInterfaceForIP(ip net.IP) string {
 
 // dialerFor returns a net.Dialer that, when iface is non-empty, binds every
 // outbound connection to that specific network interface via
-// SO_BINDTODEVICE. This forces egress traffic out that NIC. It relies on
+// SO_BINDTODEVICE on Linux (other platforms report the bind as unsupported).
+// This forces egress traffic out that NIC. It relies on
 // the host's own routing configuration to know how to reach the internet
 // via that interface (i.e. the interface must already have a working
 // default route / policy routing rule of its own, as is required for it to
@@ -404,19 +403,8 @@ func detectInterfaceForIP(ip net.IP) string {
 // test for that interface — a signal to fix the underlying multi-WAN
 // routing setup, not something this tool should paper over.
 func dialerFor(iface string) *net.Dialer {
-	d := &net.Dialer{Timeout: 10 * time.Second}
-	if iface == "" {
-		return d
-	}
-	d.Control = func(_, _ string, c syscall.RawConn) error {
-		var bindErr error
-		if ctrlErr := c.Control(func(fd uintptr) {
-			bindErr = unix.BindToDevice(int(fd), iface)
-		}); ctrlErr != nil {
-			return ctrlErr
-		}
-		return bindErr
-	}
+	d := netutil.DialerForInterface(iface)
+	d.Timeout = 10 * time.Second
 	return d
 }
 

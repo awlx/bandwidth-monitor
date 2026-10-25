@@ -1,18 +1,14 @@
 package collector
 
 import (
-	"log"
 	"net"
 	"os"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"bandwidth-monitor/poller"
-
-	vnl "github.com/vishvananda/netlink"
 )
 
 type InterfaceStat struct {
@@ -64,9 +60,7 @@ type Collector struct {
 	vpnStatusFiles map[string]string // iface name → sentinel file path
 	allowedIfaces  map[string]bool   // nil = all; non-nil = whitelist
 	wanIfaces      map[string]bool   // nil = auto-detect; non-nil = explicit WAN interfaces
-	nlHandle       *vnl.Handle       // persistent netlink handle
-	addrCache      map[int][]string  // cached addresses by link index
-	addrCacheTime  time.Time         // last address refresh
+	links          *linkSource       // OS-specific interface enumeration
 	span           *spanOverlay      // nil when SPAN mode is disabled
 	spanPrevRx     uint64
 	spanPrevTx     uint64
@@ -89,7 +83,7 @@ type rawStat struct {
 	ts        time.Time
 }
 
-// NewForTest returns a Collector pre-seeded with history and no netlink handle. Only for use
+// NewForTest returns a Collector pre-seeded with history and no link source. Only for use
 // in tests of packages that consume the collector (e.g. handler); never poll it.
 func NewForTest(history map[string][]HistoryPoint) *Collector {
 	if history == nil {
@@ -123,12 +117,6 @@ func NewWithInterval(vpnStatusFiles map[string]string, allowedIfaces []string, w
 			wanSet[name] = true
 		}
 	}
-	// Create a persistent netlink handle to avoid per-poll socket creation.
-	// Falls back to package-level functions if handle creation fails.
-	nlh, err := vnl.NewHandle(vnl.FAMILY_ALL)
-	if err != nil {
-		log.Printf("collector: failed to create persistent netlink handle: %v (will use per-call sockets)", err)
-	}
 	c := &Collector{
 		current:        make(map[string]*InterfaceStat),
 		previous:       make(map[string]*rawStat),
@@ -137,8 +125,7 @@ func NewWithInterval(vpnStatusFiles map[string]string, allowedIfaces []string, w
 		vpnStatusFiles: vpnStatusFiles,
 		allowedIfaces:  allowed,
 		wanIfaces:      wanSet,
-		nlHandle:       nlh,
-		addrCache:      make(map[int][]string),
+		links:          newLinkSource(),
 		pollInterval:   interval,
 		historyPruneAt: int(historyMaxAge/interval) + 1,
 	}
@@ -165,8 +152,8 @@ func (c *Collector) Stop() {
 	if c.span != nil {
 		c.span.stop()
 	}
-	if c.nlHandle != nil {
-		c.nlHandle.Close()
+	if c.links != nil {
+		c.links.close()
 	}
 }
 
@@ -292,80 +279,12 @@ type linkInfo struct {
 const addrCacheTTL = 10 * time.Second
 
 func (c *Collector) poll() {
-	var links []vnl.Link
-	var err error
-	if c.nlHandle != nil {
-		links, err = c.nlHandle.LinkList()
-	} else {
-		links, err = vnl.LinkList()
-	}
-	if err != nil {
-		log.Printf("collector: netlink LinkList: %v", err)
+	infos, ok := c.links.list()
+	if !ok {
 		return
 	}
-
-	// Refresh address cache every 10 seconds (addresses rarely change)
-	if time.Since(c.addrCacheTime) >= addrCacheTTL {
-		var allAddrs []vnl.Addr
-		if c.nlHandle != nil {
-			allAddrs, err = c.nlHandle.AddrList(nil, vnl.FAMILY_ALL)
-		} else {
-			allAddrs, err = vnl.AddrList(nil, vnl.FAMILY_ALL)
-		}
-		if err != nil {
-			log.Printf("collector: netlink AddrList: %v", err)
-		} else {
-			addrsByIndex := make(map[int][]string)
-			for _, a := range allAddrs {
-				addrsByIndex[a.LinkIndex] = append(addrsByIndex[a.LinkIndex], a.IPNet.String())
-			}
-			c.addrCache = addrsByIndex
-			c.addrCacheTime = time.Now()
-		}
-	}
-
-	// Build linkInfo map from netlink data
-	infos := make(map[string]*linkInfo, len(links))
-	for _, link := range links {
-		attrs := link.Attrs()
-		if attrs == nil {
-			continue
-		}
-		name := attrs.Name
-
-		li := &linkInfo{
-			name:      name,
-			operState: operStateStr(attrs.OperState),
-			encapType: attrs.EncapType,
-			addrs:     c.addrCache[attrs.Index],
-		}
-
-		// Link speed (Mbps) — read from sysfs. Returns 0 for virtual interfaces.
-		li.speed = readLinkSpeed(name)
-
-		// Extract IFLA_INFO_KIND via link type name
-		li.linkKind = link.Type()
-
-		// Get stats from IFLA_STATS64 (vishvananda populates attrs.Statistics)
-		if s := attrs.Statistics; s != nil {
-			li.stats = &rawStat{
-				rxBytes:   s.RxBytes,
-				txBytes:   s.TxBytes,
-				rxPackets: s.RxPackets,
-				txPackets: s.TxPackets,
-				rxErrors:  s.RxErrors,
-				txErrors:  s.TxErrors,
-				rxDropped: s.RxDropped,
-				txDropped: s.TxDropped,
-			}
-		} else {
-			li.stats = &rawStat{}
-		}
-
-		// Classify interface type
+	for _, li := range infos {
 		li.ifType = c.classifyLink(li)
-
-		infos[name] = li
 	}
 
 	// Read VPN status files outside the lock (file I/O)
@@ -508,7 +427,7 @@ func (c *Collector) poll() {
 	}
 }
 
-// classifyLink determines the interface category from netlink data.
+// classifyLink determines the interface category from OS link data.
 // Uses IFLA_INFO_KIND (linkKind), ARPHRD type (arphrd), and name-based
 // heuristics as fallback. Returns one of:
 // "physical", "vlan", "ppp", "vpn", "loopback".
@@ -521,20 +440,6 @@ func (c *Collector) classifyLink(li *linkInfo) string {
 	t := classifyLinkUncached(li)
 	c.ifaceTypeCache[li.name] = t
 	return t
-}
-
-// readLinkSpeed reads the negotiated link speed in Mbps from sysfs.
-// Returns 0 for virtual interfaces or if the file is unreadable.
-func readLinkSpeed(name string) int {
-	data, err := os.ReadFile("/sys/class/net/" + name + "/speed")
-	if err != nil {
-		return 0
-	}
-	v, err := strconv.Atoi(strings.TrimSpace(string(data)))
-	if err != nil || v < 0 {
-		return 0
-	}
-	return v
 }
 
 func classifyLinkUncached(li *linkInfo) string {
@@ -627,31 +532,6 @@ func IsWAN(iface *InterfaceStat) bool {
 	return false
 }
 
-// hasDefaultRoute reports whether the named interface carries an IPv4 default route.
-func hasDefaultRoute(ifaceName string) bool {
-	routes, err := vnl.RouteList(nil, vnl.FAMILY_V4)
-	if err != nil {
-		return false
-	}
-	for _, r := range routes {
-		// Default route: Dst is nil or 0.0.0.0/0
-		if r.Dst != nil {
-			ones, bits := r.Dst.Mask.Size()
-			if ones != 0 || bits == 0 {
-				continue
-			}
-		}
-		link, err := vnl.LinkByIndex(r.LinkIndex)
-		if err != nil {
-			continue
-		}
-		if link.Attrs().Name == ifaceName {
-			return true
-		}
-	}
-	return false
-}
-
 // isPublicIPv4 returns true when the CIDR string contains a public IPv4
 // address — i.e. not RFC1918, not link-local, not loopback, not unspecified.
 // IPv6 addresses always return false.
@@ -673,26 +553,6 @@ func isPublicIPv4(cidr string) bool {
 		return false
 	}
 	return true
-}
-
-// operStateStr converts a netlink OperState to a human-readable string.
-func operStateStr(state vnl.LinkOperState) string {
-	switch state {
-	case vnl.OperUp:
-		return "up"
-	case vnl.OperDown:
-		return "down"
-	case vnl.OperLowerLayerDown:
-		return "lowerlayerdown"
-	case vnl.OperTesting:
-		return "testing"
-	case vnl.OperDormant:
-		return "dormant"
-	case vnl.OperNotPresent:
-		return "notpresent"
-	default:
-		return "unknown"
-	}
 }
 
 // checkVPNRouting checks whether traffic is actively routed through a VPN interface

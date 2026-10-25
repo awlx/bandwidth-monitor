@@ -16,9 +16,6 @@ import (
 	"sync"
 	"time"
 
-	vnl "github.com/vishvananda/netlink"
-	"golang.zx2c4.com/wireguard/wgctrl"
-
 	"bandwidth-monitor/netutil"
 	"bandwidth-monitor/poller"
 	"bandwidth-monitor/resolver"
@@ -51,7 +48,7 @@ const (
 
 // Node represents a discovered network entity.
 type Node struct {
-	ID       string   `json:"id"`
+	ID          string   `json:"id"`
 	MAC         string   `json:"mac"`
 	IPs         []string `json:"ips"`
 	Hostname    string   `json:"hostname"`
@@ -138,8 +135,8 @@ func (s *Scanner) scan() {
 	selfNode := s.discoverSelf(nodeMap)
 	gwNode := s.discoverGateway(nodeMap, selfNode)
 	s.discoverWAN(nodeMap, linkSet, selfNode)
-	s.readNeighTable(nodeMap, vnl.FAMILY_V4, "arp")
-	s.readNeighTable(nodeMap, vnl.FAMILY_V6, "ndp")
+	s.readNeighTable(nodeMap, false, "arp")
+	s.readNeighTable(nodeMap, true, "ndp")
 	s.readLLDP(nodeMap, linkSet)
 	s.mergeWiFiController(nodeMap, linkSet)
 	s.resolveHostnames(nodeMap)
@@ -307,7 +304,7 @@ func (s *Scanner) discoverWANGateway(nodeMap map[string]*Node, linkSet map[strin
 	}
 
 	// Build link-index → name map for matching
-	ifaceNames := nlIfaceNames()
+	ifaceNames := ifaceIndexNames()
 	wanIndices := make(map[int]bool)
 	for idx, name := range ifaceNames {
 		if wanSet[name] {
@@ -316,18 +313,18 @@ func (s *Scanner) discoverWANGateway(nodeMap map[string]*Node, linkSet map[strin
 	}
 
 	var wanIDs []string
-	neighbors, err := vnl.NeighList(0, vnl.FAMILY_V4)
+	neighbors, err := listNeighbors(false)
 	if err != nil {
 		return nil
 	}
 
 	for _, n := range neighbors {
-		if !neighValid(n) || !wanIndices[n.LinkIndex] {
+		if !n.Valid || !wanIndices[n.LinkIndex] {
 			continue
 		}
 
 		ip := n.IP.String()
-		mac := strings.ToLower(n.HardwareAddr.String())
+		mac := strings.ToLower(n.MAC.String())
 		iface := ifaceNames[n.LinkIndex]
 		id := "wan-" + mac
 
@@ -394,37 +391,20 @@ func (s *Scanner) discoverWANGateway(nodeMap map[string]*Node, linkSet map[strin
 func (s *Scanner) discoverPPPWAN(nodeMap map[string]*Node, linkSet map[string]*Link, selfNode string, wanSet map[string]bool) []string {
 	var wanIDs []string
 
-	// Check routes for WAN-interface-specific peer IPs
-	routes, err := vnl.RouteList(nil, vnl.FAMILY_V4)
+	// Check default routes on WAN interfaces for point-to-point peer IPs
+	routes, err := defaultRoutePeers()
 	if err != nil {
 		return nil
 	}
-	ifaceNames := nlIfaceNames()
 
 	for _, r := range routes {
-		iface := ifaceNames[r.LinkIndex]
+		iface := r.Iface
 		if !wanSet[iface] {
 			continue
 		}
-		// Point-to-point default route: either Dst==nil or Dst==0.0.0.0/0
-		if r.Dst != nil {
-			ones, bits := r.Dst.Mask.Size()
-			if ones != 0 || bits == 0 {
-				continue
-			}
-		}
-		// For PPP: get the peer/remote IP from the interface addresses
-		link, err := vnl.LinkByIndex(r.LinkIndex)
-		if err != nil {
-			continue
-		}
-		addrs, err := vnl.AddrList(link, vnl.FAMILY_V4)
-		if err != nil {
-			continue
-		}
-		for _, addr := range addrs {
-			if addr.Peer != nil && addr.Peer.IP != nil && !addr.Peer.IP.IsUnspecified() {
-				peerIP := addr.Peer.IP.String()
+		for _, peer := range r.Peers {
+			if peer != nil && !peer.IsUnspecified() {
+				peerIP := peer.String()
 				id := "wan-ppp-" + iface
 				if _, exists := nodeMap[id]; exists {
 					continue
@@ -471,15 +451,9 @@ func (s *Scanner) discoverPPPWAN(nodeMap map[string]*Node, linkSet map[string]*L
 }
 
 func (s *Scanner) discoverWireGuard(nodeMap map[string]*Node, linkSet map[string]*Link, selfNode string, upstreamID string) {
-	client, err := wgctrl.New()
-	if err != nil {
+	devices, err := wireGuardDevices()
+	if err != nil || len(devices) == 0 {
 		return // WireGuard not available
-	}
-	defer client.Close()
-
-	devices, err := client.Devices()
-	if err != nil {
-		return
 	}
 
 	for _, dev := range devices {
@@ -488,7 +462,7 @@ func (s *Scanner) discoverWireGuard(nodeMap map[string]*Node, linkSet map[string
 				continue
 			}
 
-			epHost := peer.Endpoint.IP.String()
+			epHost := peer.Endpoint.String()
 			isFullTunnel := false
 			for _, aip := range peer.AllowedIPs {
 				ones, bits := aip.Mask.Size()
@@ -560,29 +534,7 @@ func humanBytes64(b int64) string {
 	}
 }
 
-// ── Netlink helpers ─────────────────────────────────────────────────────
-
-// defaultGatewayIP returns the IPv4 default gateway using netlink routes.
-func defaultGatewayIP() string {
-	routes, err := vnl.RouteList(nil, vnl.FAMILY_V4)
-	if err != nil {
-		return ""
-	}
-	for _, r := range routes {
-		if r.Dst == nil && r.Gw != nil {
-			return r.Gw.String()
-		}
-	}
-	for _, r := range routes {
-		if r.Dst != nil && r.Gw != nil {
-			ones, bits := r.Dst.Mask.Size()
-			if ones == 0 && bits > 0 {
-				return r.Gw.String()
-			}
-		}
-	}
-	return ""
-}
+// ── Neighbor helpers ─────────────────────────────────────────────────────
 
 // neighLookupMAC resolves an IP to its MAC via the kernel neighbor table.
 func neighLookupMAC(ipStr string) string {
@@ -590,17 +542,13 @@ func neighLookupMAC(ipStr string) string {
 	if target == nil {
 		return ""
 	}
-	family := vnl.FAMILY_V4
-	if target.To4() == nil {
-		family = vnl.FAMILY_V6
-	}
-	neighbors, err := vnl.NeighList(0, family)
+	neighbors, err := listNeighbors(target.To4() == nil)
 	if err != nil {
 		return ""
 	}
 	for _, n := range neighbors {
-		if n.IP.Equal(target) && len(n.HardwareAddr) > 0 {
-			mac := n.HardwareAddr.String()
+		if n.IP.Equal(target) && len(n.MAC) > 0 {
+			mac := n.MAC.String()
 			if mac != "00:00:00:00:00:00" {
 				return mac
 			}
@@ -609,94 +557,18 @@ func neighLookupMAC(ipStr string) string {
 	return ""
 }
 
-// nlIfaceNames builds a map from link index to interface name.
-func nlIfaceNames() map[int]string {
-	links, err := vnl.LinkList()
+// ── Neighbor table (ARP/NDP) ──────────────────────────────────
+
+func (s *Scanner) readNeighTable(nodeMap map[string]*Node, ipv6 bool, sourceTag string) {
+	ifaceNames := ifaceIndexNames()
+	neighbors, err := listNeighbors(ipv6)
 	if err != nil {
-		return nil
-	}
-	m := make(map[int]string, len(links))
-	for _, l := range links {
-		if a := l.Attrs(); a != nil {
-			m[a.Index] = a.Name
-		}
-	}
-	return m
-}
-
-// buildVLANParentMap returns a map from VLAN interface name to its parent
-// physical interface name (e.g. "vlan3000" -> "enp3s0").
-func buildVLANParentMap() map[string]string {
-	links, err := vnl.LinkList()
-	if err != nil {
-		return nil
-	}
-	idxToName := make(map[int]string, len(links))
-	for _, l := range links {
-		if a := l.Attrs(); a != nil {
-			idxToName[a.Index] = a.Name
-		}
-	}
-	m := make(map[string]string)
-	for _, l := range links {
-		a := l.Attrs()
-		if a == nil {
-			continue
-		}
-		if a.ParentIndex > 0 {
-			if parent, ok := idxToName[a.ParentIndex]; ok {
-				m[a.Name] = parent
-			}
-		}
-	}
-	return m
-}
-
-// neighValid returns true if a neighbor entry has a resolved hardware address.
-func neighValid(n vnl.Neigh) bool {
-	if len(n.HardwareAddr) == 0 {
-		return false
-	}
-	if n.HardwareAddr.String() == "00:00:00:00:00:00" {
-		return false
-	}
-	// NUD_FAILED=0x20, NUD_INCOMPLETE=0x01, NUD_NONE=0x00
-	if n.State == 0x20 || n.State == 0x00 || n.State == 0x01 {
-		return false
-	}
-	return true
-}
-
-// neighStateStr converts a netlink NUD state bitmask to a readable string.
-func neighStateStr(state int) string {
-	switch {
-	case state&0x80 != 0:
-		return "PERMANENT"
-	case state&0x02 != 0:
-		return "REACHABLE"
-	case state&0x04 != 0:
-		return "STALE"
-	case state&0x08 != 0:
-		return "DELAY"
-	case state&0x10 != 0:
-		return "PROBE"
-	default:
-		return ""
-	}
-}
-
-// ── Neighbor table (ARP/NDP via netlink) ──────────────────────────────────
-
-func (s *Scanner) readNeighTable(nodeMap map[string]*Node, family int, sourceTag string) {
-	ifaceNames := nlIfaceNames()
-	neighbors, err := vnl.NeighList(0, family)
-	if err != nil {
-		log.Printf("topology: netlink NeighList %s: %v", sourceTag, err)
+		log.Printf("topology: neighbor list %s: %v", sourceTag, err)
 		return
 	}
 
 	for _, n := range neighbors {
-		if !neighValid(n) {
+		if !n.Valid {
 			continue
 		}
 		ip := n.IP.String()
@@ -704,13 +576,13 @@ func (s *Scanner) readNeighTable(nodeMap map[string]*Node, family int, sourceTag
 			continue
 		}
 
-		mac := strings.ToLower(n.HardwareAddr.String())
+		mac := strings.ToLower(n.MAC.String())
 		// Skip if this MAC is already tracked as a WAN gateway
 		if _, isWAN := nodeMap["wan-"+mac]; isWAN {
 			continue
 		}
 		iface := ifaceNames[n.LinkIndex]
-		state := neighStateStr(n.State)
+		state := n.State
 
 		if existing, ok := nodeMap[mac]; ok {
 			if !slices.Contains(existing.IPs, ip) {
@@ -769,16 +641,16 @@ func (s *Scanner) readLLDP(nodeMap map[string]*Node, linkSet map[string]*Link) {
 
 func (s *Scanner) parseLLDPCtlKeyValue(data string, nodeMap map[string]*Node, linkSet map[string]*Link) {
 	type neighborInfo struct {
-		localIface  string
-		chassisMAC  string
-		portID      string
-		portDesc    string
-		sysName     string
-		sysDesc     string
-		mgmtIP      string
-		capBridge   bool
-		capRouter   bool
-		capWLAN     bool
+		localIface string
+		chassisMAC string
+		portID     string
+		portDesc   string
+		sysName    string
+		sysDesc    string
+		mgmtIP     string
+		capBridge  bool
+		capRouter  bool
+		capWLAN    bool
 	}
 
 	neighbors := make(map[string]*neighborInfo)
@@ -1010,7 +882,7 @@ func (s *Scanner) mergeWiFiController(nodeMap map[string]*Node, linkSet map[stri
 	// can resolve uplink chains.  The controller sometimes reports an AP
 	// as a switch's uplink when they share a cable (daisy-chain).  We walk
 	// the chain to find the real infrastructure parent (switch or gateway).
-	uplinkOf := make(map[string]string) // MAC -> uplink MAC
+	uplinkOf := make(map[string]string)   // MAC -> uplink MAC
 	deviceType := make(map[string]string) // MAC -> "ap"/"switch"
 	for _, ap := range summary.APs {
 		mac := strings.ToLower(ap.MAC)

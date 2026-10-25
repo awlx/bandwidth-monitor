@@ -1,0 +1,2 @@
+bandwidth_monitor:/etc/rc.conf.d/bandwidth_monitor
+env:/usr/local/etc/bandwidth-monitor/env

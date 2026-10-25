@@ -1,0 +1,8 @@
+Web dashboard for real-time per-interface bandwidth, top talkers
+(BPF capture), pf state table summary, latency probes and network
+topology. Exposes optional Prometheus metrics on /metrics.
+
+The plugin only manages configuration and the service; the
+bandwidth-monitor binary is installed separately (see README.md).
+
+WWW: https://github.com/awlx/bandwidth-monitor

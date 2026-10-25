@@ -1,0 +1,48 @@
+#!/bin/sh
+
+# PROVIDE: bandwidth_monitor
+# REQUIRE: LOGIN NETWORKING
+# KEYWORD: shutdown
+#
+# Add the following to /etc/rc.conf (or /etc/rc.conf.d/bandwidth_monitor)
+# to enable the service:
+#
+# bandwidth_monitor_enable (bool):   Set to "YES" to enable. Default "NO".
+# bandwidth_monitor_env_file (path): Runtime configuration (KEY=value lines,
+#                                    see env.example).
+#                                    Default /usr/local/etc/bandwidth-monitor/env
+# bandwidth_monitor_dir (path):      Working/data directory.
+#                                    Default /var/db/bandwidth-monitor
+
+. /etc/rc.subr
+
+name=bandwidth_monitor
+rcvar=bandwidth_monitor_enable
+
+load_rc_config $name
+
+: ${bandwidth_monitor_enable:="NO"}
+: ${bandwidth_monitor_env_file:="/usr/local/etc/bandwidth-monitor/env"}
+: ${bandwidth_monitor_dir:="/var/db/bandwidth-monitor"}
+: ${bandwidth_monitor_logfile:="/var/log/bandwidth-monitor.log"}
+
+pidfile="/var/run/${name}.pid"
+child_pidfile="/var/run/${name}_child.pid"
+bandwidth_monitor_bin="/usr/local/bin/bandwidth-monitor"
+procname="/usr/sbin/daemon"
+command="/usr/sbin/daemon"
+command_args="-r -R 5 -P ${pidfile} -p ${child_pidfile} -o ${bandwidth_monitor_logfile} -t ${name} ${bandwidth_monitor_bin}"
+required_files="${bandwidth_monitor_bin}"
+bandwidth_monitor_chdir="${bandwidth_monitor_dir}"
+
+start_precmd="${name}_prestart"
+
+bandwidth_monitor_prestart()
+{
+	if [ ! -r "${bandwidth_monitor_env_file}" ]; then
+		warn "${bandwidth_monitor_env_file} not found; using defaults"
+	fi
+	install -d -m 0750 "${bandwidth_monitor_dir}"
+}
+
+run_rc_command "$1"

@@ -1,6 +1,7 @@
 # Installation
 
-The Bandwidth Monitor daemon supports Linux. The standalone `bandwidth-top`
+The Bandwidth Monitor daemon supports Linux and FreeBSD, including OPNsense.
+The standalone `bandwidth-top`
 terminal viewer supports Linux and macOS. They are built and packaged
 independently; neither package requires the other.
 
@@ -17,11 +18,13 @@ project package repositories provide:
 | `.ipk` | OpenWrt 23.05 targets |
 | `.apk` | OpenWrt snapshot targets |
 | `.tar.gz` | Standalone macOS `bandwidth-top` on amd64 or arm64 |
+| `.tar.gz` | FreeBSD and OPNsense `bandwidth-monitor` daemon on amd64 or arm64 |
 | Nix flake | NixOS and Nix on Linux |
 
 Linux package formats have a `bandwidth-monitor` daemon package and a separate
 `bandwidth-top` package. macOS archives contain only `bandwidth-top` and the
-license, with a matching `.sha256` checksum.
+license, with a matching `.sha256` checksum. FreeBSD archives contain the
+daemon, an rc.d script, a sample configuration, and the license.
 
 ## Debian and Ubuntu
 
@@ -143,6 +146,55 @@ scp GeoLite2-Country.mmdb GeoLite2-ASN.mmdb root@router:/etc/bandwidth-monitor/
 
 Then set `GEO_CITY` and `GEO_ASN` to those paths in
 `/etc/bandwidth-monitor/env`.
+
+## FreeBSD and OPNsense
+
+The daemon runs natively on FreeBSD 14 and on OPNsense, which is based on it.
+Release archives are rooted at `/` and install:
+
+| Path | Contents |
+|---|---|
+| `/usr/local/bin/bandwidth-monitor` | Daemon |
+| `/usr/local/etc/rc.d/bandwidth_monitor` | rc.d service script |
+| `/usr/local/etc/bandwidth-monitor/env.sample` | Copy of `env.example` |
+
+```sh
+fetch https://github.com/awlx/bandwidth-monitor/releases/download/vX.Y.Z/bandwidth-monitor_X.Y.Z_freebsd_amd64.tar.gz
+tar -xzf bandwidth-monitor_X.Y.Z_freebsd_amd64.tar.gz -C /
+cp /usr/local/etc/bandwidth-monitor/env.sample /usr/local/etc/bandwidth-monitor/env
+vi /usr/local/etc/bandwidth-monitor/env
+sysrc bandwidth_monitor_enable=YES
+service bandwidth_monitor start
+```
+
+The service runs as root under `daemon(8)`, which restarts the daemon if it
+exits. It logs to `/var/log/bandwidth-monitor.log` and keeps data in
+`/var/db/bandwidth-monitor`. The rc.conf variables `bandwidth_monitor_env_file`,
+`bandwidth_monitor_dir`, and `bandwidth_monitor_logfile` override those
+paths. Use device names such as `igb0`, `vtnet1`, `vlan10`, `pppoe0`, or `wg0`
+in `INTERFACES` and `WAN_INTERFACE`, not OPNsense interface descriptions.
+
+FreeBSD equivalents of the Linux data sources:
+
+| Feature | Linux | FreeBSD |
+|---|---|---|
+| Interface counters, state, and speed | netlink | routing socket (`if_data`) |
+| Top talkers and SPAN capture | `AF_PACKET` | BPF (`/dev/bpf`) |
+| Connection tracking | nf_conntrack netlink | pf state table (`pfctl -s states -v`, `pfctl -s memory`) |
+| Topology neighbors | netlink | `arp -an`, `ndp -an`, `ifconfig` |
+| WireGuard peers | wgctrl | `wg show` (when `wireguard-tools` is installed) |
+| Uptime, load, and processes | `/proc` | `sysctl` |
+
+Connection tracking requires pf (the default on OPNsense and pfSense). On
+FreeBSD hosts without pf, the connection panel reports conntrack as
+unavailable and the rest of the dashboard keeps working. NAT flows each create
+two pf states, so the total state count can exceed the deduplicated flow list.
+
+An OPNsense plugin skeleton that manages the service and its configuration
+from the web UI is in
+[`packaging/opnsense`](../packaging/opnsense/net-mgmt/bandwidth-monitor/README.md).
+It is not yet published as an OPNsense community plugin. pfSense uses the same
+FreeBSD binary and rc.d script but has no plugin.
 
 ## Nix
 

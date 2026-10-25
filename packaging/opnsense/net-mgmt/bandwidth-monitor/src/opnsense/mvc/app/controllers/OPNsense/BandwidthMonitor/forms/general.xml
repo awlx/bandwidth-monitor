@@ -1,0 +1,38 @@
+<form>
+  <field>
+    <id>general.enabled</id>
+    <label>Enabled</label>
+    <type>checkbox</type>
+    <help>Run the bandwidth-monitor daemon.</help>
+  </field>
+  <field>
+    <id>general.listen</id>
+    <label>Listen address</label>
+    <type>text</type>
+    <help>LISTEN: comma-separated host:port list, e.g. 127.0.0.1:8080 or [::1]:8080. Avoid exposing the dashboard on WAN.</help>
+  </field>
+  <field>
+    <id>general.interfaces</id>
+    <label>Interfaces</label>
+    <type>text</type>
+    <help>INTERFACES: comma-separated device names to show (e.g. igb0,igb1,wg0). Empty shows all.</help>
+  </field>
+  <field>
+    <id>general.waninterface</id>
+    <label>WAN device</label>
+    <type>text</type>
+    <help>WAN_INTERFACE: device name of the WAN (e.g. igb0 or pppoe0). Empty auto-detects via the default route.</help>
+  </field>
+  <field>
+    <id>general.localnets</id>
+    <label>Local networks</label>
+    <type>text</type>
+    <help>LOCAL_NETS: comma-separated CIDRs used to classify top talkers as local.</help>
+  </field>
+  <field>
+    <id>general.metrics</id>
+    <label>Prometheus metrics</label>
+    <type>checkbox</type>
+    <help>METRICS_ENABLED: expose /metrics.</help>
+  </field>
+</form>

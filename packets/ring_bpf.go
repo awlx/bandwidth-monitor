@@ -1,4 +1,4 @@
-//go:build darwin
+//go:build darwin || freebsd
 
 package packets
 
@@ -19,7 +19,15 @@ const (
 	bpfRequestedBuffer   = 1 << 20
 	bpfMaximumBuffer     = 16 << 20
 	bpfReadTimeoutMillis = 100
-	minBPFHeaderLen      = 18
+)
+
+// struct bpf_hdr differs between BSDs (Darwin uses a 32-bit timeval, FreeBSD
+// a native one), so the field offsets come from the OS-specific unix.BpfHdr.
+const (
+	bpfCaplenOffset  = int(unsafe.Offsetof(unix.BpfHdr{}.Caplen))
+	bpfDatalenOffset = int(unsafe.Offsetof(unix.BpfHdr{}.Datalen))
+	bpfHdrlenOffset  = int(unsafe.Offsetof(unix.BpfHdr{}.Hdrlen))
+	minBPFHeaderLen  = bpfHdrlenOffset + 2
 )
 
 type bpfSystem struct {
@@ -44,12 +52,13 @@ var nativeBPFSystem = bpfSystem{
 	ioctlNoArg:         ioctlWithoutArgument,
 }
 
-// Ring is a Berkeley Packet Filter capture buffer on Darwin.
+// Ring is a Berkeley Packet Filter capture buffer on Darwin and FreeBSD.
 type Ring struct {
 	fd       int
 	buffer   []byte
 	linkType int
 	system   bpfSystem
+	lastStat bpfStat
 }
 
 // NewRing opens an available BPF device and binds it to dev.
@@ -61,10 +70,10 @@ func NewRing(dev string, promisc bool) (*Ring, error) {
 	if iface.Flags&net.FlagUp == 0 {
 		return nil, fmt.Errorf("BPF interface %q is down", dev)
 	}
-	return newDarwinRing(iface.Name, promisc, nativeBPFSystem)
+	return newBPFRing(iface.Name, promisc, nativeBPFSystem)
 }
 
-func newDarwinRing(dev string, promisc bool, system bpfSystem) (_ *Ring, err error) {
+func newBPFRing(dev string, promisc bool, system bpfSystem) (_ *Ring, err error) {
 	fd, err := openBPFDevice(system.open)
 	if err != nil {
 		return nil, err
@@ -101,14 +110,14 @@ func newDarwinRing(dev string, promisc bool, system bpfSystem) (_ *Ring, err err
 	if err != nil {
 		return nil, fmt.Errorf("read BPF link type: %w", err)
 	}
-	if !supportedDarwinLinkType(linkType) {
+	if !supportedBPFLinkType(linkType) {
 		return nil, fmt.Errorf(
 			"unsupported BPF link type %d (supported: Ethernet, null/loopback, raw IP)",
 			linkType,
 		)
 	}
-	if filter := filterForDarwinLinkType(linkType); filter != nil {
-		if err = applyDarwinBPFFilter(fd, filter, system.ioctlPtr); err != nil {
+	if filter := filterForBPFLinkType(linkType); filter != nil {
+		if err = applyBPFProgram(fd, filter, system.ioctlPtr); err != nil {
 			return nil, fmt.Errorf("install BPF IP filter: %w", err)
 		}
 	}
@@ -145,7 +154,7 @@ func openBPFDevice(open func(string, int, uint32) (int, error)) (int, error) {
 			continue
 		case errors.Is(err, unix.EACCES), errors.Is(err, unix.EPERM):
 			return -1, fmt.Errorf(
-				"open BPF device: %w (macOS typically requires root or access to /dev/bpf*)",
+				"open BPF device: %w (requires root or read/write access to /dev/bpf*)",
 				err,
 			)
 		default:
@@ -175,7 +184,7 @@ func bindBPFInterface(
 	return nil
 }
 
-func supportedDarwinLinkType(linkType int) bool {
+func supportedBPFLinkType(linkType int) bool {
 	switch linkType {
 	case unix.DLT_EN10MB, unix.DLT_NULL, unix.DLT_LOOP, unix.DLT_RAW:
 		return true
@@ -184,7 +193,7 @@ func supportedDarwinLinkType(linkType int) bool {
 	}
 }
 
-func filterForDarwinLinkType(linkType int) []bpf.Instruction {
+func filterForBPFLinkType(linkType int) []bpf.Instruction {
 	switch linkType {
 	case unix.DLT_EN10MB:
 		return AnyIpFilter
@@ -195,7 +204,7 @@ func filterForDarwinLinkType(linkType int) []bpf.Instruction {
 	}
 }
 
-func applyDarwinBPFFilter(
+func applyBPFProgram(
 	fd int,
 	instructions []bpf.Instruction,
 	ioctl func(int, uint, unsafe.Pointer) error,
@@ -255,12 +264,33 @@ func (r *Ring) Close() {
 	r.buffer = nil
 }
 
-// Stats is not implemented for the Darwin BPF backend.
-func (r *Ring) Stats() (RingStats, error) {
-	return RingStats{}, ErrStatsUnsupported
+// bpfStat mirrors struct bpf_stat, identical on Darwin and FreeBSD.
+type bpfStat struct {
+	Recv uint32
+	Drop uint32
 }
 
-// IsL3 reports true because the Darwin backend normalizes supported link-layer
+// Stats returns packets received and dropped by the kernel since the
+// previous call. BIOCGSTATS counters are cumulative and 32-bit, so the
+// delta is computed here (modulo 2^32) to match the Linux reset-on-read
+// semantics.
+func (r *Ring) Stats() (RingStats, error) {
+	if r.fd < 0 {
+		return RingStats{}, fmt.Errorf("ring: BIOCGSTATS: ring closed")
+	}
+	var st bpfStat
+	if err := r.system.ioctlPtr(r.fd, unix.BIOCGSTATS, unsafe.Pointer(&st)); err != nil {
+		return RingStats{}, fmt.Errorf("ring: BIOCGSTATS: %w", err)
+	}
+	delta := RingStats{
+		Packets: uint64(st.Recv - r.lastStat.Recv),
+		Drops:   uint64(st.Drop - r.lastStat.Drop),
+	}
+	r.lastStat = st
+	return delta, nil
+}
+
+// IsL3 reports true because the BPF backend normalizes supported link-layer
 // records to raw IPv4 or IPv6 before invoking PacketHandler.
 func (r *Ring) IsL3() bool {
 	return true
@@ -314,10 +344,10 @@ func parseBPFRecords(data []byte, linkType int, handler PacketHandler) (int, err
 			return accepted, fmt.Errorf("truncated BPF header at offset %d", offset)
 		}
 		header := data[offset:]
-		capturedLength := binary.NativeEndian.Uint32(header[8:12])
-		wireLength := binary.NativeEndian.Uint32(header[12:16])
-		headerLength := binary.NativeEndian.Uint16(header[16:18])
-		if headerLength < minBPFHeaderLen {
+		capturedLength := binary.NativeEndian.Uint32(header[bpfCaplenOffset:])
+		wireLength := binary.NativeEndian.Uint32(header[bpfDatalenOffset:])
+		headerLength := binary.NativeEndian.Uint16(header[bpfHdrlenOffset:])
+		if int(headerLength) < minBPFHeaderLen {
 			return accepted, fmt.Errorf("invalid BPF header length %d at offset %d", headerLength, offset)
 		}
 		if wireLength < capturedLength {
@@ -331,7 +361,7 @@ func parseBPFRecords(data []byte, linkType int, handler PacketHandler) (int, err
 			return accepted, fmt.Errorf("truncated BPF record at offset %d", offset)
 		}
 		recordEnd := offset + int(recordLength)
-		payload, isIP, err := darwinIPPayload(data[offset+int(headerLength):recordEnd], linkType)
+		payload, isIP, err := bpfIPPayload(data[offset+int(headerLength):recordEnd], linkType)
 		if err != nil {
 			return accepted, fmt.Errorf("invalid BPF payload at offset %d: %w", offset, err)
 		}
@@ -361,7 +391,7 @@ func bpfWordAlign(length int) int {
 	return (length + alignment - 1) &^ (alignment - 1)
 }
 
-func darwinIPPayload(frame []byte, linkType int) ([]byte, bool, error) {
+func bpfIPPayload(frame []byte, linkType int) ([]byte, bool, error) {
 	switch linkType {
 	case unix.DLT_EN10MB:
 		return ethernetIPPayload(frame)
