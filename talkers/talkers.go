@@ -213,6 +213,14 @@ type Tracker struct {
 	directRateRingIdx int
 	directRxBytes     uint64
 	directTxBytes     uint64
+
+	// Running sums over the closed buckets in t.buckets, maintained by
+	// appendClosedBucket/expireBucket so 24h readers scan one map instead
+	// of every per-minute bucket. Closed buckets are immutable, so the
+	// sums stay exact. Protected by mu.
+	closedHosts map[string]*hostAccum
+	closedProto map[string]uint64
+	closedIPVer map[string]uint64
 }
 
 func New(devices []string, promiscuous bool, localNets []*net.IPNet, geoDB *geoip.DB, dns *resolver.Resolver) *Tracker {
@@ -461,29 +469,7 @@ func (t *Tracker) TopClientsByVolume(n int) []TalkerStat {
 func (t *Tracker) topByVolume(n int, scope talkerScope) []TalkerStat {
 	// Step 1: Copy raw data under lock
 	t.mu.RLock()
-	totals := make(map[string]*TalkerStat)
-	for _, b := range t.buckets {
-		for ip, acc := range b.hosts {
-			if _, ok := totals[ip]; !ok {
-				totals[ip] = &TalkerStat{IP: ip}
-			}
-			totals[ip].TotalBytes += acc.bytes
-			totals[ip].RxBytes += acc.rxBytes
-			totals[ip].TxBytes += acc.txBytes
-			totals[ip].Packets += acc.packets
-		}
-	}
-	if t.current != nil {
-		for ip, acc := range t.current.hosts {
-			if _, ok := totals[ip]; !ok {
-				totals[ip] = &TalkerStat{IP: ip}
-			}
-			totals[ip].TotalBytes += acc.bytes
-			totals[ip].RxBytes += acc.rxBytes
-			totals[ip].TxBytes += acc.txBytes
-			totals[ip].Packets += acc.packets
-		}
-	}
+	totals := t.volumeTotalsLocked()
 	t.mu.RUnlock()
 
 	// Step 2: Sort + trim before enrichment to avoid unnecessary work
@@ -547,29 +533,7 @@ func (t *Tracker) TopByCountry(cc string, n int) []TalkerStat {
 
 	// Step 1: Copy raw per-IP totals under lock (same source as TopByVolume).
 	t.mu.RLock()
-	totals := make(map[string]*TalkerStat)
-	for _, b := range t.buckets {
-		for ip, acc := range b.hosts {
-			if _, ok := totals[ip]; !ok {
-				totals[ip] = &TalkerStat{IP: ip}
-			}
-			totals[ip].TotalBytes += acc.bytes
-			totals[ip].RxBytes += acc.rxBytes
-			totals[ip].TxBytes += acc.txBytes
-			totals[ip].Packets += acc.packets
-		}
-	}
-	if t.current != nil {
-		for ip, acc := range t.current.hosts {
-			if _, ok := totals[ip]; !ok {
-				totals[ip] = &TalkerStat{IP: ip}
-			}
-			totals[ip].TotalBytes += acc.bytes
-			totals[ip].RxBytes += acc.rxBytes
-			totals[ip].TxBytes += acc.txBytes
-			totals[ip].Packets += acc.packets
-		}
-	}
+	totals := t.volumeTotalsLocked()
 	t.mu.RUnlock()
 
 	// Step 2: GeoIP lookup outside the lock to find IPs matching cc. Every
@@ -1002,54 +966,9 @@ func (t *Tracker) captureDevice(device string) error {
 		// IP parsing, string conversion, and classification happen here.
 		batch = batch[:0]
 		_, err := ring.ReadBlock(func(pkt []byte, wireLen uint32) {
-			ipPacket := packets.ParseIPPacket(pkt, true)
-			if ipPacket.Version == 0 || ipPacket.IsTunnel && !t.direct {
-				return
+			if p, ok := t.parsePacket(pkt, wireLen, endpointCache); ok {
+				batch = append(batch, p)
 			}
-			srcIP := ipPacket.SrcIP
-			dstIP := ipPacket.DstIP
-			src := t.classifyEndpoint(srcIP, endpointCache)
-			dst := t.classifyEndpoint(dstIP, endpointCache)
-
-			ipVersion := "IPv4"
-			if ipPacket.Version != 4 {
-				ipVersion = "IPv6"
-			}
-			var proto string
-			switch ipPacket.Proto {
-			case unix.IPPROTO_TCP:
-				proto = "TCP"
-			case unix.IPPROTO_UDP:
-				proto = "UDP"
-			case unix.IPPROTO_ICMP, unix.IPPROTO_ICMPV6:
-				proto = "ICMP"
-			default:
-				proto = "Other"
-			}
-			var transport directTransport
-			if t.direct {
-				transport = parseDirectTransport(pkt)
-			}
-
-			batch = append(batch, parsedPkt{
-				srcStr:            src.str,
-				dstStr:            dst.str,
-				srcLocal:          src.local,
-				dstLocal:          dst.local,
-				srcSelf:           src.self,
-				dstSelf:           dst.self,
-				srcLoopLL:         src.loopLL,
-				dstLoopLL:         dst.loopLL,
-				srcEndpoint:       src,
-				dstEndpoint:       dst,
-				wireLen:           uint64(wireLen),
-				proto:             proto,
-				ipVersion:         ipVersion,
-				srcPort:           transport.srcPort,
-				dstPort:           transport.dstPort,
-				hasPorts:          transport.hasPorts,
-				transportProtocol: transport.protocol,
-			})
 		}, 100)
 		if err != nil {
 			return err
@@ -1062,29 +981,85 @@ func (t *Tracker) captureDevice(device string) error {
 		// Phase 2: Apply all parsed packets under ONE lock acquisition.
 		// This is ~170 map updates per lock instead of 1, eliminating
 		// lock contention with SSE readers.
-		t.mu.Lock()
-		if t.current == nil {
-			t.mu.Unlock()
-			continue
-		}
-		rSlot := t.rateRing[t.rateRingIdx]
-		var directSlot *directRateSlot
+		t.applyBatch(batch)
+	}
+}
+
+// parsePacket parses and classifies one captured IP packet without holding
+// t.mu. The endpoint cache is owned by the calling capture goroutine.
+func (t *Tracker) parsePacket(pkt []byte, wireLen uint32, endpointCache map[[16]byte]*packetEndpoint) (parsedPkt, bool) {
+	ipPacket := packets.ParseIPPacket(pkt, true)
+	if ipPacket.Version == 0 || ipPacket.IsTunnel && !t.direct {
+		return parsedPkt{}, false
+	}
+	src := t.classifyEndpoint(ipPacket.SrcIP, endpointCache)
+	dst := t.classifyEndpoint(ipPacket.DstIP, endpointCache)
+
+	ipVersion := "IPv4"
+	if ipPacket.Version != 4 {
+		ipVersion = "IPv6"
+	}
+	var proto string
+	switch ipPacket.Proto {
+	case unix.IPPROTO_TCP:
+		proto = "TCP"
+	case unix.IPPROTO_UDP:
+		proto = "UDP"
+	case unix.IPPROTO_ICMP, unix.IPPROTO_ICMPV6:
+		proto = "ICMP"
+	default:
+		proto = "Other"
+	}
+	var transport directTransport
+	if t.direct {
+		transport = parseDirectTransport(pkt)
+	}
+
+	return parsedPkt{
+		srcStr:            src.str,
+		dstStr:            dst.str,
+		srcLocal:          src.local,
+		dstLocal:          dst.local,
+		srcSelf:           src.self,
+		dstSelf:           dst.self,
+		srcLoopLL:         src.loopLL,
+		dstLoopLL:         dst.loopLL,
+		srcEndpoint:       src,
+		dstEndpoint:       dst,
+		wireLen:           uint64(wireLen),
+		proto:             proto,
+		ipVersion:         ipVersion,
+		srcPort:           transport.srcPort,
+		dstPort:           transport.dstPort,
+		hasPorts:          transport.hasPorts,
+		transportProtocol: transport.protocol,
+	}, true
+}
+
+// applyBatch folds a batch of parsed packets into the current bucket and
+// rate slots under a single lock acquisition.
+func (t *Tracker) applyBatch(batch []parsedPkt) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.current == nil {
+		return
+	}
+	rSlot := t.rateRing[t.rateRingIdx]
+	var directSlot *directRateSlot
+	if t.direct {
+		directSlot = t.directRateRing[t.directRateRingIdx]
+	}
+	for i := range batch {
+		p := &batch[i]
+		t.accountPacket(p, t.current, rSlot)
+		t.accountDirection(p, t.current, rSlot)
 		if t.direct {
-			directSlot = t.directRateRing[t.directRateRingIdx]
-		}
-		for i := range batch {
-			p := &batch[i]
-			t.accountPacket(p, t.current, rSlot)
-			t.accountDirection(p, t.current, rSlot)
-			if t.direct {
-				if t.accountDirectPeer(p, directSlot) {
-					t.accountDirectFlow(p, directSlot)
-				}
+			if t.accountDirectPeer(p, directSlot) {
+				t.accountDirectFlow(p, directSlot)
 			}
-			t.current.protoBytes[p.proto] += p.wireLen
-			t.current.ipVerBytes[p.ipVersion] += p.wireLen
 		}
-		t.mu.Unlock()
+		t.current.protoBytes[p.proto] += p.wireLen
+		t.current.ipVerBytes[p.ipVersion] += p.wireLen
 	}
 }
 
@@ -1358,38 +1333,133 @@ func (t *Tracker) rotateBuckets() {
 	for {
 		select {
 		case <-ticker.C:
-			t.mu.Lock()
 			now := time.Now()
-			if t.current != nil {
-				t.buckets = append(t.buckets, t.current)
-			}
-			cutoff := now.Add(-maxAge)
-			idx := 0
-			for idx < len(t.buckets) && t.buckets[idx].timestamp.Before(cutoff) {
-				idx++
-			}
-			if idx > 0 {
-				// Nil out old entries so the backing array doesn't
-				// prevent GC of expired bucket data. Without this,
-				// the pointers stay alive until append reallocates
-				// the backing array — leaking up to 24h of buckets.
-				for i := 0; i < idx; i++ {
-					t.buckets[i] = nil
-				}
-				t.buckets = t.buckets[idx:]
-			}
-			t.current = &bucket{
+			next := &bucket{
 				timestamp:  now.Truncate(bucketSize),
 				hosts:      make(map[string]*hostAccum),
 				protoBytes: make(map[string]uint64),
 				ipVerBytes: make(map[string]uint64),
 				pairs:      make(map[string]map[string]*hostAccum),
 			}
+			t.mu.Lock()
+			t.rotateBucketLocked(now, next)
 			t.mu.Unlock()
 		case <-t.stopCh:
 			return
 		}
 	}
+}
+
+// rotateBucketLocked closes the current bucket, expires buckets older than
+// maxAge relative to now and installs next as the current bucket.
+// Must be called with t.mu held.
+func (t *Tracker) rotateBucketLocked(now time.Time, next *bucket) {
+	if t.current != nil {
+		t.appendClosedBucket(t.current)
+	}
+	cutoff := now.Add(-maxAge)
+	idx := 0
+	for idx < len(t.buckets) && t.buckets[idx].timestamp.Before(cutoff) {
+		idx++
+	}
+	if idx > 0 {
+		// Nil out old entries so the backing array doesn't
+		// prevent GC of expired bucket data. Without this,
+		// the pointers stay alive until append reallocates
+		// the backing array — leaking up to 24h of buckets.
+		for i := 0; i < idx; i++ {
+			t.expireBucket(t.buckets[i])
+			t.buckets[i] = nil
+		}
+		t.buckets = t.buckets[idx:]
+	}
+	t.current = next
+}
+
+// appendClosedBucket adds a finished bucket to the 24h history and folds it
+// into the running totals. Must be called with t.mu held.
+func (t *Tracker) appendClosedBucket(b *bucket) {
+	t.buckets = append(t.buckets, b)
+	if t.closedHosts == nil {
+		t.closedHosts = make(map[string]*hostAccum, len(b.hosts))
+		t.closedProto = make(map[string]uint64)
+		t.closedIPVer = make(map[string]uint64)
+	}
+	for ip, acc := range b.hosts {
+		tot := t.closedHosts[ip]
+		if tot == nil {
+			tot = &hostAccum{}
+			t.closedHosts[ip] = tot
+		}
+		tot.bytes += acc.bytes
+		tot.rxBytes += acc.rxBytes
+		tot.txBytes += acc.txBytes
+		tot.packets += acc.packets
+	}
+	for k, v := range b.protoBytes {
+		t.closedProto[k] += v
+	}
+	for k, v := range b.ipVerBytes {
+		t.closedIPVer[k] += v
+	}
+}
+
+// expireBucket removes a bucket leaving the 24h window from the running
+// totals. Must be called with t.mu held.
+func (t *Tracker) expireBucket(b *bucket) {
+	for ip, acc := range b.hosts {
+		tot := t.closedHosts[ip]
+		if tot == nil {
+			continue
+		}
+		tot.bytes -= acc.bytes
+		tot.rxBytes -= acc.rxBytes
+		tot.txBytes -= acc.txBytes
+		tot.packets -= acc.packets
+		if tot.packets == 0 {
+			delete(t.closedHosts, ip)
+		}
+	}
+	for k, v := range b.protoBytes {
+		if t.closedProto[k] -= v; t.closedProto[k] == 0 {
+			delete(t.closedProto, k)
+		}
+	}
+	for k, v := range b.ipVerBytes {
+		if t.closedIPVer[k] -= v; t.closedIPVer[k] == 0 {
+			delete(t.closedIPVer, k)
+		}
+	}
+}
+
+// volumeTotalsLocked returns per-IP 24h totals (closed buckets plus the
+// current one). Must be called with t.mu held (at least RLock).
+func (t *Tracker) volumeTotalsLocked() map[string]*TalkerStat {
+	size := len(t.closedHosts)
+	if t.current != nil && len(t.current.hosts) > size {
+		size = len(t.current.hosts)
+	}
+	totals := make(map[string]*TalkerStat, size)
+	add := func(ip string, acc *hostAccum) {
+		s := totals[ip]
+		if s == nil {
+			s = &TalkerStat{IP: ip}
+			totals[ip] = s
+		}
+		s.TotalBytes += acc.bytes
+		s.RxBytes += acc.rxBytes
+		s.TxBytes += acc.txBytes
+		s.Packets += acc.packets
+	}
+	for ip, acc := range t.closedHosts {
+		add(ip, acc)
+	}
+	if t.current != nil {
+		for ip, acc := range t.current.hosts {
+			add(ip, acc)
+		}
+	}
+	return totals
 }
 
 // rotateRateRing advances the short rate ring every rateSlotDuration.
@@ -1551,11 +1621,9 @@ func (t *Tracker) GetProtocolBreakdown() map[string]uint64 {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 
-	totals := make(map[string]uint64)
-	for _, b := range t.buckets {
-		for proto, bytes := range b.protoBytes {
-			totals[proto] += bytes
-		}
+	totals := make(map[string]uint64, len(t.closedProto))
+	for proto, bytes := range t.closedProto {
+		totals[proto] += bytes
 	}
 	if t.current != nil {
 		for proto, bytes := range t.current.protoBytes {
@@ -1570,11 +1638,9 @@ func (t *Tracker) GetIPVersionBreakdown() map[string]uint64 {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 
-	totals := make(map[string]uint64)
-	for _, b := range t.buckets {
-		for ver, bytes := range b.ipVerBytes {
-			totals[ver] += bytes
-		}
+	totals := make(map[string]uint64, len(t.closedIPVer))
+	for ver, bytes := range t.closedIPVer {
+		totals[ver] += bytes
 	}
 	if t.current != nil {
 		for ver, bytes := range t.current.ipVerBytes {
@@ -1627,11 +1693,9 @@ func (t *Tracker) GetGeoBreakdown() *GeoBreakdown {
 
 	// Step 1: Copy raw data under lock
 	t.mu.RLock()
-	ipTotals := make(map[string]uint64)
-	for _, b := range t.buckets {
-		for ip, acc := range b.hosts {
-			ipTotals[ip] += acc.bytes
-		}
+	ipTotals := make(map[string]uint64, len(t.closedHosts))
+	for ip, acc := range t.closedHosts {
+		ipTotals[ip] += acc.bytes
 	}
 	if t.current != nil {
 		for ip, acc := range t.current.hosts {
@@ -1923,14 +1987,12 @@ func (t *Tracker) HostTotals(ip string) *TalkerStat {
 	t.mu.RLock()
 	var found bool
 	stat := &TalkerStat{IP: ip}
-	for _, b := range t.buckets {
-		if acc, ok := b.hosts[ip]; ok {
-			found = true
-			stat.TotalBytes += acc.bytes
-			stat.RxBytes += acc.rxBytes
-			stat.TxBytes += acc.txBytes
-			stat.Packets += acc.packets
-		}
+	if acc, ok := t.closedHosts[ip]; ok {
+		found = true
+		stat.TotalBytes += acc.bytes
+		stat.RxBytes += acc.rxBytes
+		stat.TxBytes += acc.txBytes
+		stat.Packets += acc.packets
 	}
 	if t.current != nil {
 		if acc, ok := t.current.hosts[ip]; ok {
@@ -1966,16 +2028,13 @@ func (t *Tracker) HostTotals(ip string) *TalkerStat {
 func (t *Tracker) UniqueIPs() int {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
-	seen := make(map[string]struct{})
-	for _, b := range t.buckets {
-		for ip := range b.hosts {
-			seen[ip] = struct{}{}
-		}
-	}
+	n := len(t.closedHosts)
 	if t.current != nil {
 		for ip := range t.current.hosts {
-			seen[ip] = struct{}{}
+			if _, ok := t.closedHosts[ip]; !ok {
+				n++
+			}
 		}
 	}
-	return len(seen)
+	return n
 }
