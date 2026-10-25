@@ -26,21 +26,41 @@ type PacketConn interface {
 // ErrClosed is returned by Ping after Close.
 var ErrClosed = errors.New("icmputil: pinger closed")
 
+// DefaultIDRotation is how long a Pinger keeps one ICMP echo identifier
+// before it changes to a new random one.
+//
+// A stateful firewall/NAT upstream can treat all echoes with the same
+// identifier as one long-lived flow and start to drop the replies after
+// some time. A periodic identifier change starts a new flow and prevents
+// this.
+const DefaultIDRotation = 5 * time.Minute
+
 // Pinger sends ICMP echo requests over one long-lived raw socket and
 // dispatches replies from a single reader goroutine. Raw ICMP sockets see
 // every echo reply on the host, so replies are matched on identifier,
 // sequence number and source address; stale replies from earlier probes
 // and replies meant for other processes are ignored.
+//
+// The identifier changes every rotate interval (see DefaultIDRotation).
+// In-flight probes are keyed by (identifier, sequence), so a reply to a
+// probe sent before a change still matches its probe.
 type Pinger struct {
 	conn  PacketConn
 	proto int // 1 = ICMPv4, 58 = ICMPv6
-	id    uint16
 
 	mu      sync.Mutex
+	id      uint16
+	idSince time.Time
+	rotate  time.Duration // <= 0 disables rotation
+	now     func() time.Time
 	seq     uint16
-	pending map[uint16]*pendingProbe
+	pending map[probeKey]*pendingProbe
 	closed  bool
 	done    chan struct{}
+}
+
+type probeKey struct {
+	id, seq uint16
 }
 
 type pendingProbe struct {
@@ -84,14 +104,18 @@ func NewPingerEgress(v6 bool, e netutil.Egress) (*Pinger, error) {
 	return NewPingerConn(c, v6, randomID()), nil
 }
 
-// NewPingerConn wraps an existing connection. It is mainly for tests.
+// NewPingerConn wraps an existing connection. id is the first echo
+// identifier; it changes every DefaultIDRotation. It is mainly for tests.
 func NewPingerConn(conn PacketConn, v6 bool, id uint16) *Pinger {
 	p := &Pinger{
 		conn:    conn,
 		proto:   1,
 		id:      id,
+		idSince: time.Now(),
+		rotate:  DefaultIDRotation,
+		now:     time.Now,
 		seq:     randomID(),
-		pending: make(map[uint16]*pendingProbe),
+		pending: make(map[probeKey]*pendingProbe),
 		done:    make(chan struct{}),
 	}
 	if v6 {
@@ -101,8 +125,41 @@ func NewPingerConn(conn PacketConn, v6 bool, id uint16) *Pinger {
 	return p
 }
 
-// ID returns the ICMP echo identifier used by this pinger.
-func (p *Pinger) ID() uint16 { return p.id }
+// ID returns the ICMP echo identifier that the next probe uses, unless
+// the identifier changes first.
+func (p *Pinger) ID() uint16 {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.id
+}
+
+// SetIDRotation sets how often the echo identifier changes. A value <= 0
+// keeps the identifier constant.
+func (p *Pinger) SetIDRotation(d time.Duration) {
+	p.mu.Lock()
+	p.rotate = d
+	p.mu.Unlock()
+}
+
+// maybeRotateLocked changes the identifier when the rotate interval has
+// passed. The caller must hold p.mu.
+func (p *Pinger) maybeRotateLocked() {
+	if p.rotate <= 0 {
+		return
+	}
+	now := p.now()
+	if now.Sub(p.idSince) < p.rotate {
+		return
+	}
+	old := p.id
+	for i := 0; i < 16 && p.id == old; i++ {
+		p.id = randomID()
+	}
+	if p.id == old {
+		p.id = old + 1
+	}
+	p.idSince = now
+}
 
 // Ping sends one echo request to dst and waits up to timeout for the
 // matching reply. It returns the RTT in milliseconds, or -1 on loss/error.
@@ -115,27 +172,28 @@ func (p *Pinger) Ping(dst net.IP, timeout time.Duration) float64 {
 		p.mu.Unlock()
 		return -1
 	}
+	p.maybeRotateLocked()
 	// Skip sequence numbers still in flight (only possible with >65k
 	// concurrent probes, but keeps matching unambiguous).
 	for i := 0; i < 1<<16; i++ {
 		p.seq++
-		if _, busy := p.pending[p.seq]; !busy {
+		if _, busy := p.pending[probeKey{p.id, p.seq}]; !busy {
 			break
 		}
 	}
-	seq := p.seq
-	p.pending[seq] = pr
+	key := probeKey{p.id, p.seq}
+	p.pending[key] = pr
 	p.mu.Unlock()
 
 	defer func() {
 		p.mu.Lock()
-		if p.pending[seq] == pr {
-			delete(p.pending, seq)
+		if p.pending[key] == pr {
+			delete(p.pending, key)
 		}
 		p.mu.Unlock()
 	}()
 
-	wb, err := p.marshalEcho(seq)
+	wb, err := p.marshalEcho(key.id, key.seq)
 	if err != nil {
 		return -1
 	}
@@ -172,14 +230,14 @@ func (p *Pinger) Close() error {
 	return p.conn.Close()
 }
 
-func (p *Pinger) marshalEcho(seq uint16) ([]byte, error) {
+func (p *Pinger) marshalEcho(id, seq uint16) ([]byte, error) {
 	var typ icmp.Type = ipv4.ICMPTypeEcho
 	if p.proto == 58 {
 		typ = ipv6.ICMPTypeEchoRequest
 	}
 	msg := icmp.Message{
 		Type: typ,
-		Body: &icmp.Echo{ID: int(p.id), Seq: int(seq), Data: []byte("bwmon")},
+		Body: &icmp.Echo{ID: int(id), Seq: int(seq), Data: []byte("bwmon")},
 	}
 	return msg.Marshal(nil)
 }
@@ -203,15 +261,15 @@ func (p *Pinger) readLoop() {
 			return
 		}
 		now := time.Now()
-		seq, ok := p.parseReply(rb[:n])
+		key, ok := p.parseReply(rb[:n])
 		if !ok {
 			continue
 		}
 		src := addrIP(from)
 		p.mu.Lock()
-		pr := p.pending[seq]
+		pr := p.pending[key]
 		if pr != nil && src != nil && pr.dst.Equal(src) {
-			delete(p.pending, seq)
+			delete(p.pending, key)
 			rtt := float64(now.Sub(pr.start).Microseconds()) / 1000.0
 			p.mu.Unlock()
 			pr.ch <- rtt
@@ -221,21 +279,21 @@ func (p *Pinger) readLoop() {
 	}
 }
 
-// parseReply returns the sequence number if b is an echo reply carrying
-// this pinger's identifier.
-func (p *Pinger) parseReply(b []byte) (uint16, bool) {
+// parseReply returns the identifier and sequence number if b is an echo
+// reply. The pending map decides if the reply belongs to this pinger.
+func (p *Pinger) parseReply(b []byte) (probeKey, bool) {
 	rm, err := icmp.ParseMessage(p.proto, b)
 	if err != nil {
-		return 0, false
+		return probeKey{}, false
 	}
 	if rm.Type != ipv4.ICMPTypeEchoReply && rm.Type != ipv6.ICMPTypeEchoReply {
-		return 0, false
+		return probeKey{}, false
 	}
 	echo, ok := rm.Body.(*icmp.Echo)
-	if !ok || uint16(echo.ID) != p.id {
-		return 0, false
+	if !ok {
+		return probeKey{}, false
 	}
-	return uint16(echo.Seq), true
+	return probeKey{uint16(echo.ID), uint16(echo.Seq)}, true
 }
 
 func addrIP(a net.Addr) net.IP {
