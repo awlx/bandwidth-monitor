@@ -17,6 +17,7 @@ import (
 
 	"bandwidth-monitor/httputil"
 	"bandwidth-monitor/icmputil"
+	"bandwidth-monitor/netutil"
 	"bandwidth-monitor/poller"
 )
 
@@ -44,7 +45,11 @@ type Point struct {
 
 // TargetStatus holds the current state of a monitored target.
 type TargetStatus struct {
-	Name    string  `json:"name"`
+	Name string `json:"name"`
+	// WAN is the interface the probes were bound to; empty for the
+	// default route. Per-WAN entries follow the default-route entry of the
+	// same target.
+	WAN     string  `json:"wan,omitempty"`
 	IPv4    string  `json:"ipv4,omitempty"`
 	IPv6    string  `json:"ipv6,omitempty"`
 	Alive   bool    `json:"alive"`
@@ -81,16 +86,16 @@ type ProbeStats struct {
 // Monitor continuously probes a set of targets via ICMP and HTTPS.
 type Monitor struct {
 	targets []resolvedTarget
+	paths   []*probePath // [0] is the default route
 	mu      sync.RWMutex
-	state   map[string]*targetState
 	poller.Runner
 
-	// ICMP pingers are long-lived so in-flight replies are never lost to a
-	// socket being closed, and are opened lazily (retried each round).
-	newPinger    func(v6 bool) (pinger, error)
-	ping4, ping6 pinger
-	icmpV4Logged bool
-	icmpV6Logged bool
+	newPinger func(v6 bool, iface string) (pinger, error)
+
+	// wanSource, when set, returns the current WAN interfaces. It is
+	// polled every round and probe paths are added/removed to match.
+	wanSource func() []string
+	wanLogged bool
 
 	// HTTPS probes run asynchronously so a slow handshake cannot stretch
 	// the ICMP probe cadence.
@@ -104,12 +109,31 @@ type pinger interface {
 	Close() error
 }
 
-func defaultNewPinger(v6 bool) (pinger, error) {
-	p, err := icmputil.NewPinger(v6)
+func defaultNewPinger(v6 bool, iface string) (pinger, error) {
+	p, err := icmputil.NewPingerInterface(v6, iface)
 	if err != nil {
 		return nil, err
 	}
 	return p, nil
+}
+
+// probePath is one egress path: the default route (wan == "") or a WAN
+// interface the sockets are bound to.
+type probePath struct {
+	wan   string
+	state map[string]*targetState
+
+	// ICMP pingers are long-lived so in-flight replies are never lost to a
+	// socket being closed, and are opened lazily (retried each round).
+	ping4, ping6       pinger
+	v4Logged, v6Logged bool
+}
+
+func (p *probePath) label() string {
+	if p.wan == "" {
+		return "default route"
+	}
+	return p.wan
 }
 
 type resolvedTarget struct {
@@ -130,14 +154,16 @@ type targetState struct {
 // newDirectHTTPSClient returns an HTTP client that connects directly to the
 // given IP address, bypassing DNS resolution entirely.  The TLS ServerName
 // is set to hostname so certificate validation works correctly.
-func newDirectHTTPSClient(ip net.IP, hostname string) *http.Client {
+// When iface is set the connection is bound to that interface.
+func newDirectHTTPSClient(ip net.IP, hostname, iface string) *http.Client {
 	network := "tcp4"
 	ipStr := ip.String()
 	if ip.To4() == nil {
 		network = "tcp6"
 		ipStr = "[" + ipStr + "]"
 	}
-	dialer := &net.Dialer{Timeout: httpsTimeout}
+	dialer := netutil.DialerForInterface(iface)
+	dialer.Timeout = httpsTimeout
 	return &http.Client{
 		Timeout: httpsTimeout,
 		Transport: httputil.WrapTransport(&http.Transport{
@@ -158,6 +184,8 @@ func newDirectHTTPSClient(ip net.IP, hostname string) *http.Client {
 }
 
 // New creates a latency monitor. Pass nil or empty targets to use defaults.
+// Targets are probed via the default route; see SetWANSource for per-WAN
+// probing.
 func New(targets []string) *Monitor {
 	if len(targets) == 0 {
 		targets = DefaultTargets
@@ -193,23 +221,123 @@ func New(targets []string) *Monitor {
 		}
 	}
 
-	m := &Monitor{
-		targets:   resolved,
-		state:     make(map[string]*targetState, len(resolved)),
-		newPinger: defaultNewPinger,
-	}
+	return newMonitor(resolved, defaultNewPinger)
+}
+
+func newMonitor(targets []resolvedTarget, newPinger func(bool, string) (pinger, error)) *Monitor {
+	m := &Monitor{targets: targets, newPinger: newPinger}
 	m.Runner.Init()
-	for _, t := range resolved {
+	m.paths = []*probePath{m.newPath("")}
+	return m
+}
+
+func (m *Monitor) newPath(wan string) *probePath {
+	p := &probePath{wan: wan, state: make(map[string]*targetState, len(m.targets))}
+	for _, t := range m.targets {
 		st := &targetState{}
 		if t.ipv4 != nil {
-			st.httpC4 = newDirectHTTPSClient(t.ipv4, t.name)
+			st.httpC4 = newDirectHTTPSClient(t.ipv4, t.name, wan)
 		}
 		if t.ipv6 != nil {
-			st.httpC6 = newDirectHTTPSClient(t.ipv6, t.name)
+			st.httpC6 = newDirectHTTPSClient(t.ipv6, t.name, wan)
 		}
-		m.state[t.name] = st
+		p.state[t.name] = st
 	}
-	return m
+	return p
+}
+
+// SetWANSource enables per-WAN probing. src returns the current WAN
+// interface names (e.g. the collector's auto-detected or configured WAN
+// set) and is polled every probe round. When it reports two or more
+// interfaces, every target is additionally probed with sockets bound to
+// each of them; with fewer, only the default route is probed. Must be
+// called before Run. Ignored on platforms that cannot bind sockets to an
+// interface.
+func (m *Monitor) SetWANSource(src func() []string) {
+	if !netutil.BindSupported {
+		log.Printf("latency: per-WAN probes unsupported on this platform; probing via default route only")
+		return
+	}
+	m.wanSource = src
+}
+
+// syncWANs reconciles the probe paths with the current WAN set. History
+// of WANs that remain is kept; removed WANs are dropped and their sockets
+// closed. Only called from the probe loop goroutine.
+func (m *Monitor) syncWANs() {
+	if m.wanSource == nil {
+		return
+	}
+	var want []string
+	seen := map[string]bool{}
+	for _, w := range m.wanSource() {
+		if w != "" && !seen[w] {
+			seen[w] = true
+			want = append(want, w)
+		}
+	}
+	if len(want) < 2 {
+		want = nil
+	}
+	sort.Strings(want)
+
+	cur := m.paths[1:]
+	if len(cur) == len(want) {
+		same := true
+		for i, p := range cur {
+			if p.wan != want[i] {
+				same = false
+				break
+			}
+		}
+		if same {
+			return
+		}
+	}
+
+	byWAN := make(map[string]*probePath, len(cur))
+	for _, p := range cur {
+		byWAN[p.wan] = p
+	}
+	next := []*probePath{m.paths[0]}
+	for _, w := range want {
+		if p := byWAN[w]; p != nil {
+			next = append(next, p)
+			delete(byWAN, w)
+		} else {
+			next = append(next, m.newPath(w))
+		}
+	}
+	if len(want) > 0 {
+		log.Printf("latency: probing via WAN interfaces %v (plus default route)", want)
+	} else if len(cur) > 0 {
+		log.Printf("latency: fewer than two WAN interfaces; probing via default route only")
+	}
+
+	m.mu.Lock()
+	m.paths = next
+	m.mu.Unlock()
+	for _, p := range byWAN {
+		p.close()
+	}
+}
+
+func (p *probePath) close() {
+	if p.ping4 != nil {
+		p.ping4.Close()
+		p.ping4 = nil
+	}
+	if p.ping6 != nil {
+		p.ping6.Close()
+		p.ping6 = nil
+	}
+}
+
+// snapshotPaths returns the current probe paths.
+func (m *Monitor) snapshotPaths() []*probePath {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return append([]*probePath(nil), m.paths...)
 }
 
 // Run starts the probe loop. Call in a goroutine.
@@ -237,25 +365,29 @@ func (m *Monitor) Run() {
 func (m *Monitor) Stop() {
 	m.Runner.Stop()
 	m.httpsWG.Wait()
-	if m.ping4 != nil {
-		m.ping4.Close()
-		m.ping4 = nil
-	}
-	if m.ping6 != nil {
-		m.ping6.Close()
-		m.ping6 = nil
+	for _, p := range m.snapshotPaths() {
+		p.close()
 	}
 }
 
-// GetStatus returns the current status of all targets.
+// GetStatus returns the current status of all targets. For each target the
+// default-route entry comes first, followed by one entry per WAN interface.
 func (m *Monitor) GetStatus() []TargetStatus {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	result := make([]TargetStatus, 0, len(m.targets))
+	result := make([]TargetStatus, 0, len(m.targets)*len(m.paths))
 	for _, t := range m.targets {
-		st := m.state[t.name]
-		ts := TargetStatus{Name: t.name}
+		for _, p := range m.paths {
+			result = append(result, buildStatus(t, p.wan, p.state[t.name]))
+		}
+	}
+	return result
+}
+
+func buildStatus(t resolvedTarget, wan string, st *targetState) TargetStatus {
+	{
+		ts := TargetStatus{Name: t.name, WAN: wan}
 		if t.ipv4 != nil {
 			ts.IPv4 = t.ipv4.String()
 		}
@@ -314,10 +446,8 @@ func (m *Monitor) GetStatus() []TargetStatus {
 		} else {
 			ts.HTTPS = ts.HTTPSv6
 		}
-
-		result = append(result, ts)
+		return ts
 	}
-	return result
 }
 
 func copyPoints(s []Point) []Point {
@@ -403,76 +533,103 @@ func computeStats(pts []Point) (avg, min, max, jitter float64) {
 // stateful middleboxes expiring their ICMP state and dropping the reply,
 // which showed up as large phantom loss.
 func (m *Monitor) probeAll() {
-	m.ensurePingers()
-	m.probeICMP()
-	m.startHTTPS()
+	m.syncWANs()
+	paths := m.snapshotPaths()
+	m.ensurePingers(paths)
+	m.probeICMP(paths)
+	m.startHTTPS(paths)
 }
 
-func (m *Monitor) ensurePingers() {
-	if m.ping4 == nil {
-		p, err := m.newPinger(false)
-		if err != nil {
-			if !m.icmpV4Logged {
-				log.Printf("latency: ICMPv4 unavailable (need root/CAP_NET_RAW): %v", err)
-				m.icmpV4Logged = true
+func (m *Monitor) ensurePingers(paths []*probePath) {
+	for _, p := range paths {
+		if p.ping4 == nil {
+			if pg, err := m.newPinger(false, p.wan); err != nil {
+				if !p.v4Logged {
+					log.Printf("latency: ICMPv4 unavailable via %s (need root/CAP_NET_RAW): %v", p.label(), err)
+					p.v4Logged = true
+				}
+			} else {
+				p.ping4 = pg
 			}
-		} else {
-			m.ping4 = p
 		}
-	}
-	if m.ping6 == nil {
-		p, err := m.newPinger(true)
-		if err != nil {
-			if !m.icmpV6Logged {
-				log.Printf("latency: ICMPv6 unavailable: %v", err)
-				m.icmpV6Logged = true
+		if p.ping6 == nil {
+			if pg, err := m.newPinger(true, p.wan); err != nil {
+				if !p.v6Logged {
+					log.Printf("latency: ICMPv6 unavailable via %s: %v", p.label(), err)
+					p.v6Logged = true
+				}
+			} else {
+				p.ping6 = pg
 			}
-		} else {
-			m.ping6 = p
 		}
 	}
 }
 
-func (m *Monitor) probeICMP() {
+// probeResults holds one round's RTTs, indexed [path][target].
+type probeResults struct{ v4, v6 [][]float64 }
+
+func (m *Monitor) newResults(n int) probeResults {
+	r := probeResults{v4: make([][]float64, n), v6: make([][]float64, n)}
+	for i := 0; i < n; i++ {
+		r.v4[i] = make([]float64, len(m.targets))
+		r.v6[i] = make([]float64, len(m.targets))
+		for j := range m.targets {
+			r.v4[i][j], r.v6[i][j] = -1, -1
+		}
+	}
+	return r
+}
+
+func (m *Monitor) probeICMP(paths []*probePath) {
 	ts := time.Now().UnixMilli()
-	v4 := make([]float64, len(m.targets))
-	v6 := make([]float64, len(m.targets))
+	r := m.newResults(len(paths))
 	var wg sync.WaitGroup
-	for i, t := range m.targets {
-		v4[i], v6[i] = -1, -1
-		if m.ping4 != nil && t.ipv4 != nil {
-			wg.Add(1)
-			go func(i int, ip net.IP) {
-				defer wg.Done()
-				v4[i] = m.ping4.Ping(ip, icmpTimeout)
-			}(i, t.ipv4)
-		}
-		if m.ping6 != nil && t.ipv6 != nil {
-			wg.Add(1)
-			go func(i int, ip net.IP) {
-				defer wg.Done()
-				v6[i] = m.ping6.Ping(ip, icmpTimeout)
-			}(i, t.ipv6)
+	for pi, p := range paths {
+		for ti, t := range m.targets {
+			if p.ping4 != nil && t.ipv4 != nil {
+				wg.Add(1)
+				go func(pg pinger, out *float64, ip net.IP) {
+					defer wg.Done()
+					*out = pg.Ping(ip, icmpTimeout)
+				}(p.ping4, &r.v4[pi][ti], t.ipv4)
+			}
+			if p.ping6 != nil && t.ipv6 != nil {
+				wg.Add(1)
+				go func(pg pinger, out *float64, ip net.IP) {
+					defer wg.Done()
+					*out = pg.Ping(ip, icmpTimeout)
+				}(p.ping6, &r.v6[pi][ti], t.ipv6)
+			}
 		}
 	}
 	wg.Wait()
+	m.record(paths, ts, r, false)
+}
 
+// record appends one round of results to the ICMP or HTTPS histories.
+func (m *Monitor) record(paths []*probePath, ts int64, r probeResults, https bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	for i, t := range m.targets {
-		st := m.state[t.name]
-		if t.ipv4 != nil {
-			st.icmpV4Hist = appendAndTrim(st.icmpV4Hist, Point{Timestamp: ts, RTT: v4[i]})
-		}
-		if t.ipv6 != nil {
-			st.icmpV6Hist = appendAndTrim(st.icmpV6Hist, Point{Timestamp: ts, RTT: v6[i]})
+	for pi, p := range paths {
+		for ti, t := range m.targets {
+			st := p.state[t.name]
+			v4, v6 := &st.icmpV4Hist, &st.icmpV6Hist
+			if https {
+				v4, v6 = &st.httpsV4Hist, &st.httpsV6Hist
+			}
+			if t.ipv4 != nil {
+				*v4 = appendAndTrim(*v4, Point{Timestamp: ts, RTT: r.v4[pi][ti]})
+			}
+			if t.ipv6 != nil {
+				*v6 = appendAndTrim(*v6, Point{Timestamp: ts, RTT: r.v6[pi][ti]})
+			}
 		}
 	}
 }
 
 // startHTTPS launches an HTTPS probe round in the background unless the
 // previous one is still running.
-func (m *Monitor) startHTTPS() {
+func (m *Monitor) startHTTPS(paths []*probePath) {
 	if !m.httpsBusy.CompareAndSwap(false, true) {
 		return
 	}
@@ -480,46 +637,35 @@ func (m *Monitor) startHTTPS() {
 	go func() {
 		defer m.httpsWG.Done()
 		defer m.httpsBusy.Store(false)
-		m.probeHTTPSAll()
+		m.probeHTTPSAll(paths)
 	}()
 }
 
-func (m *Monitor) probeHTTPSAll() {
+func (m *Monitor) probeHTTPSAll(paths []*probePath) {
 	ts := time.Now().UnixMilli()
-	v4 := make([]float64, len(m.targets))
-	v6 := make([]float64, len(m.targets))
+	r := m.newResults(len(paths))
 	var wg sync.WaitGroup
-	for i, t := range m.targets {
-		v4[i], v6[i] = -1, -1
-		st := m.state[t.name]
-		if t.ipv4 != nil {
-			wg.Add(1)
-			go func(i int, c *http.Client, name string) {
-				defer wg.Done()
-				v4[i] = m.probeHTTPS(c, name)
-			}(i, st.httpC4, t.name)
-		}
-		if t.ipv6 != nil {
-			wg.Add(1)
-			go func(i int, c *http.Client, name string) {
-				defer wg.Done()
-				v6[i] = m.probeHTTPS(c, name)
-			}(i, st.httpC6, t.name)
+	for pi, p := range paths {
+		for ti, t := range m.targets {
+			st := p.state[t.name]
+			if t.ipv4 != nil {
+				wg.Add(1)
+				go func(c *http.Client, out *float64, name string) {
+					defer wg.Done()
+					*out = m.probeHTTPS(c, name)
+				}(st.httpC4, &r.v4[pi][ti], t.name)
+			}
+			if t.ipv6 != nil {
+				wg.Add(1)
+				go func(c *http.Client, out *float64, name string) {
+					defer wg.Done()
+					*out = m.probeHTTPS(c, name)
+				}(st.httpC6, &r.v6[pi][ti], t.name)
+			}
 		}
 	}
 	wg.Wait()
-
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	for i, t := range m.targets {
-		st := m.state[t.name]
-		if t.ipv4 != nil {
-			st.httpsV4Hist = appendAndTrim(st.httpsV4Hist, Point{Timestamp: ts, RTT: v4[i]})
-		}
-		if t.ipv6 != nil {
-			st.httpsV6Hist = appendAndTrim(st.httpsV6Hist, Point{Timestamp: ts, RTT: v6[i]})
-		}
-	}
+	m.record(paths, ts, r, true)
 }
 
 func appendAndTrim(s []Point, p Point) []Point {

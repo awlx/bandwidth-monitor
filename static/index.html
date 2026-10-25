@@ -860,9 +860,21 @@
                     <div class="card-subtitle">Continuous ICMP ping &amp; HTTPS connection probes &mdash; updated every 2s, 15-minute history</div>
                 </div>
             </div>
+            <div id="latencyWANCompare" style="padding:12px 12px 0;display:none"></div>
             <div id="latencyTargets" style="padding:12px">
                 <div style="text-align:center;padding:32px 16px;color:var(--text-2)">Waiting for latency data&hellip;<br><span style="font-size:11px">Requires CAP_NET_RAW for ICMP probes</span></div>
             </div>
+        </div>
+
+        <!-- Capture health (hidden where kernel capture counters are unavailable) -->
+        <div class="card" id="captureHealthSection" style="margin-bottom:16px;display:none">
+            <div class="card-header">
+                <div>
+                    <div class="card-title">Capture Health</div>
+                    <div class="card-subtitle">Kernel capture ring per device &mdash; last 10s; warn &ge;0.1% drops, alert &ge;1%</div>
+                </div>
+            </div>
+            <div id="captureHealth" style="padding:12px"></div>
         </div>
 
         </div><!-- /tabMonitor -->

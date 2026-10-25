@@ -79,3 +79,20 @@ func TestGetHistoryFilteredRespectsAllowedIfaces(t *testing.T) {
 		t.Errorf("explicit iface must not bypass whitelist, got %+v", got)
 	}
 }
+
+func TestWANInterfaces(t *testing.T) {
+	c := &Collector{
+		current: map[string]*InterfaceStat{
+			"wan1": {Name: "wan1", WAN: true, OperState: "up"},
+			"wan0": {Name: "wan0", WAN: true, OperState: "unknown"}, // e.g. PPP
+			"wan2": {Name: "wan2", WAN: true, OperState: "down"},
+			"lan0": {Name: "lan0", OperState: "up"},
+		},
+		// The INTERFACES display filter must not hide WANs from probing.
+		allowedIfaces: map[string]bool{"lan0": true},
+	}
+	got := c.WANInterfaces()
+	if len(got) != 2 || got[0] != "wan0" || got[1] != "wan1" {
+		t.Fatalf("WANInterfaces() = %v, want [wan0 wan1]", got)
+	}
+}

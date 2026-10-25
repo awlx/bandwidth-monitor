@@ -169,7 +169,18 @@ LATENCY_TARGETS=anycast01.ffmuc.net,anycast02.ffmuc.net,dns.quad9.net
 ```
 
 Set `LATENCY_MONITORING=false` to disable latency monitoring completely.
-Otherwise, latency targets are probed with ICMP and HTTPS. See
+Otherwise, latency targets are probed with ICMP and HTTPS through the default
+route.
+
+On Linux hosts with two or more WAN interfaces, every target is also probed
+through each WAN, using sockets bound to that interface (`SO_BINDTODEVICE`,
+like `ping -I`). The WAN set comes from the same source as the rest of the
+dashboard: `WAN_INTERFACE` when set, otherwise auto-detection. It is
+re-evaluated every probe round, so probes start and stop as uplinks come up,
+go down or gain/lose their default route. Each WAN must be independently
+routable (its own policy routing and NAT), as for any multi-WAN setup. Set
+`LATENCY_PER_WAN=false` to probe only through the default route. With zero or
+one WAN, behaviour and output are unchanged. See
 [external services](integrations.md#external-services) before exposing the
 daemon to a network with strict egress requirements.
 

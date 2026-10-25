@@ -1,12 +1,15 @@
 package icmputil
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/binary"
 	"errors"
 	"net"
 	"sync"
 	"time"
+
+	"bandwidth-monitor/netutil"
 
 	"golang.org/x/net/icmp"
 	"golang.org/x/net/ipv4"
@@ -49,11 +52,25 @@ type pendingProbe struct {
 // NewPinger opens a raw ICMP socket ("ip4:icmp" or "ip6:ipv6-icmp").
 // It requires root or CAP_NET_RAW.
 func NewPinger(v6 bool) (*Pinger, error) {
+	return NewPingerInterface(v6, "")
+}
+
+// NewPingerInterface is like NewPinger but binds the socket to iface
+// (SO_BINDTODEVICE, Linux only) so probes leave via that interface and
+// only replies received on it are seen. An empty iface uses the default
+// route.
+func NewPingerInterface(v6 bool, iface string) (*Pinger, error) {
 	network, addr := "ip4:icmp", "0.0.0.0"
 	if v6 {
 		network, addr = "ip6:ipv6-icmp", "::"
 	}
-	c, err := icmp.ListenPacket(network, addr)
+	var c PacketConn
+	var err error
+	if iface == "" {
+		c, err = icmp.ListenPacket(network, addr)
+	} else {
+		c, err = netutil.ListenConfigForInterface(iface).ListenPacket(context.Background(), network, addr)
+	}
 	if err != nil {
 		return nil, err
 	}

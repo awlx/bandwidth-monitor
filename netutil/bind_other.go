@@ -12,3 +12,6 @@ func bindControl(iface string) func(network, address string, c syscall.RawConn) 
 		return fmt.Errorf("binding sockets to interface %q is unsupported on this platform", iface)
 	}
 }
+
+// BindSupported reports whether sockets can be bound to an interface.
+const BindSupported = false

@@ -434,9 +434,18 @@ func collectLatency(reg *registry, m *latency.Monitor) {
 	if m == nil {
 		return
 	}
-	for _, t := range m.GetStatus() {
-		tl := l("target", t.Name)
-		reg.gauge(ns+"latency_target_up", "1 if the latency target answered recently.", boolFloat(t.Alive), tl)
+	collectLatencyStatus(reg, m.GetStatus())
+}
+
+// collectLatencyStatus exports latency stats. Per-WAN probes carry a "wan"
+// label; default-route probes have none, so single-WAN output is unchanged.
+func collectLatencyStatus(reg *registry, status []latency.TargetStatus) {
+	for _, t := range status {
+		tl := []Label{l("target", t.Name)}
+		if t.WAN != "" {
+			tl = append(tl, l("wan", t.WAN))
+		}
+		reg.gauge(ns+"latency_target_up", "1 if the latency target answered recently.", boolFloat(t.Alive), tl...)
 		for _, p := range []struct {
 			probe string
 			st    *latency.ProbeStats
@@ -444,7 +453,7 @@ func collectLatency(reg *registry, m *latency.Monitor) {
 			if p.st == nil {
 				continue
 			}
-			pl := []Label{tl, l("probe", p.probe)}
+			pl := append(append([]Label(nil), tl...), l("probe", p.probe))
 			ms := func(name, help string, v float64) {
 				if v >= 0 {
 					reg.gauge(ns+name, help, v/1000, pl...)

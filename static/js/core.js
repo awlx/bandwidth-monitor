@@ -148,6 +148,7 @@
                 if (BM.updateLatency) BM.updateLatency(d.latency);
                 window._lastLatUpdate = now;
             }
+            if (BM.updateCaptureHealth) BM.updateCaptureHealth(d.capture);
         } else if (tab === 'dns') {
             if (BM.updateDNS) BM.updateDNS(d.dns || null);
         } else if (tab === 'wifi') {

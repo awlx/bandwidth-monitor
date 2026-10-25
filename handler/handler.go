@@ -937,6 +937,11 @@ func buildPayload(c *collector.Collector, t *talkers.Tracker, dp dns.Provider, w
 	if lm != nil {
 		payload["latency"] = lm.GetStatus()
 	}
+	// Omitted where the kernel exposes no capture counters, so the UI can
+	// hide the capture-health card.
+	if ch := t.CaptureHealth(); len(ch) > 0 {
+		payload["capture"] = ch
+	}
 	return payload
 }
 

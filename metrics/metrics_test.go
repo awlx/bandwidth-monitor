@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"bandwidth-monitor/dns"
+	"bandwidth-monitor/latency"
 	"bandwidth-monitor/wifi"
 )
 
@@ -178,5 +179,33 @@ func TestHandler(t *testing.T) {
 	h(rec, httptest.NewRequest(http.MethodPost, "/metrics", nil))
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Errorf("POST status %d, want 405", rec.Code)
+	}
+}
+
+func TestLatencyWANLabel(t *testing.T) {
+	reg := newRegistry()
+	st := &latency.ProbeStats{RTT: 10, AvgRTT: 12, LossPct: 5}
+	collectLatencyStatus(reg, []latency.TargetStatus{
+		{Name: "t.example", Alive: true, ICMPStats: st},
+		{Name: "t.example", WAN: "wan0", Alive: true, ICMPStats: st},
+		{Name: "t.example", WAN: "wan1", ICMPStats: &latency.ProbeStats{RTT: -1, LossPct: 100}},
+	})
+	out := render(t, reg)
+	validate(t, out)
+	for _, want := range []string{
+		`bandwidth_monitor_latency_target_up{target="t.example"} 1`,
+		`bandwidth_monitor_latency_target_up{target="t.example",wan="wan0"} 1`,
+		`bandwidth_monitor_latency_target_up{target="t.example",wan="wan1"} 0`,
+		`bandwidth_monitor_latency_rtt_seconds{target="t.example",probe="icmp"} 0.01`,
+		`bandwidth_monitor_latency_rtt_seconds{target="t.example",wan="wan0",probe="icmp"} 0.01`,
+		`bandwidth_monitor_latency_loss_ratio{target="t.example",probe="icmp"} 0.05`,
+		`bandwidth_monitor_latency_loss_ratio{target="t.example",wan="wan1",probe="icmp"} 1`,
+	} {
+		if !strings.Contains(out, want+"\n") {
+			t.Errorf("missing %q in:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, `latency_rtt_seconds{target="t.example",wan="wan1"`) {
+		t.Error("lost probe exported an RTT")
 	}
 }

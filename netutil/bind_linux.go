@@ -19,3 +19,6 @@ func bindControl(iface string) func(network, address string, c syscall.RawConn) 
 		return bindErr
 	}
 }
+
+// BindSupported reports whether sockets can be bound to an interface.
+const BindSupported = true
