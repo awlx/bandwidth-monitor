@@ -190,6 +190,17 @@ func TestLatencyWANLabel(t *testing.T) {
 		{Name: "t.example", WAN: "wan0", Alive: true, ICMPStats: st},
 		{Name: "t.example", WAN: "wan1", ICMPStats: &latency.ProbeStats{RTT: -1, LossPct: 100}},
 	})
+	out0 := render(t, reg)
+	if strings.Contains(out0, "latency_wan_routable") {
+		t.Error("routable metric exported for statuses without addresses")
+	}
+	reg = newRegistry()
+	collectLatencyStatus(reg, []latency.TargetStatus{
+		{Name: "t.example", IPv4: "192.0.2.1", IPv6: "2001:db8::1", Alive: true, ICMPStats: st},
+		{Name: "t.example", IPv4: "192.0.2.1", IPv6: "2001:db8::1", WAN: "wan0", Alive: true, ICMPStats: st},
+		{Name: "t.example", IPv4: "192.0.2.1", IPv6: "2001:db8::1", WAN: "wan1", ICMPStats: &latency.ProbeStats{RTT: -1, LossPct: 100}, Unroutable: []string{"ipv6"}},
+		{Name: "u.example", IPv4: "192.0.2.2", WAN: "wan2", Unroutable: []string{"ipv4"}},
+	})
 	out := render(t, reg)
 	validate(t, out)
 	for _, want := range []string{
@@ -200,6 +211,10 @@ func TestLatencyWANLabel(t *testing.T) {
 		`bandwidth_monitor_latency_rtt_seconds{target="t.example",wan="wan0",probe="icmp"} 0.01`,
 		`bandwidth_monitor_latency_loss_ratio{target="t.example",probe="icmp"} 0.05`,
 		`bandwidth_monitor_latency_loss_ratio{target="t.example",wan="wan1",probe="icmp"} 1`,
+		`bandwidth_monitor_latency_wan_routable{wan="wan0",family="ipv4"} 1`,
+		`bandwidth_monitor_latency_wan_routable{wan="wan1",family="ipv4"} 1`,
+		`bandwidth_monitor_latency_wan_routable{wan="wan1",family="ipv6"} 0`,
+		`bandwidth_monitor_latency_wan_routable{wan="wan2",family="ipv4"} 0`,
 	} {
 		if !strings.Contains(out, want+"\n") {
 			t.Errorf("missing %q in:\n%s", want, out)
@@ -207,5 +222,8 @@ func TestLatencyWANLabel(t *testing.T) {
 	}
 	if strings.Contains(out, `latency_rtt_seconds{target="t.example",wan="wan1"`) {
 		t.Error("lost probe exported an RTT")
+	}
+	if strings.Contains(out, `target="u.example"`) {
+		t.Error("unroutable path exported target metrics")
 	}
 }

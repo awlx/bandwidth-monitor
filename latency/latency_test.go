@@ -7,6 +7,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"bandwidth-monitor/netutil"
 )
 
 type fakePinger struct {
@@ -35,7 +37,7 @@ var testTargets = []resolvedTarget{
 }
 
 func newTestMonitor(p4, p6 pinger, httpDelay time.Duration) *Monitor {
-	m := newMonitor(testTargets, func(v6 bool, _ string) (pinger, error) {
+	m := newMonitor(testTargets, func(v6 bool, _ netutil.Egress) (pinger, error) {
 		if v6 {
 			if p6 == nil {
 				return nil, errors.New("no v6")
@@ -98,11 +100,11 @@ func TestPingerReusedAndRetried(t *testing.T) {
 	m := newTestMonitor(p4, nil, 0)
 	opens := 0
 	inner := m.newPinger
-	m.newPinger = func(v6 bool, iface string) (pinger, error) {
+	m.newPinger = func(v6 bool, eg netutil.Egress) (pinger, error) {
 		if !v6 {
 			opens++
 		}
-		return inner(v6, iface)
+		return inner(v6, eg)
 	}
 	for i := 0; i < 3; i++ {
 		m.probeAll()
@@ -140,14 +142,15 @@ func statusKeys(st []TargetStatus) []string {
 func TestWANPathsFollowSource(t *testing.T) {
 	rtts := map[string]float64{"": 1, "wanA": 10, "wanB": 20, "wanC": 30}
 	pingers := map[string]*wanPinger{}
-	m := newMonitor(testTargets, func(v6 bool, iface string) (pinger, error) {
+	m := newMonitor(testTargets, func(v6 bool, eg netutil.Egress) (pinger, error) {
 		if v6 {
 			return nil, errors.New("no v6")
 		}
-		p := &wanPinger{iface: iface, rtt: rtts[iface]}
-		pingers[iface] = p
+		p := &wanPinger{iface: eg.Iface, rtt: rtts[eg.Iface]}
+		pingers[eg.Iface] = p
 		return p, nil
 	})
+	m.resolveEgress = plainEgress
 	var wans []string
 	m.wanSource = func() []string { return wans }
 	defer m.Stop()
@@ -210,17 +213,147 @@ func TestWANPathsFollowSource(t *testing.T) {
 // A WAN whose socket cannot be opened (e.g. no CAP_NET_RAW) records loss
 // for that WAN only and does not affect the other paths.
 func TestWANBindFailureIsolated(t *testing.T) {
-	m := newMonitor(testTargets[1:], func(v6 bool, iface string) (pinger, error) {
-		if v6 || iface == "wanB" {
+	m := newMonitor(testTargets[1:], func(v6 bool, eg netutil.Egress) (pinger, error) {
+		if v6 || eg.Iface == "wanB" {
 			return nil, errors.New("bind failed")
 		}
 		return &wanPinger{rtt: 5}, nil
 	})
+	m.resolveEgress = plainEgress
 	m.wanSource = func() []string { return []string{"wanA", "wanB"} }
 	m.probeAll()
 	m.Stop()
 	st := m.GetStatus()
 	if len(st) != 3 || st[0].RTT != 5 || st[1].RTT != 5 || st[2].RTT != -1 {
 		t.Fatalf("unexpected: %v rtts=%v,%v,%v", statusKeys(st), st[0].RTT, st[1].RTT, st[2].RTT)
+	}
+}
+
+func plainEgress(iface string, _ bool) (netutil.Egress, error) {
+	return netutil.Egress{Iface: iface}, nil
+}
+
+// egressPinger records the egress each socket was opened with.
+type egressPinger struct {
+	eg     netutil.Egress
+	closed atomic.Bool
+}
+
+func (e *egressPinger) Ping(net.IP, time.Duration) float64 { return 7 }
+func (e *egressPinger) Close() error                       { e.closed.Store(true); return nil }
+
+// policyMonitor returns a two-WAN monitor (IPv4-only target) whose egress
+// resolution is driven by egress[wan].
+func policyMonitor(egress map[string]netutil.Egress) (*Monitor, map[string][]*egressPinger) {
+	opened := map[string][]*egressPinger{}
+	m := newMonitor(testTargets[1:], func(v6 bool, eg netutil.Egress) (pinger, error) {
+		if v6 {
+			return nil, errors.New("no v6")
+		}
+		p := &egressPinger{eg: eg}
+		opened[eg.Iface] = append(opened[eg.Iface], p)
+		return p, nil
+	})
+	m.resolveEgress = func(iface string, v6 bool) (netutil.Egress, error) {
+		if v6 {
+			return netutil.Egress{Iface: iface, Unroutable: "no default route"}, nil
+		}
+		if eg, ok := egress[iface]; ok {
+			return eg, nil
+		}
+		return netutil.Egress{}, errors.New("netlink unavailable")
+	}
+	m.wanSource = func() []string { return []string{"wanA", "wanB"} }
+	return m, opened
+}
+
+// A WAN whose policy table no ip rule selects is reported unroutable and
+// not probed, instead of showing 100% loss.
+func TestUnroutableWANNotProbed(t *testing.T) {
+	m, opened := policyMonitor(map[string]netutil.Egress{
+		"wanA": {Iface: "wanA", Mark: 0x6},
+		"wanB": {Iface: "wanB", Unroutable: "no ip rule selects table 100"},
+	})
+	for i := 0; i < 3; i++ {
+		m.probeAll()
+	}
+	m.Stop()
+	if len(opened["wanB"]) != 0 {
+		t.Fatalf("socket opened for unroutable WAN: %+v", opened["wanB"][0].eg)
+	}
+	if got := opened["wanA"]; len(got) != 1 || got[0].eg.Mark != 0x6 {
+		t.Fatalf("wanA pinger should carry the rule's fwmark, got %+v", got)
+	}
+	st := m.GetStatus()
+	a, b := st[1], st[2]
+	if a.WAN != "wanA" || b.WAN != "wanB" {
+		t.Fatalf("order: %v", statusKeys(st))
+	}
+	if len(b.Unroutable) != 1 || b.Unroutable[0] != "ipv4" || len(b.ICMPv4) != 0 || len(b.HTTPSv4) != 0 || b.LossPct != 0 {
+		t.Fatalf("unroutable WAN must have no samples: %+v", b)
+	}
+	if len(a.Unroutable) != 0 || len(a.ICMPv4) != 3 || a.LossPct != 0 || a.Egress["ipv4"] != "fwmark 0x6" {
+		t.Fatalf("routable WAN: %+v", a)
+	}
+	if len(st[0].Unroutable) != 0 || st[0].Egress != nil {
+		t.Fatalf("default route must be unaffected: %+v", st[0])
+	}
+}
+
+// Routing changes are followed: the socket is reopened with the new egress
+// and the stale history is dropped. Resolution errors fall back to plain
+// interface binding.
+func TestEgressChangeFollowed(t *testing.T) {
+	egress := map[string]netutil.Egress{
+		"wanA": {Iface: "wanA"},
+		"wanB": {Iface: "wanB", Unroutable: "no ip rule"},
+	}
+	m, opened := policyMonitor(egress)
+	defer m.Stop()
+	m.probeAll()
+
+	recheck := func() {
+		for _, p := range m.snapshotPaths() {
+			p.egAt = time.Time{}
+		}
+		m.probeAll()
+	}
+
+	// A fwmark rule for wanB's table appears.
+	egress["wanB"] = netutil.Egress{Iface: "wanB", Mark: 0x9}
+	recheck()
+	if got := opened["wanB"]; len(got) != 1 || got[0].eg.Mark != 0x9 {
+		t.Fatalf("wanB not probed with new mark: %+v", got)
+	}
+	st := m.GetStatus()
+	if len(st[2].Unroutable) != 0 || len(st[2].ICMPv4) != 1 {
+		t.Fatalf("wanB after rule added: %+v", st[2])
+	}
+
+	// wanA's rule changes from plain to source-bound: socket reopened,
+	// history reset.
+	if len(st[1].ICMPv4) != 2 {
+		t.Fatalf("wanA history: %d", len(st[1].ICMPv4))
+	}
+	egress["wanA"] = netutil.Egress{Iface: "wanA", Src: net.ParseIP("192.0.2.9")}
+	recheck()
+	if got := opened["wanA"]; len(got) != 2 || !got[0].closed.Load() || !got[1].eg.Src.Equal(net.ParseIP("192.0.2.9")) {
+		t.Fatalf("wanA not reopened with source: %+v", got)
+	}
+	if st := m.GetStatus(); len(st[1].ICMPv4) != 1 || st[1].Egress["ipv4"] != "source 192.0.2.9" {
+		t.Fatalf("wanA history not reset: %+v", st[1])
+	}
+
+	// Unchanged egress: no reopen.
+	recheck()
+	if len(opened["wanA"]) != 2 {
+		t.Fatalf("socket reopened without routing change")
+	}
+
+	// Routing state unreadable: plain interface binding.
+	delete(egress, "wanB")
+	recheck()
+	if got := opened["wanB"]; len(got) != 2 || got[1].eg.Mark != 0 || got[1].eg.Iface != "wanB" {
+		t.Fatalf("fallback: %+v", got)
 	}
 }

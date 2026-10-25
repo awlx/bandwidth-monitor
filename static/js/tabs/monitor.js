@@ -407,6 +407,12 @@
             var hasV4 = t.ipv4 && t.ipv4 !== '';
             var hasV6 = t.ipv6 && t.ipv6 !== '';
             var dualStack = hasV4 && hasV6;
+            // Families the host cannot route via this WAN are not probed.
+            var unroutable = t.unroutable || [];
+            if (unroutable.length && unroutable.length >= (hasV4 ? 1 : 0) + (hasV6 ? 1 : 0)) {
+                statusColor = 'var(--text-2)';
+                statusText = 'NOT ROUTABLE';
+            }
 
             h += '<div style="background:var(--bg-2);border-radius:8px;padding:16px;border:1px solid var(--border)">';
 
@@ -416,6 +422,10 @@
             if (multiWAN) {
                 h += ' <span style="font-size:10px;font-weight:600;color:var(--text-2);background:var(--bg-1);padding:1px 5px;border-radius:3px;margin-left:4px">' +
                     (t.wan ? 'via ' + BM.escHtml(t.wan) : 'default route') + '</span>';
+                unroutable.forEach(function(f) {
+                    h += ' <span title="No route or ip rule lets host traffic use this WAN; not probed" style="font-size:10px;font-weight:600;color:var(--warning, #f59e0b);background:var(--bg-1);padding:1px 5px;border-radius:3px;margin-left:4px">' +
+                        BM.escHtml(f) + ' not routable</span>';
+                });
             }
             h += '</div>';
             h += '<div style="font-size:10px;color:var(--text-2);font-family:var(--font-mono, monospace)">';
@@ -524,7 +534,9 @@
             paths.forEach(function(w) {
                 var t = rows[n][w], s = t && t.icmp_stats;
                 var cell = '—';
-                if (s) {
+                if (t && !s && t.unroutable && t.unroutable.length) {
+                    cell = '<span style="color:var(--text-2)" title="Not routable for host traffic; not probed">not routable</span>';
+                } else if (s) {
                     var lossColor = s.loss_pct >= 5 ? 'var(--danger, #ef4444)' : s.loss_pct > 0 ? 'var(--warning, #f59e0b)' : 'var(--text-2)';
                     cell = (s.avg_rtt_ms > 0 ? s.avg_rtt_ms.toFixed(1) + ' ms' : '—') +
                         ' <span style="color:' + lossColor + '">' + s.loss_pct.toFixed(1) + '%</span>';

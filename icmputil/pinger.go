@@ -56,20 +56,27 @@ func NewPinger(v6 bool) (*Pinger, error) {
 }
 
 // NewPingerInterface is like NewPinger but binds the socket to iface
-// (SO_BINDTODEVICE, Linux only) so probes leave via that interface and
-// only replies received on it are seen. An empty iface uses the default
-// route.
+// (Linux SO_BINDTODEVICE). An empty iface uses the default route.
 func NewPingerInterface(v6 bool, iface string) (*Pinger, error) {
+	return NewPingerEgress(v6, netutil.Egress{Iface: iface})
+}
+
+// NewPingerEgress is like NewPinger but sends via e: interface binding,
+// firewall mark and source address (see netutil.ResolveEgress).
+func NewPingerEgress(v6 bool, e netutil.Egress) (*Pinger, error) {
 	network, addr := "ip4:icmp", "0.0.0.0"
 	if v6 {
 		network, addr = "ip6:ipv6-icmp", "::"
 	}
+	if e.Src != nil {
+		addr = e.Src.String()
+	}
 	var c PacketConn
 	var err error
-	if iface == "" {
+	if e.Iface == "" && e.Mark == 0 {
 		c, err = icmp.ListenPacket(network, addr)
 	} else {
-		c, err = netutil.ListenConfigForInterface(iface).ListenPacket(context.Background(), network, addr)
+		c, err = netutil.ListenConfigForEgress(e).ListenPacket(context.Background(), network, addr)
 	}
 	if err != nil {
 		return nil, err

@@ -49,16 +49,23 @@ type TargetStatus struct {
 	// WAN is the interface the probes were bound to; empty for the
 	// default route. Per-WAN entries follow the default-route entry of the
 	// same target.
-	WAN     string  `json:"wan,omitempty"`
-	IPv4    string  `json:"ipv4,omitempty"`
-	IPv6    string  `json:"ipv6,omitempty"`
-	Alive   bool    `json:"alive"`
-	RTT     float64 `json:"rtt_ms"`
-	AvgRTT  float64 `json:"avg_rtt_ms"`
-	MinRTT  float64 `json:"min_rtt_ms"`
-	MaxRTT  float64 `json:"max_rtt_ms"`
-	Jitter  float64 `json:"jitter_ms"`
-	LossPct float64 `json:"loss_pct"`
+	WAN string `json:"wan,omitempty"`
+	// Unroutable lists the address families ("ipv4", "ipv6") that host
+	// traffic cannot send via WAN (no default route, or the WAN's policy
+	// table is not selected by any usable ip rule). They are not probed.
+	Unroutable []string `json:"unroutable,omitempty"`
+	// Egress describes how probes leave via WAN per family, e.g.
+	// "fwmark 0x6"; omitted for plain interface binding.
+	Egress  map[string]string `json:"egress,omitempty"`
+	IPv4    string            `json:"ipv4,omitempty"`
+	IPv6    string            `json:"ipv6,omitempty"`
+	Alive   bool              `json:"alive"`
+	RTT     float64           `json:"rtt_ms"`
+	AvgRTT  float64           `json:"avg_rtt_ms"`
+	MinRTT  float64           `json:"min_rtt_ms"`
+	MaxRTT  float64           `json:"max_rtt_ms"`
+	Jitter  float64           `json:"jitter_ms"`
+	LossPct float64           `json:"loss_pct"`
 	// Per-protocol summary stats
 	ICMPStats  *ProbeStats `json:"icmp_stats,omitempty"`
 	HTTPSStats *ProbeStats `json:"https_stats,omitempty"`
@@ -90,7 +97,10 @@ type Monitor struct {
 	mu      sync.RWMutex
 	poller.Runner
 
-	newPinger func(v6 bool, iface string) (pinger, error)
+	newPinger func(v6 bool, eg netutil.Egress) (pinger, error)
+	// resolveEgress looks up how to reach a WAN's default route under the
+	// host's policy routing (see netutil.ResolveEgress).
+	resolveEgress func(iface string, v6 bool) (netutil.Egress, error)
 
 	// wanSource, when set, returns the current WAN interfaces. It is
 	// polled every round and probe paths are added/removed to match.
@@ -109,8 +119,8 @@ type pinger interface {
 	Close() error
 }
 
-func defaultNewPinger(v6 bool, iface string) (pinger, error) {
-	p, err := icmputil.NewPingerInterface(v6, iface)
+func defaultNewPinger(v6 bool, eg netutil.Egress) (pinger, error) {
+	p, err := icmputil.NewPingerEgress(v6, eg)
 	if err != nil {
 		return nil, err
 	}
@@ -127,7 +137,22 @@ type probePath struct {
 	// socket being closed, and are opened lazily (retried each round).
 	ping4, ping6       pinger
 	v4Logged, v6Logged bool
+
+	// eg is the egress per family ([0] IPv4, [1] IPv6), re-resolved every
+	// egressRecheck. gen is bumped on every change so results of probes
+	// that were in flight across the change are discarded. Written by the
+	// probe loop under Monitor.mu.
+	eg        [2]netutil.Egress
+	gen       [2]uint64
+	egAt      time.Time
+	egErrLogd [2]bool
 }
+
+const egressRecheck = 10 * time.Second
+
+var familyNames = [2]string{"ipv4", "ipv6"}
+
+func (p *probePath) unroutable(f int) bool { return p.eg[f].Unroutable != "" }
 
 func (p *probePath) label() string {
 	if p.wan == "" {
@@ -155,14 +180,14 @@ type targetState struct {
 // given IP address, bypassing DNS resolution entirely.  The TLS ServerName
 // is set to hostname so certificate validation works correctly.
 // When iface is set the connection is bound to that interface.
-func newDirectHTTPSClient(ip net.IP, hostname, iface string) *http.Client {
+func newDirectHTTPSClient(ip net.IP, hostname string, eg netutil.Egress) *http.Client {
 	network := "tcp4"
 	ipStr := ip.String()
 	if ip.To4() == nil {
 		network = "tcp6"
 		ipStr = "[" + ipStr + "]"
 	}
-	dialer := netutil.DialerForInterface(iface)
+	dialer := netutil.DialerForEgress(eg)
 	dialer.Timeout = httpsTimeout
 	return &http.Client{
 		Timeout: httpsTimeout,
@@ -224,8 +249,8 @@ func New(targets []string) *Monitor {
 	return newMonitor(resolved, defaultNewPinger)
 }
 
-func newMonitor(targets []resolvedTarget, newPinger func(bool, string) (pinger, error)) *Monitor {
-	m := &Monitor{targets: targets, newPinger: newPinger}
+func newMonitor(targets []resolvedTarget, newPinger func(bool, netutil.Egress) (pinger, error)) *Monitor {
+	m := &Monitor{targets: targets, newPinger: newPinger, resolveEgress: netutil.ResolveEgress}
 	m.Runner.Init()
 	m.paths = []*probePath{m.newPath("")}
 	return m
@@ -234,23 +259,115 @@ func newMonitor(targets []resolvedTarget, newPinger func(bool, string) (pinger, 
 func (m *Monitor) newPath(wan string) *probePath {
 	p := &probePath{wan: wan, state: make(map[string]*targetState, len(m.targets))}
 	for _, t := range m.targets {
-		st := &targetState{}
-		if t.ipv4 != nil {
-			st.httpC4 = newDirectHTTPSClient(t.ipv4, t.name, wan)
+		p.state[t.name] = &targetState{}
+	}
+	if wan != "" {
+		for f := range p.eg {
+			p.eg[f] = m.resolve(p, f)
+			m.logEgress(p, f)
 		}
-		if t.ipv6 != nil {
-			st.httpC6 = newDirectHTTPSClient(t.ipv6, t.name, wan)
-		}
-		p.state[t.name] = st
+		p.egAt = time.Now()
+	}
+	for f := range p.eg {
+		m.buildHTTPClients(p, f)
 	}
 	return p
+}
+
+// resolve returns the egress for family f of a WAN path. If the routing
+// state cannot be read, it falls back to plain interface binding.
+func (m *Monitor) resolve(p *probePath, f int) netutil.Egress {
+	eg, err := m.resolveEgress(p.wan, f == 1)
+	if err != nil {
+		if !p.egErrLogd[f] {
+			log.Printf("latency: cannot read %s policy routing for %s, binding to the interface only: %v", familyNames[f], p.wan, err)
+			p.egErrLogd[f] = true
+		}
+		return netutil.Egress{Iface: p.wan}
+	}
+	p.egErrLogd[f] = false
+	return eg
+}
+
+func (m *Monitor) logEgress(p *probePath, f int) {
+	if p.unroutable(f) {
+		log.Printf("latency: %s via %s not routable for host traffic (%s); not probing it", familyNames[f], p.wan, p.eg[f].Unroutable)
+	} else {
+		log.Printf("latency: %s probes via %s: %s", familyNames[f], p.wan, p.eg[f])
+	}
+}
+
+// buildHTTPClients (re)creates the HTTPS clients of family f. Callers
+// other than newPath must hold m.mu.
+func (m *Monitor) buildHTTPClients(p *probePath, f int) {
+	for _, t := range m.targets {
+		st := p.state[t.name]
+		ip := t.ipv4
+		if f == 1 {
+			ip = t.ipv6
+		}
+		var c *http.Client
+		if ip != nil && !p.unroutable(f) {
+			c = newDirectHTTPSClient(ip, t.name, p.eg[f])
+		}
+		if f == 0 {
+			st.httpC4 = c
+		} else {
+			st.httpC6 = c
+		}
+	}
+}
+
+// refreshEgress re-resolves the egress of WAN paths so changes to routes
+// or ip rules (WAN up/down, policy changes) are followed. On a change the
+// family's sockets and HTTPS clients are rebuilt and its history is reset,
+// since it no longer describes the same path. Only called from the probe
+// loop goroutine.
+func (m *Monitor) refreshEgress(paths []*probePath) {
+	now := time.Now()
+	for _, p := range paths {
+		if p.wan == "" || now.Sub(p.egAt) < egressRecheck {
+			continue
+		}
+		p.egAt = now
+		for f := range p.eg {
+			eg := m.resolve(p, f)
+			if eg.Equal(p.eg[f]) {
+				continue
+			}
+			m.mu.Lock()
+			p.eg[f] = eg
+			p.gen[f]++
+			m.buildHTTPClients(p, f)
+			for _, st := range p.state {
+				if f == 0 {
+					st.icmpV4Hist, st.httpsV4Hist = nil, nil
+				} else {
+					st.icmpV6Hist, st.httpsV6Hist = nil, nil
+				}
+			}
+			m.mu.Unlock()
+			if f == 0 && p.ping4 != nil {
+				p.ping4.Close()
+				p.ping4, p.v4Logged = nil, false
+			} else if f == 1 && p.ping6 != nil {
+				p.ping6.Close()
+				p.ping6, p.v6Logged = nil, false
+			}
+			m.logEgress(p, f)
+		}
+	}
 }
 
 // SetWANSource enables per-WAN probing. src returns the current WAN
 // interface names (e.g. the collector's auto-detected or configured WAN
 // set) and is polled every probe round. When it reports two or more
 // interfaces, every target is additionally probed with sockets bound to
-// each of them; with fewer, only the default route is probed. Must be
+// each of them; with fewer, only the default route is probed. On Linux the
+// host's policy routing is followed: if a WAN's default route lives in a
+// table selected by an fwmark or source ip rule, probes carry that mark or
+// source address; if no rule selects it, the WAN is reported unroutable
+// for that address family instead of being probed. Must be
 // called before Run. Ignored on platforms that cannot bind sockets to an
 // interface.
 func (m *Monitor) SetWANSource(src func() []string) {
@@ -379,7 +496,21 @@ func (m *Monitor) GetStatus() []TargetStatus {
 	result := make([]TargetStatus, 0, len(m.targets)*len(m.paths))
 	for _, t := range m.targets {
 		for _, p := range m.paths {
-			result = append(result, buildStatus(t, p.wan, p.state[t.name]))
+			ts := buildStatus(t, p.wan, p.state[t.name])
+			for f, ip := range [2]net.IP{t.ipv4, t.ipv6} {
+				if ip == nil {
+					continue
+				}
+				if p.unroutable(f) {
+					ts.Unroutable = append(ts.Unroutable, familyNames[f])
+				} else if p.eg[f].Mark != 0 || p.eg[f].Src != nil {
+					if ts.Egress == nil {
+						ts.Egress = map[string]string{}
+					}
+					ts.Egress[familyNames[f]] = p.eg[f].String()
+				}
+			}
+			result = append(result, ts)
 		}
 	}
 	return result
@@ -535,6 +666,7 @@ func computeStats(pts []Point) (avg, min, max, jitter float64) {
 func (m *Monitor) probeAll() {
 	m.syncWANs()
 	paths := m.snapshotPaths()
+	m.refreshEgress(paths)
 	m.ensurePingers(paths)
 	m.probeICMP(paths)
 	m.startHTTPS(paths)
@@ -542,8 +674,8 @@ func (m *Monitor) probeAll() {
 
 func (m *Monitor) ensurePingers(paths []*probePath) {
 	for _, p := range paths {
-		if p.ping4 == nil {
-			if pg, err := m.newPinger(false, p.wan); err != nil {
+		if p.ping4 == nil && !p.unroutable(0) {
+			if pg, err := m.newPinger(false, p.eg[0]); err != nil {
 				if !p.v4Logged {
 					log.Printf("latency: ICMPv4 unavailable via %s (need root/CAP_NET_RAW): %v", p.label(), err)
 					p.v4Logged = true
@@ -552,8 +684,8 @@ func (m *Monitor) ensurePingers(paths []*probePath) {
 				p.ping4 = pg
 			}
 		}
-		if p.ping6 == nil {
-			if pg, err := m.newPinger(true, p.wan); err != nil {
+		if p.ping6 == nil && !p.unroutable(1) {
+			if pg, err := m.newPinger(true, p.eg[1]); err != nil {
 				if !p.v6Logged {
 					log.Printf("latency: ICMPv6 unavailable via %s: %v", p.label(), err)
 					p.v6Logged = true
@@ -603,24 +735,30 @@ func (m *Monitor) probeICMP(paths []*probePath) {
 		}
 	}
 	wg.Wait()
-	m.record(paths, ts, r, false)
+	m.record(paths, nil, ts, r, false)
 }
 
 // record appends one round of results to the ICMP or HTTPS histories.
-func (m *Monitor) record(paths []*probePath, ts int64, r probeResults, https bool) {
+// Unroutable families are skipped, as are families whose egress changed
+// since gens (per path, taken when the probes started; nil = unchanged).
+func (m *Monitor) record(paths []*probePath, gens [][2]uint64, ts int64, r probeResults, https bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for pi, p := range paths {
+		var skip [2]bool
+		for f := range skip {
+			skip[f] = p.unroutable(f) || (gens != nil && gens[pi][f] != p.gen[f])
+		}
 		for ti, t := range m.targets {
 			st := p.state[t.name]
 			v4, v6 := &st.icmpV4Hist, &st.icmpV6Hist
 			if https {
 				v4, v6 = &st.httpsV4Hist, &st.httpsV6Hist
 			}
-			if t.ipv4 != nil {
+			if t.ipv4 != nil && !skip[0] {
 				*v4 = appendAndTrim(*v4, Point{Timestamp: ts, RTT: r.v4[pi][ti]})
 			}
-			if t.ipv6 != nil {
+			if t.ipv6 != nil && !skip[1] {
 				*v6 = appendAndTrim(*v6, Point{Timestamp: ts, RTT: r.v6[pi][ti]})
 			}
 		}
@@ -644,28 +782,37 @@ func (m *Monitor) startHTTPS(paths []*probePath) {
 func (m *Monitor) probeHTTPSAll(paths []*probePath) {
 	ts := time.Now().UnixMilli()
 	r := m.newResults(len(paths))
-	var wg sync.WaitGroup
+	// Clients are swapped by refreshEgress, so read them under the lock.
+	gens := make([][2]uint64, len(paths))
+	clients := make([][][2]*http.Client, len(paths))
+	m.mu.RLock()
 	for pi, p := range paths {
+		gens[pi] = p.gen
+		clients[pi] = make([][2]*http.Client, len(m.targets))
 		for ti, t := range m.targets {
 			st := p.state[t.name]
-			if t.ipv4 != nil {
+			clients[pi][ti] = [2]*http.Client{st.httpC4, st.httpC6}
+		}
+	}
+	m.mu.RUnlock()
+	var wg sync.WaitGroup
+	for pi := range paths {
+		for ti, t := range m.targets {
+			for f, out := range [2]*float64{&r.v4[pi][ti], &r.v6[pi][ti]} {
+				c := clients[pi][ti][f]
+				if c == nil {
+					continue
+				}
 				wg.Add(1)
 				go func(c *http.Client, out *float64, name string) {
 					defer wg.Done()
 					*out = m.probeHTTPS(c, name)
-				}(st.httpC4, &r.v4[pi][ti], t.name)
-			}
-			if t.ipv6 != nil {
-				wg.Add(1)
-				go func(c *http.Client, out *float64, name string) {
-					defer wg.Done()
-					*out = m.probeHTTPS(c, name)
-				}(st.httpC6, &r.v6[pi][ti], t.name)
+				}(c, out, t.name)
 			}
 		}
 	}
 	wg.Wait()
-	m.record(paths, ts, r, true)
+	m.record(paths, gens, ts, r, true)
 }
 
 func appendAndTrim(s []Point, p Point) []Point {
