@@ -2,6 +2,7 @@ package packets
 
 import (
 	"encoding/binary"
+	"errors"
 	"net"
 
 	"golang.org/x/net/bpf"
@@ -134,25 +135,23 @@ func detectTunnel(pkt []byte, ipHdrStart int, p *Packet) {
 		return
 	}
 
-	// OpenVPN: first byte has opcode in bits 7-3 (values 1-10 are valid
-	// control/data opcodes) and key_id in bits 2-0.
+	// OpenVPN: first byte has opcode in bits 7-3 and key_id in bits 2-0.
+	// The data channel carries no magic bytes, so opcode matching alone
+	// also matches ~30% of arbitrary UDP payloads (e.g. QUIC short-header
+	// packets 0x40-0x57), dropping that traffic from host accounting.
+	// Only treat the IANA OpenVPN port as a tunnel.
+	srcPort := binary.BigEndian.Uint16(pkt[udpStart : udpStart+2])
+	dstPort := binary.BigEndian.Uint16(pkt[udpStart+2 : udpStart+4])
+	if srcPort != openVPNPort && dstPort != openVPNPort {
+		return
+	}
 	opcode := pkt[payloadStart] >> 3
-	if opcode >= 1 && opcode <= 10 {
-		// Additional check: OpenVPN data packets (opcode 6,9,10) are followed
-		// by a 4-byte peer-id or session-id. Control packets (1-5,7,8) have
-		// an 8-byte session ID. Check that we have enough data and the
-		// opcode is in the valid range.
-		// Since opcode 6 (P_DATA_V1) and 9 (P_DATA_V2) are by far the most
-		// common, and false positives are possible for random UDP traffic,
-		// require the second byte to look like a plausible session/peer ID
-		// (not all zeros, which would indicate random data).
-		if payloadStart+8 <= len(pkt) {
-			// Valid OpenVPN opcode with enough payload
-			p.IsTunnel = true
-			return
-		}
+	if opcode >= 1 && opcode <= 10 && payloadStart+8 <= len(pkt) {
+		p.IsTunnel = true
 	}
 }
+
+const openVPNPort = 1194
 
 // SLL header size for Linux cooked capture (LINUX_SLL v1).
 // AF_PACKET on PPP and similar L3 interfaces delivers packets with this
@@ -290,6 +289,17 @@ func BPFFilterForDevice(dev string) []bpf.Instruction {
 	}
 	return AnyIpFilter
 }
+
+// RingStats holds kernel capture counters for one ring since the previous
+// Stats call.
+type RingStats struct {
+	Packets uint64
+	Drops   uint64
+}
+
+// ErrStatsUnsupported is returned by Ring.Stats on platforms without
+// kernel capture counters.
+var ErrStatsUnsupported = errors.New("capture statistics not supported")
 
 // PacketHandler is called for each captured packet. pkt is only valid for the
 // duration of the callback. wireLen is the original packet length on the wire.
