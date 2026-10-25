@@ -17,11 +17,12 @@ import (
 )
 
 const (
-	snapshotLen       int32         = 128
-	capTimeout        time.Duration = 100 * time.Millisecond
-	bucketSize                      = 1 * time.Minute
-	maxAge                          = 24 * time.Hour
-	maxHostsPerBucket               = 10000 // cap to bound memory on busy routers
+	snapshotLen         int32         = 128
+	capTimeout          time.Duration = 100 * time.Millisecond
+	bucketSize                        = 1 * time.Minute
+	maxAge                            = 24 * time.Hour
+	maxHostsPerBucket                 = 10000 // cap to bound memory on busy routers
+	endpointCacheMaxAge               = time.Hour
 
 	// Pair tracking (local host -> remote host) for ASN/provider drill-downs.
 	maxPairsPerBucket      = 20000 // total distinct (local,remote) pairs per bucket
@@ -130,7 +131,8 @@ type bucket struct {
 	// ASN/provider X" drill-downs, which need local-host attribution that
 	// the flat `hosts` totals above cannot provide (hosts only tracks each
 	// IP's own totals, not who it talked to).
-	pairs map[string]map[string]*hostAccum
+	pairs     map[string]map[string]*hostAccum
+	pairCount int // total (local, remote) entries across pairs
 }
 
 // rateSlot is one slot in the short rate ring buffer.
@@ -189,6 +191,7 @@ type Tracker struct {
 	localNets   []*net.IPNet        // LOCAL_NETS for direction detection
 	selfIPs     map[string]struct{} // router's own interface IPs for direction tiebreaker
 	lanDevices  map[string]bool     // LAN-facing interfaces (have private addrs) — only these count hosts
+
 	mu          sync.RWMutex
 	buckets     []*bucket
 	current     *bucket
@@ -941,6 +944,7 @@ func (t *Tracker) captureDevice(device string) error {
 	// scans and net.IP allocations for nearly every packet.
 	endpointCache := make(map[[16]byte]*packetEndpoint, 256)
 	cacheResets := 0
+	lastCacheReset := time.Now()
 
 	// Pre-allocate batch buffer (reused across blocks)
 	batch := make([]parsedPkt, 0, 256)
@@ -953,13 +957,20 @@ func (t *Tracker) captureDevice(device string) error {
 		}
 
 		// Periodically reset the endpoint cache to bound memory on
-		// routers that see a large number of unique IPs over time.
+		// routers that see a large number of unique IPs over time. Cached
+		// endpoints also reference the bucket and rate slot they last
+		// touched, so an hourly reset keeps idle entries from pinning
+		// expired buckets beyond the 24h window.
 		if len(endpointCache) > 100000 {
 			endpointCache = make(map[[16]byte]*packetEndpoint, 256)
+			lastCacheReset = time.Now()
 			cacheResets++
 			if cacheResets == 1 {
 				log.Printf("talkers: reset endpoint cache on %s (>100k entries)", device)
 			}
+		} else if time.Since(lastCacheReset) >= endpointCacheMaxAge {
+			clear(endpointCache)
+			lastCacheReset = time.Now()
 		}
 
 		// Phase 1: Parse all packets in the block WITHOUT holding the lock.
@@ -1236,7 +1247,7 @@ func accountEndpoint(endpoint *packetEndpoint, ip string, loopLL bool, current *
 			rateAccum = endpoint.rateAccum
 		} else {
 			rateAccum = rSlot.hosts[ip]
-			if rateAccum == nil {
+			if rateAccum == nil && len(rSlot.hosts) < maxHostsPerBucket {
 				rateAccum = &hostAccum{}
 				rSlot.hosts[ip] = rateAccum
 			}
@@ -1305,21 +1316,19 @@ func (t *Tracker) recordPair(current *bucket, localIP, remoteIP string, wireLen,
 	if _, isSelf := t.selfIPs[localIP]; isSelf {
 		return
 	}
-	remotes, ok := current.pairs[localIP]
-	if !ok {
-		if len(current.pairs) >= maxPairsPerBucket {
+	remotes := current.pairs[localIP]
+	acc := remotes[remoteIP]
+	if acc == nil {
+		if current.pairCount >= maxPairsPerBucket || len(remotes) >= maxRemotesPerLocalHost {
 			return
 		}
-		remotes = make(map[string]*hostAccum)
-		current.pairs[localIP] = remotes
-	}
-	acc, ok := remotes[remoteIP]
-	if !ok {
-		if len(remotes) >= maxRemotesPerLocalHost {
-			return
+		if remotes == nil {
+			remotes = make(map[string]*hostAccum)
+			current.pairs[localIP] = remotes
 		}
 		acc = &hostAccum{}
 		remotes[remoteIP] = acc
+		current.pairCount++
 	}
 	acc.bytes += wireLen
 	acc.rxBytes += rx
