@@ -60,8 +60,8 @@ sudoedit /opt/bandwidth-monitor/.env
 sudo systemctl restart bandwidth-monitor
 ```
 
-See [Installation](docs/installation.md) for packages, OpenWrt, NixOS, manual
-systemd setup, and GeoIP options.
+See [Installation](docs/installation.md) for packages, OpenWrt, FreeBSD and
+OPNsense, NixOS, manual systemd setup, and GeoIP options.
 
 ## bandwidth-top
 
@@ -203,6 +203,22 @@ apk add --allow-untrusted /tmp/bandwidth-monitor-*.apk
 
 Install the matching `bandwidth-top` `.ipk` or `.apk` independently if desired.
 
+### FreeBSD and OPNsense
+
+FreeBSD release archives contain the daemon and an rc.d script. On OPNsense,
+run from a root shell:
+
+```sh
+tar -xzf bandwidth-monitor_*_freebsd_amd64.tar.gz -C /
+cp /usr/local/etc/bandwidth-monitor/env.sample /usr/local/etc/bandwidth-monitor/env
+sysrc bandwidth_monitor_enable=YES
+service bandwidth_monitor start
+```
+
+Connection tracking uses the pf state table, and top talkers use BPF. See
+[Installation](docs/installation.md#freebsd-and-opnsense) for details and the
+OPNsense plugin skeleton.
+
 ### Nix
 
 Run either application directly:
@@ -225,6 +241,7 @@ examples.
 | Installation | Configuration file |
 |---|---|
 | Debian, RPM, or OpenWrt package | `/etc/bandwidth-monitor/env` |
+| FreeBSD or OPNsense archive | `/usr/local/etc/bandwidth-monitor/env` |
 | `make install` or manual `/opt` install | `/opt/bandwidth-monitor/.env` |
 | NixOS module | `services.bandwidth-monitor` options or an environment file |
 

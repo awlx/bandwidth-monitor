@@ -1,0 +1,9 @@
+<acl>
+    <page-services-bandwidthmonitor>
+        <name>Services: Bandwidth Monitor</name>
+        <patterns>
+            <pattern>ui/bandwidthmonitor/*</pattern>
+            <pattern>api/bandwidthmonitor/*</pattern>
+        </patterns>
+    </page-services-bandwidthmonitor>
+</acl>

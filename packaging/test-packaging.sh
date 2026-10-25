@@ -205,6 +205,13 @@ assert_contains "$repo/.github/workflows/release.yml" "if: always() && !startsWi
 assert_contains "$repo/.github/workflows/release.yml" 'DARWIN_TOP_RESULT: ${{ needs.darwin-top.result }}'
 assert_contains "$repo/.github/workflows/release.yml" 'LINUX_PACKAGES_RESULT: ${{ needs.linux-packages.result }}'
 assert_contains "$repo/.github/workflows/release.yml" 'OPENWRT_RESULT: ${{ needs.openwrt.result }}'
+assert_contains "$repo/.github/workflows/release.yml" 'FREEBSD_RESULT: ${{ needs.freebsd.result }}'
+assert_contains "$repo/.github/workflows/release.yml" 'needs: [linux-packages, openwrt, darwin-top, freebsd]'
+assert_contains "$repo/.github/workflows/release.yml" 'bandwidth-monitor_${VERSION}_freebsd_${GOARCH}.tar.gz'
+assert_contains "$repo/packaging/freebsd/bandwidth_monitor.rc" 'rcvar=bandwidth_monitor_enable'
+assert_contains "$repo/packaging/freebsd/bandwidth_monitor.rc" ': ${bandwidth_monitor_env_file:="/usr/local/etc/bandwidth-monitor/env"}'
+assert_contains "$repo/packaging/opnsense/net-mgmt/bandwidth-monitor/src/opnsense/service/conf/actions.d/actions_bandwidthmonitor.conf" '/usr/local/etc/rc.d/bandwidth_monitor start'
+sh -n "$repo/packaging/freebsd/bandwidth_monitor.rc" || fail "FreeBSD rc.d script has syntax errors"
 assert_contains "$repo/.github/workflows/homebrew-cask.yml" 'homebrew-cask:'
 assert_contains "$repo/packaging/generate-homebrew-cask.sh" 'on_arm do'
 assert_contains "$repo/packaging/generate-homebrew-cask.sh" 'on_intel do'

@@ -1,0 +1,5 @@
+<menu>
+    <Services>
+        <BandwidthMonitor VisibleName="Bandwidth Monitor" cssClass="fa fa-area-chart" url="/ui/bandwidthmonitor/general/index"/>
+    </Services>
+</menu>

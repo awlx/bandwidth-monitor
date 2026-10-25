@@ -8,6 +8,7 @@ myenv.example
 
 # Build artifacts
 bandwidth-monitor
+!/packaging/opnsense/net-mgmt/bandwidth-monitor/
 *.deb
 *.rpm
 *.ipk

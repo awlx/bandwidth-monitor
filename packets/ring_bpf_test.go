@@ -1,4 +1,4 @@
-//go:build darwin
+//go:build darwin || freebsd
 
 package packets
 
@@ -78,18 +78,18 @@ func TestParseBPFRecordsRejectsMalformedInput(t *testing.T) {
 		"truncated header": make([]byte, minBPFHeaderLen-1),
 		"short header length": func() []byte {
 			data := append([]byte(nil), valid...)
-			binary.NativeEndian.PutUint16(data[16:18], minBPFHeaderLen-1)
+			binary.NativeEndian.PutUint16(data[bpfHdrlenOffset:], uint16(minBPFHeaderLen-1))
 			return data
 		}(),
 		"captured exceeds wire": func() []byte {
 			data := append([]byte(nil), valid...)
-			binary.NativeEndian.PutUint32(data[12:16], 1)
+			binary.NativeEndian.PutUint32(data[bpfDatalenOffset:], 1)
 			return data
 		}(),
 		"captured exceeds buffer": func() []byte {
 			data := append([]byte(nil), valid...)
-			binary.NativeEndian.PutUint32(data[8:12], 4096)
-			binary.NativeEndian.PutUint32(data[12:16], 4096)
+			binary.NativeEndian.PutUint32(data[bpfCaplenOffset:], 4096)
+			binary.NativeEndian.PutUint32(data[bpfDatalenOffset:], 4096)
 			return data
 		}(),
 		"truncated alignment": valid[:len(valid)-1],
@@ -103,7 +103,7 @@ func TestParseBPFRecordsRejectsMalformedInput(t *testing.T) {
 	}
 }
 
-func TestDarwinEthernetFilterAcceptsVLANAndDropsNonIP(t *testing.T) {
+func TestBPFEthernetFilterAcceptsVLANAndDropsNonIP(t *testing.T) {
 	vm, err := bpf.NewVM(AnyIpFilter)
 	if err != nil {
 		t.Fatal(err)
@@ -155,7 +155,7 @@ func TestOpenBPFDeviceSkipsBusyDevicesAndExplainsPermissions(t *testing.T) {
 	}
 }
 
-func TestDarwinRingClosesDescriptorAfterConfigurationFailure(t *testing.T) {
+func TestBPFRingClosesDescriptorAfterConfigurationFailure(t *testing.T) {
 	closeCalls := 0
 	system := bpfSystem{
 		open:  func(string, int, uint32) (int, error) { return 42, nil },
@@ -168,7 +168,7 @@ func TestDarwinRingClosesDescriptorAfterConfigurationFailure(t *testing.T) {
 		},
 		ioctlPtr: func(int, uint, unsafe.Pointer) error { return nil },
 	}
-	if _, err := newDarwinRing("test0", false, system); err == nil {
+	if _, err := newBPFRing("test0", false, system); err == nil {
 		t.Fatal("configuration failure was ignored")
 	}
 	if closeCalls != 1 {
@@ -176,7 +176,7 @@ func TestDarwinRingClosesDescriptorAfterConfigurationFailure(t *testing.T) {
 	}
 }
 
-func TestDarwinRingUsesPointerIntegerIOCTLs(t *testing.T) {
+func TestBPFRingUsesPointerIntegerIOCTLs(t *testing.T) {
 	var requests []struct {
 		request uint
 		value   int
@@ -200,7 +200,7 @@ func TestDarwinRingUsesPointerIntegerIOCTLs(t *testing.T) {
 			return unix.DLT_RAW, nil
 		},
 	}
-	ring, err := newDarwinRing("test0", false, system)
+	ring, err := newBPFRing("test0", false, system)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -214,7 +214,7 @@ func TestDarwinRingUsesPointerIntegerIOCTLs(t *testing.T) {
 	}
 }
 
-func TestDarwinRingCloseIsIdempotent(t *testing.T) {
+func TestBPFRingCloseIsIdempotent(t *testing.T) {
 	closeCalls := 0
 	system := bpfSystem{
 		open:               func(string, int, uint32) (int, error) { return 42, nil },
@@ -229,7 +229,7 @@ func TestDarwinRingCloseIsIdempotent(t *testing.T) {
 			return unix.DLT_RAW, nil
 		},
 	}
-	ring, err := newDarwinRing("test0", false, system)
+	ring, err := newBPFRing("test0", false, system)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -254,9 +254,9 @@ func FuzzParseBPFRecordsNeverPanics(f *testing.F) {
 func bpfTestRecord(payload []byte, wireLength uint32) []byte {
 	recordLength := unix.SizeofBpfHdr + len(payload)
 	record := make([]byte, bpfWordAlign(recordLength))
-	binary.NativeEndian.PutUint32(record[8:12], uint32(len(payload)))
-	binary.NativeEndian.PutUint32(record[12:16], wireLength)
-	binary.NativeEndian.PutUint16(record[16:18], unix.SizeofBpfHdr)
+	binary.NativeEndian.PutUint32(record[bpfCaplenOffset:], uint32(len(payload)))
+	binary.NativeEndian.PutUint32(record[bpfDatalenOffset:], wireLength)
+	binary.NativeEndian.PutUint16(record[bpfHdrlenOffset:], unix.SizeofBpfHdr)
 	copy(record[unix.SizeofBpfHdr:], payload)
 	return record
 }
@@ -280,4 +280,44 @@ func qinqTestFrame(outer, middle, inner uint16) []byte {
 	binary.BigEndian.PutUint16(frame[16:18], middle)
 	binary.BigEndian.PutUint16(frame[20:22], inner)
 	return frame
+}
+
+func TestBPFRingStatsReturnsDeltas(t *testing.T) {
+	samples := []bpfStat{
+		{Recv: 100, Drop: 2},
+		{Recv: 150, Drop: 2},
+		{Recv: 10, Drop: 5}, // 32-bit counter wrapped
+	}
+	call := 0
+	ring := &Ring{fd: 3, system: bpfSystem{
+		ioctlPtr: func(_ int, request uint, arg unsafe.Pointer) error {
+			if request != unix.BIOCGSTATS {
+				t.Fatalf("request = %#x, want BIOCGSTATS", request)
+			}
+			*(*bpfStat)(arg) = samples[call]
+			call++
+			return nil
+		},
+	}}
+	want := []RingStats{
+		{Packets: 100, Drops: 2},
+		{Packets: 50, Drops: 0},
+		{Packets: 10 + (1<<32 - 150), Drops: 3},
+	}
+	for i, w := range want {
+		got, err := ring.Stats()
+		if err != nil {
+			t.Fatalf("Stats #%d: %v", i, err)
+		}
+		if got != w {
+			t.Fatalf("Stats #%d = %+v, want %+v", i, got, w)
+		}
+	}
+}
+
+func TestBPFRingStatsOnClosedRing(t *testing.T) {
+	ring := &Ring{fd: -1}
+	if _, err := ring.Stats(); err == nil {
+		t.Fatal("Stats on closed ring succeeded")
+	}
 }

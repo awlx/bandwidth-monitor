@@ -1,0 +1,33 @@
+<model>
+    <mount>//OPNsense/BandwidthMonitor</mount>
+    <description>bandwidth-monitor configuration</description>
+    <version>0.1.0</version>
+    <items>
+        <enabled type="BooleanField">
+            <Default>0</Default>
+            <Required>Y</Required>
+        </enabled>
+        <listen type="TextField">
+            <Default>127.0.0.1:8080</Default>
+            <Required>Y</Required>
+            <Mask>/^[0-9A-Za-z.:\[\],%_-]{1,512}$/</Mask>
+            <ValidationMessage>Use host:port pairs separated by commas.</ValidationMessage>
+        </listen>
+        <interfaces type="TextField">
+            <Mask>/^[0-9A-Za-z_.,-]{0,512}$/</Mask>
+            <ValidationMessage>Use device names separated by commas.</ValidationMessage>
+        </interfaces>
+        <waninterface type="TextField">
+            <Mask>/^[0-9A-Za-z_.-]{0,32}$/</Mask>
+            <ValidationMessage>Use a single device name.</ValidationMessage>
+        </waninterface>
+        <localnets type="TextField">
+            <Mask>/^[0-9A-Fa-f.:\/,]{0,1024}$/</Mask>
+            <ValidationMessage>Use CIDRs separated by commas.</ValidationMessage>
+        </localnets>
+        <metrics type="BooleanField">
+            <Default>1</Default>
+            <Required>Y</Required>
+        </metrics>
+    </items>
+</model>
