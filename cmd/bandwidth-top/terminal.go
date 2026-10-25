@@ -1,4 +1,4 @@
-//go:build linux || darwin
+//go:build linux || darwin || freebsd
 
 package main
 
@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"bandwidth-monitor/bandwidthtop"
+	"bandwidth-monitor/packets"
 	"bandwidth-monitor/talkers"
 	"bandwidth-monitor/version"
 
@@ -32,6 +33,12 @@ type terminalDimensions struct {
 type liveTracker interface {
 	DirectBandwidthSnapshotForMode(talkers.DirectViewMode, int) ([]talkers.DirectTalkerStat, talkers.DirectRateTotals)
 	Errors() <-chan error
+	captureStatsSource
+}
+
+type captureStatsSource interface {
+	CaptureHealth() []talkers.CaptureHealth
+	CaptureStats() map[string]packets.RingStats
 }
 
 type liveEnricher interface {
@@ -135,11 +142,7 @@ func (m *liveModel) handleKey(key string) (tea.Model, tea.Cmd) {
 		m.config.resolver.SetEnabled(!m.noResolve)
 		m.refreshSnapshot()
 	case "p":
-		if m.mode == bandwidthtop.ViewPorts {
-			m.mode = bandwidthtop.ViewHosts
-		} else {
-			m.mode = bandwidthtop.ViewPorts
-		}
+		m.mode = m.mode.Next()
 		m.refreshSnapshot()
 	case "h", "?":
 		m.showHelp = !m.showHelp
@@ -161,6 +164,9 @@ func (m *liveModel) View() tea.View {
 		return view
 	}
 	status := []string{viewStatus(m.mode) + " | " + rdnsStatus(!m.noResolve) + " | p mode | n rDNS | ? help | q quit"}
+	if line := captureStatus(m.config.tracker); line != "" {
+		status = append(status, line)
+	}
 	status = append(status, m.config.enricher.SourceStatusLines(size.width)...)
 	if lookupStatus := lookupErrorStatus(m.rows); lookupStatus != "" {
 		status = append(status, lookupStatus)
@@ -189,8 +195,11 @@ func renderHelpScreen(size terminalDimensions, mode bandwidthtop.ViewMode, resol
 		fmt.Sprintf("bandwidth-top %s - help", version.String()),
 		current,
 		"",
-		"Modes: hosts group by remote IP; ports group by remote IP, port, and protocol.",
+		"Modes: hosts group by remote IP; ports group by remote IP, port, and protocol;",
+		"       services group by well-known port (HTTPS, QUIC, DNS, ...).",
 		`Remote port: outbound destination, inbound source; "-" means unavailable.`,
+		"Services TOTAL: TX/RX bytes per service since start.",
+		"Capture: kernel packets/s and ring drops (10s), then since-start counts.",
 		"Directions: LOCAL => REMOTE is TX; LOCAL <= REMOTE is RX.",
 		"Rates: 2s, 10s, and 40s are rolling bit/s averages.",
 		"Graph: bars scale to the largest directional 2s rate currently shown.",
@@ -198,11 +207,11 @@ func renderHelpScreen(size terminalDimensions, mode bandwidthtop.ViewMode, resol
 		"Enrichment: local MMDB -> monitor -> public fallback, for remote peers only.",
 		"PTR: one shared async cache resolves both endpoints; raw IPs remain the fallback.",
 		"",
-		"Keys: p host/port mode | n PTR on/off",
+		"Keys: p next mode (hosts -> ports -> services) | n PTR on/off",
 		"      h / ? / Esc close help | q / Ctrl-C quit",
 		"",
 		"CLI: -i interface | -L rows",
-		"     -t snapshot | -P ports",
+		"     -t snapshot | -P ports | -S services",
 		"     -n no-resolve | -v version",
 		"",
 		"Press h, ?, or Esc to return.",
@@ -212,8 +221,10 @@ func renderHelpScreen(size terminalDimensions, mode bandwidthtop.ViewMode, resol
 			fmt.Sprintf("bandwidth-top %s - help", version.String()),
 			current,
 			"",
-			"Modes: hosts=remote IP; ports=remote IP+port/protocol.",
+			"Modes: hosts=remote IP; ports=remote IP+port/protocol;",
+			"       services=well-known port (HTTPS, QUIC, DNS).",
 			`Port: outbound dst; inbound src; "-" if unavailable.`,
+			"Capture: kernel pkt/s, ring drops, since-start counts.",
 			"Arrows: => TX local-to-remote; <= RX remote-to-local.",
 			"Rates: rolling 2s / 10s / 40s bit/s averages.",
 			"Graph: scaled to the largest shown directional 2s rate.",
@@ -221,8 +232,9 @@ func renderHelpScreen(size terminalDimensions, mode bandwidthtop.ViewMode, resol
 			"Enrich: local MMDB -> monitor -> public; remote only.",
 			"PTR: shared async cache for both ends; raw IP fallback.",
 			"",
-			"Keys: p mode | n PTR | h/?/Esc back | q/Ctrl-C quit",
+			"Keys: p next mode | n PTR | h/?/Esc back | q/Ctrl-C quit",
 			"CLI: -i iface | -L rows | -t snapshot | -P ports",
+			"     -S services",
 			"     -n no-resolve | -v version",
 			"",
 			"Press h, ?, or Esc to return.",
@@ -287,8 +299,11 @@ func snapshotRowsForMode(
 	mode bandwidthtop.ViewMode,
 ) ([]bandwidthtop.Row, bandwidthtop.Totals) {
 	directMode := talkers.DirectViewHosts
-	if mode == bandwidthtop.ViewPorts {
+	switch mode {
+	case bandwidthtop.ViewPorts:
 		directMode = talkers.DirectViewPorts
+	case bandwidthtop.ViewServices:
+		directMode = talkers.DirectViewServices
 	}
 	stats, rateTotals := tracker.DirectBandwidthSnapshotForMode(directMode, rowLimit)
 	return mapSnapshotRows(stats, rateTotals, enricher, resolver, noResolve, mode)
@@ -308,6 +323,10 @@ func mapSnapshotRows(
 	enrichmentByIP := make(map[string]bandwidthtop.Enrichment, len(stats))
 	localHostnameByIP := make(map[string]string)
 	for _, stat := range stats {
+		if mode == bandwidthtop.ViewServices {
+			rows = append(rows, serviceRow(stat, noResolve))
+			continue
+		}
 		info, ok := enrichmentByIP[stat.IP]
 		if !ok {
 			info = enricher.Lookup(stat.IP)
@@ -360,11 +379,85 @@ func mapSnapshotRows(
 	}
 }
 
-func viewStatus(mode bandwidthtop.ViewMode) string {
-	if mode == bandwidthtop.ViewPorts {
-		return "view: ports"
+// serviceRow maps a services-view stat. Service rows have no endpoints, so
+// they skip enrichment and reverse DNS.
+func serviceRow(stat talkers.DirectTalkerStat, noResolve bool) bandwidthtop.Row {
+	return bandwidthtop.Row{
+		NoResolve: noResolve,
+		Service:   stat.Service,
+		RxBytes:   stat.RxBytes,
+		TxBytes:   stat.TxBytes,
+		Stat: bandwidthtop.Stat{
+			Packets: stat.Packets,
+			Rx: bandwidthtop.RateWindows{
+				Two: stat.RxRate, Ten: stat.RxRate10, Forty: stat.RxRate40,
+			},
+			Tx: bandwidthtop.RateWindows{
+				Two: stat.TxRate, Ten: stat.TxRate10, Forty: stat.TxRate40,
+			},
+		},
 	}
-	return "view: hosts"
+}
+
+func viewStatus(mode bandwidthtop.ViewMode) string {
+	return "view: " + mode.String()
+}
+
+// captureStatus is one compact line with kernel capture health: the recent
+// packet and drop rates, then the since-start counts. It is empty when the
+// platform or capture has no kernel counters yet.
+func captureStatus(source captureStatsSource) string {
+	if source == nil {
+		return ""
+	}
+	stats := source.CaptureStats()
+	if len(stats) == 0 {
+		return ""
+	}
+	var packetsTotal, dropsTotal uint64
+	for _, st := range stats {
+		packetsTotal += st.Packets
+		dropsTotal += st.Drops
+	}
+	var pps, dps float64
+	level := "ok"
+	for _, h := range source.CaptureHealth() {
+		pps += h.PacketsPerSec
+		dps += h.DropsPerSec
+		if h.Status == "alert" || h.Status == "warn" && level == "ok" {
+			level = h.Status
+		}
+	}
+	ratio := 0.0
+	if pps+dps > 0 {
+		ratio = dps / (pps + dps)
+	}
+	line := fmt.Sprintf("capture: %s pkt/s, %s drop/s (%.2f%%) | since start: %s pkt, %s drop",
+		formatCount(pps), formatCount(dps), ratio*100,
+		formatCount(float64(packetsTotal)), formatCount(float64(dropsTotal)))
+	switch level {
+	case "alert":
+		return "ALERT " + line
+	case "warn":
+		return "WARN " + line
+	}
+	return line
+}
+
+func formatCount(value float64) string {
+	if value < 0 {
+		value = 0
+	}
+	units := []string{"", "k", "M", "G", "T"}
+	unit := 0
+	for value >= 1000 && unit < len(units)-1 {
+		value /= 1000
+		unit++
+	}
+	if unit == 0 {
+		return strconv.FormatFloat(value, 'f', 0, 64)
+	}
+	return strconv.FormatFloat(value, 'f', 1, 64) + units[unit]
 }
 
 func captureError(err error) error {
@@ -458,7 +551,7 @@ func composeShortFrameForMode(title string, status []string, rows []bandwidthtop
 		return bandwidthtop.Truncate(title, width)
 	}
 	rendered := splitFrame(bandwidthtop.RenderLiveForMode(rows, totals, width, maxRows, mode))
-	headerIndex := lineContaining(rendered, "LOCAL")
+	headerIndex := lineContaining(rendered, mode.HeaderMarker())
 	header := ""
 	total := ""
 	sinceStart := ""

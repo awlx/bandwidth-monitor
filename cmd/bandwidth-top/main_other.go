@@ -1,9 +1,9 @@
-//go:build !linux && !darwin
+//go:build !linux && !darwin && !freebsd
 
 package main
 
 import "fmt"
 
 func main() {
-	fmt.Println("bandwidth-top is supported on Linux and macOS only")
+	fmt.Println("bandwidth-top is supported on Linux, macOS and FreeBSD only")
 }

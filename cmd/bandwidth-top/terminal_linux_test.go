@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"bandwidth-monitor/bandwidthtop"
+	"bandwidth-monitor/packets"
 	"bandwidth-monitor/talkers"
 
 	tea "charm.land/bubbletea/v2"
@@ -41,6 +42,10 @@ func (t *fakeLiveTracker) DirectBandwidthSnapshotForMode(mode talkers.DirectView
 	t.modes = append(t.modes, mode)
 	return t.rows, t.totals
 }
+
+func (*fakeLiveTracker) CaptureHealth() []talkers.CaptureHealth { return nil }
+
+func (*fakeLiveTracker) CaptureStats() map[string]packets.RingStats { return nil }
 
 func (t *fakeLiveTracker) Errors() <-chan error {
 	return t.errors
@@ -195,11 +200,23 @@ func TestLiveModelPortModeTransitionsStatusHelpAndDNS(t *testing.T) {
 		t.Fatalf("UI state changes altered cumulative totals: %+v", model.totals)
 	}
 	updateModel(t, model, keyPress("p"))
-	if tracker.modes[4] != talkers.DirectViewHosts {
+	if model.mode != bandwidthtop.ViewServices || tracker.modes[4] != talkers.DirectViewServices {
+		t.Fatalf("services toggle did not refresh immediately: snapshots=%v", tracker.modes)
+	}
+	model.showHelp = false
+	serviceView := stripTerminalANSI(model.View().Content)
+	model.showHelp = true
+	for _, want := range []string{"view: services", "SERVICE", "TOTAL"} {
+		if !strings.Contains(serviceView, want) {
+			t.Fatalf("services view missing %q:\n%s", want, serviceView)
+		}
+	}
+	updateModel(t, model, keyPress("p"))
+	if tracker.modes[5] != talkers.DirectViewHosts {
 		t.Fatalf("host toggle did not refresh immediately: snapshots=%v", tracker.modes)
 	}
 	updateModel(t, model, tickMsg(time.Now()))
-	if model.mode != bandwidthtop.ViewHosts || tracker.modes[5] != talkers.DirectViewHosts {
+	if model.mode != bandwidthtop.ViewHosts || tracker.modes[6] != talkers.DirectViewHosts {
 		t.Fatalf("return mode=%v snapshots=%v", model.mode, tracker.modes)
 	}
 	if got := enricher.lookups["198.51.100.20"]; got != 6 {

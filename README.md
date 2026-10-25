@@ -65,14 +65,25 @@ OPNsense, NixOS, manual systemd setup, and GeoIP options.
 
 ## bandwidth-top
 
-`bandwidth-top` is an iftop-style viewer for ad-hoc inspection of one Linux or
-macOS interface. It ranks local/remote flows with outbound and inbound lines,
+`bandwidth-top` is an iftop-style viewer for ad-hoc inspection of one Linux,
+macOS, or FreeBSD interface. It ranks local/remote flows with outbound and inbound lines,
 rolling 2-, 10-, and 40-second rates, total TX/RX rates, and traffic amounts
 since start. It can resolve local and remote endpoint PTR names and enrich
-remote peers with ASN, provider, and location data. The dashboard daemon
-remains Linux-only.
+remote peers with ASN, provider, and location data.
 
-In an interactive terminal, press `n` to enable or disable PTR lookups, `h` or
+Three views are available:
+
+- **hosts** (default): one row per local and remote IP pair.
+- **ports** (`-P`): one row per remote IP, port, and protocol.
+- **services** (`-S`): one row per well-known service (HTTPS, QUIC, DNS, ...),
+  with rates and TX/RX bytes since start. It uses the same port classifier as
+  the dashboard service panel.
+
+A capture line shows kernel packets/s and ring drops/s (10-second window), then
+the counts since start. It starts with `WARN` at 0.1 % drops and `ALERT` at 1 %.
+
+In an interactive terminal, press `p` to go to the next view (hosts, ports,
+services), `n` to enable or disable PTR lookups, `h` or
 `?` for help (`h`, `?`, or Esc closes it), and `q` or Ctrl-C to quit.
 `--no-resolve`/`-n` starts with
 PTR lookups disabled; the runtime `n` key can enable them later.
@@ -111,6 +122,7 @@ Common options:
 | `--refresh` | `1s` | Refresh interval |
 | `--snapshot`, `-t` | Off | Print one plain snapshot and exit |
 | `--ports`, `-P` | Off | Aggregate by remote port/protocol; non-initial fragments use port `-` |
+| `--services`, `-S` | Off | Aggregate by well-known service; cannot be used with `-P` |
 | `--no-resolve`, `-n` | Off | Disable PTR lookups and show raw endpoint IPs |
 | `--version`, `-v` | Off | Print the built version and exit |
 | `--server` | Gateway discovery | Explicit Bandwidth Monitor URL |
@@ -124,7 +136,7 @@ binary without root:
 sudo setcap cap_net_raw+ep /usr/bin/bandwidth-top
 ```
 
-On macOS, packet capture uses native Berkeley Packet Filter devices without
+On macOS and FreeBSD, packet capture uses native Berkeley Packet Filter devices without
 CGo or libpcap. It generally requires root or administrator-managed read/write
 access to `/dev/bpf*`; never make those devices world-accessible. Ethernet
 (including 802.1Q/802.1ad VLAN), null/loopback, and raw-IP BPF link types are
@@ -140,7 +152,7 @@ the terminal viewer does not install or start the daemon.
 Prebuilt daemon and CLI packages are published separately on
 [GitHub Releases](https://github.com/awlx/bandwidth-monitor/releases).
 Releases also include standalone, checksummed macOS `bandwidth-top` archives for
-amd64 and arm64; they do not contain the Linux-only daemon.
+amd64 and arm64. FreeBSD archives contain the daemon and `bandwidth-top`.
 
 On macOS, the repository itself can be used as a custom Homebrew tap:
 
@@ -205,7 +217,8 @@ Install the matching `bandwidth-top` `.ipk` or `.apk` independently if desired.
 
 ### FreeBSD and OPNsense
 
-FreeBSD release archives contain the daemon and an rc.d script. On OPNsense,
+FreeBSD release archives contain the daemon, `bandwidth-top`, and an rc.d
+script. On OPNsense,
 run from a root shell:
 
 ```sh

@@ -1,4 +1,4 @@
-//go:build linux || darwin
+//go:build linux || darwin || freebsd
 
 package main
 
@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"bandwidth-monitor/bandwidthtop"
+	"bandwidth-monitor/packets"
 	"bandwidth-monitor/talkers"
 	"bandwidth-monitor/version"
 
@@ -29,6 +30,10 @@ func (tracker *mappingTestTracker) DirectBandwidthSnapshotForMode(
 	tracker.modes = append(tracker.modes, mode)
 	return tracker.rows, talkers.DirectRateTotals{}
 }
+
+func (*mappingTestTracker) CaptureHealth() []talkers.CaptureHealth { return nil }
+
+func (*mappingTestTracker) CaptureStats() map[string]packets.RingStats { return nil }
 
 func (tracker *mappingTestTracker) Errors() <-chan error {
 	return tracker.errs
@@ -181,7 +186,8 @@ func TestLiveHelpScreenContentAndCloseKeys(t *testing.T) {
 		"local MMDB -> monitor -> public fallback",
 		"both endpoints",
 		"raw IPs remain the fallback",
-		"-i interface", "-L rows", "-t snapshot", "-P ports",
+		"-i interface", "-L rows", "-t snapshot", "-P ports", "-S services",
+		"services group by well-known port",
 		"-n no-resolve", "-v version",
 	} {
 		if !strings.Contains(help, want) {
@@ -192,6 +198,10 @@ func TestLiveHelpScreenContentAndCloseKeys(t *testing.T) {
 		t.Fatalf("help did not replace the traffic view:\n%s", help)
 	}
 
+	updateMappingModel(t, model, mappingKeyPress("p"))
+	if help = model.View().Content; !strings.Contains(help, "Current: view: services | rdns: on") {
+		t.Fatalf("p did not advance from ports to services:\n%s", help)
+	}
 	updateMappingModel(t, model, mappingKeyPress("p"))
 	updateMappingModel(t, model, mappingKeyPress("n"))
 	help = model.View().Content
