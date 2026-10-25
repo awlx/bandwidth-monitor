@@ -26,7 +26,7 @@ More views are available in the [`docs/` screenshot gallery](docs/).
 ## Highlights
 
 - **Live traffic:** per-interface rates and history, top talkers, host details,
-  protocol and IP-version breakdowns, reverse DNS, and optional GeoIP data.
+  protocol, service (HTTPS, QUIC, DNS, ...) and IP-version breakdowns, reverse DNS, and optional GeoIP data.
 - **Network visibility:** conntrack/NAT state, client topology, continuous
   latency checks, and a live traffic map.
 - **Diagnostics:** server-side speed tests, traceroute, DNS comparison and
