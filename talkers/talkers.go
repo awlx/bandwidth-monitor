@@ -1,6 +1,7 @@
 package talkers
 
 import (
+	"errors"
 	"log"
 	"net"
 	"sort"
@@ -196,20 +197,22 @@ type Tracker struct {
 	// promiscuous mode since mirrored frames are addressed to other hosts.
 	monitorDevices map[string]bool
 
-	mu          sync.RWMutex
-	buckets     []*bucket
-	current     *bucket
-	stopCh      chan struct{}
-	doneCh      chan struct{}
-	dns         *resolver.Resolver
-	geoDB       *geoip.DB
-	lifecycleMu sync.Mutex
-	workers     sync.WaitGroup
-	started     bool
-	stopped     bool
-	direct      bool
-	errCh       chan error
-	captureFn   func(string) error
+	statsMu      sync.Mutex
+	captureStats map[string]packets.RingStats // cumulative kernel counters per device
+	mu           sync.RWMutex
+	buckets      []*bucket
+	current      *bucket
+	stopCh       chan struct{}
+	doneCh       chan struct{}
+	dns          *resolver.Resolver
+	geoDB        *geoip.DB
+	lifecycleMu  sync.Mutex
+	workers      sync.WaitGroup
+	started      bool
+	stopped      bool
+	direct       bool
+	errCh        chan error
+	captureFn    func(string) error
 
 	// Rate ring: short circular buffer (5s slots) for responsive rate calc.
 	// Protected by the same mu as buckets/current.
@@ -979,6 +982,9 @@ func (t *Tracker) captureDevice(device string) error {
 	defer ring.Close()
 	log.Printf("talkers: packet capture active on %s", device)
 
+	stats := captureStatsPoller{device: device, read: ring.Stats, record: t.recordCaptureStats}
+	defer stats.poll(time.Now(), true)
+
 	// Cache all endpoint classification, not just string conversion. On a
 	// router the same small set of IPs occurs repeatedly, so this avoids CIDR
 	// scans and net.IP allocations for nearly every packet.
@@ -1024,6 +1030,7 @@ func (t *Tracker) captureDevice(device string) error {
 		if err != nil {
 			return err
 		}
+		stats.poll(time.Now(), false)
 
 		if len(batch) == 0 {
 			continue
@@ -1034,6 +1041,60 @@ func (t *Tracker) captureDevice(device string) error {
 		// lock contention with SSE readers.
 		t.applyBatch(batch)
 	}
+}
+
+// captureStatsPoller reads kernel ring counters about once per second and
+// logs drops at most once per minute per device.
+type captureStatsPoller struct {
+	device      string
+	read        func() (packets.RingStats, error)
+	record      func(string, packets.RingStats)
+	last        time.Time
+	lastWarn    time.Time
+	unsupported bool
+	dropsSince  uint64
+}
+
+func (p *captureStatsPoller) poll(now time.Time, force bool) {
+	if p.unsupported || (!force && now.Sub(p.last) < time.Second) {
+		return
+	}
+	p.last = now
+	st, err := p.read()
+	if err != nil {
+		p.unsupported = errors.Is(err, packets.ErrStatsUnsupported)
+		return
+	}
+	p.record(p.device, st)
+	p.dropsSince += st.Drops
+	if p.dropsSince > 0 && now.Sub(p.lastWarn) >= time.Minute {
+		log.Printf("talkers: kernel dropped %d packets on %s (capture ring full)", p.dropsSince, p.device)
+		p.lastWarn = now
+		p.dropsSince = 0
+	}
+}
+
+func (t *Tracker) recordCaptureStats(device string, delta packets.RingStats) {
+	t.statsMu.Lock()
+	defer t.statsMu.Unlock()
+	if t.captureStats == nil {
+		t.captureStats = make(map[string]packets.RingStats)
+	}
+	cur := t.captureStats[device]
+	cur.Packets += delta.Packets
+	cur.Drops += delta.Drops
+	t.captureStats[device] = cur
+}
+
+// CaptureStats returns cumulative kernel capture counters per device.
+func (t *Tracker) CaptureStats() map[string]packets.RingStats {
+	t.statsMu.Lock()
+	defer t.statsMu.Unlock()
+	out := make(map[string]packets.RingStats, len(t.captureStats))
+	for d, st := range t.captureStats {
+		out[d] = st
+	}
+	return out
 }
 
 // parsePacket parses and classifies one captured IP packet without holding

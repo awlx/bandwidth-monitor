@@ -198,6 +198,18 @@ func collectTalkers(reg *registry, t *talkers.Tracker, n int) {
 	emitTalkerList(reg, t.TopClientsByVolume(n), ns+"top_client_volume_bytes",
 		"Traffic of the top-N local clients by volume over the rolling 24h window.", false)
 
+	devs := make([]string, 0)
+	stats := t.CaptureStats()
+	for d := range stats {
+		devs = append(devs, d)
+	}
+	sort.Strings(devs)
+	for _, d := range devs {
+		st := stats[d]
+		reg.counter(ns+"capture_packets_total", "Packets the kernel delivered to the talkers capture ring.", float64(st.Packets), l("device", d))
+		reg.counter(ns+"capture_drops_total", "Packets the kernel dropped because the talkers capture ring was full.", float64(st.Drops), l("device", d))
+	}
+
 	reg.gauge(ns+"talkers_unique_ips", "Distinct IPs seen in the rolling 24h window.", float64(t.UniqueIPs()))
 	for proto, b := range t.GetProtocolBreakdown() {
 		reg.gauge(ns+"protocol_volume_bytes", "Traffic per L4 protocol over the rolling 24h window.", float64(b), l("protocol", proto))

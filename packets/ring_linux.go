@@ -239,8 +239,11 @@ func (r *Ring) ReadBlock(handler PacketHandler, timeoutMs int) (bool, error) {
 	numPkts := bd.numPkts
 	pktOff := offset + uintptr(bd.offsetToFirst)
 
+	// Bound every packet to its own block so a corrupt offset can never
+	// make the handler read into a block the kernel is still writing.
+	blockEnd := int(offset) + int(r.blockSize)
 	for i := uint32(0); i < numPkts; i++ {
-		if int(pktOff)+int(unsafe.Sizeof(tpacket3Hdr{})) > len(r.ring) {
+		if int(pktOff)+int(unsafe.Sizeof(tpacket3Hdr{})) > blockEnd {
 			break
 		}
 		hdr := (*tpacket3Hdr)(unsafe.Pointer(&r.ring[pktOff]))
@@ -252,7 +255,7 @@ func (r *Ring) ReadBlock(handler PacketHandler, timeoutMs int) (bool, error) {
 		snapLen := hdr.snaplen
 		dataStart := pktOff + uintptr(dataOff)
 		dataEnd := dataStart + uintptr(snapLen)
-		if int(dataEnd) > len(r.ring) {
+		if int(dataEnd) > blockEnd {
 			break
 		}
 
@@ -271,6 +274,17 @@ func (r *Ring) ReadBlock(handler PacketHandler, timeoutMs int) (bool, error) {
 
 	r.blockIdx = (r.blockIdx + 1) % r.blockNr
 	return true, nil
+}
+
+// Stats returns packets received and dropped by the kernel since the
+// previous call (PACKET_STATISTICS resets on read). Drops mean the ring was
+// full because userspace did not keep up.
+func (r *Ring) Stats() (RingStats, error) {
+	st, err := unix.GetsockoptTpacketStatsV3(r.fd, unix.SOL_PACKET, unix.PACKET_STATISTICS)
+	if err != nil {
+		return RingStats{}, fmt.Errorf("ring: PACKET_STATISTICS: %w", err)
+	}
+	return RingStats{Packets: uint64(st.Packets), Drops: uint64(st.Drops)}, nil
 }
 
 func normalizeLinuxPollError(err error) error {
