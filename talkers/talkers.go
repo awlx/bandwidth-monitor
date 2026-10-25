@@ -82,10 +82,13 @@ type DirectTalkerStat struct {
 	Protocol   string
 	RemotePort uint16
 	HasPort    bool
-	RxRate10   float64
-	RxRate40   float64
-	TxRate10   float64
-	TxRate40   float64
+	// Service is the port-based service name in the services view. In that
+	// view RxBytes and TxBytes are since-start totals, not 40s totals.
+	Service  string
+	RxRate10 float64
+	RxRate40 float64
+	TxRate10 float64
+	TxRate40 float64
 }
 
 // DirectRateTotals contains all observed direct peers, including rows below
@@ -119,6 +122,7 @@ type DirectViewMode uint8
 const (
 	DirectViewHosts DirectViewMode = iota
 	DirectViewPorts
+	DirectViewServices
 )
 
 type bucket struct {
@@ -148,6 +152,14 @@ type directRateSlot struct {
 	timestamp time.Time
 	peers     map[directPairKey]*hostAccum
 	flows     map[directFlowKey]*hostAccum
+	// services is a fixed array so per-packet accounting never allocates.
+	services [numServices]serviceAccum
+}
+
+type serviceAccum struct {
+	rxBytes uint64
+	txBytes uint64
+	packets uint64
 }
 
 type hostAccum struct {
@@ -227,6 +239,9 @@ type Tracker struct {
 	directRateRingIdx int
 	directRxBytes     uint64
 	directTxBytes     uint64
+	// directServiceTotals are since-start bytes per service for direct
+	// captures. Protected by mu.
+	directServiceTotals [numServices]serviceAccum
 
 	// Running sums over the closed buckets in t.buckets, maintained by
 	// appendClosedBucket/expireBucket so 24h readers scan one map instead
@@ -689,8 +704,11 @@ func (t *Tracker) DirectBandwidthSnapshot(n int) ([]DirectTalkerStat, DirectRate
 // DirectBandwidthSnapshotForMode selects host or port aggregation without
 // changing capture state or resetting either rolling index.
 func (t *Tracker) DirectBandwidthSnapshotForMode(mode DirectViewMode, n int) ([]DirectTalkerStat, DirectRateTotals) {
-	if mode == DirectViewPorts {
+	switch mode {
+	case DirectViewPorts:
 		return t.directPortBandwidthSnapshot(n, time.Now())
+	case DirectViewServices:
+		return t.directServiceBandwidthSnapshot(n, time.Now())
 	}
 	return t.directBandwidthSnapshot(n, time.Now())
 }
@@ -850,6 +868,102 @@ func (t *Tracker) directPortBandwidthSnapshot(n int, now time.Time) ([]DirectTal
 	totals.RxBytes = rxBytes
 	totals.TxBytes = txBytes
 	return list, totals
+}
+
+// directServiceBandwidthSnapshot groups direct traffic by port-based service.
+// Rates use the same rolling windows as the other views; RxBytes and TxBytes
+// are since-start totals. Services without traffic since start are omitted.
+func (t *Tracker) directServiceBandwidthSnapshot(n int, now time.Time) ([]DirectTalkerStat, DirectRateTotals) {
+	if !t.direct || n <= 0 {
+		return nil, DirectRateTotals{}
+	}
+
+	t.mu.RLock()
+	if t.current == nil {
+		t.mu.RUnlock()
+		return nil, DirectRateTotals{}
+	}
+	rates2, elapsed2 := t.directServiceRateFromRing(now, 2*time.Second)
+	rates10, elapsed10 := t.directServiceRateFromRing(now, 10*time.Second)
+	rates40, elapsed40 := t.directServiceRateFromRing(now, 40*time.Second)
+	peerRates2, peerElapsed2 := t.directRateFromRing(now, 2*time.Second)
+	peerRates10, peerElapsed10 := t.directRateFromRing(now, 10*time.Second)
+	peerRates40, peerElapsed40 := t.directRateFromRing(now, 40*time.Second)
+	sinceStart := t.directServiceTotals
+	rxBytes, txBytes := t.directRxBytes, t.directTxBytes
+	t.mu.RUnlock()
+
+	list := make([]DirectTalkerStat, 0, numServices)
+	for i := range sinceStart {
+		total := sinceStart[i]
+		if total.packets == 0 {
+			continue
+		}
+		rate2, rate10, rate40 := rates2[i], rates10[i], rates40[i]
+		list = append(list, DirectTalkerStat{
+			Service: serviceNames[i],
+			TalkerStat: TalkerStat{
+				TotalBytes: saturatingAddUint64(total.rxBytes, total.txBytes),
+				RxBytes:    total.rxBytes, TxBytes: total.txBytes,
+				RateBytes: float64(rate2.rxBytes+rate2.txBytes) / elapsed2,
+				RxRate:    float64(rate2.rxBytes) / elapsed2,
+				TxRate:    float64(rate2.txBytes) / elapsed2,
+				Packets:   total.packets,
+			},
+			RxRate10: float64(rate10.rxBytes) / elapsed10,
+			RxRate40: float64(rate40.rxBytes) / elapsed40,
+			TxRate10: float64(rate10.txBytes) / elapsed10,
+			TxRate40: float64(rate40.txBytes) / elapsed40,
+		})
+	}
+	sort.Slice(list, func(i, j int) bool {
+		if list[i].RateBytes != list[j].RateBytes {
+			return list[i].RateBytes > list[j].RateBytes
+		}
+		if list[i].TotalBytes != list[j].TotalBytes {
+			return list[i].TotalBytes > list[j].TotalBytes
+		}
+		return list[i].Service < list[j].Service
+	})
+	if len(list) > n {
+		list = list[:n]
+	}
+	totals := directRateTotals(
+		peerRates2, peerElapsed2, peerRates10, peerElapsed10,
+		peerRates40, peerElapsed40,
+	)
+	totals.RxBytes = rxBytes
+	totals.TxBytes = txBytes
+	return list, totals
+}
+
+// directServiceRateFromRing sums per-service bytes over the window.
+// Must be called with t.mu held (at least RLock).
+func (t *Tracker) directServiceRateFromRing(now time.Time, window time.Duration) ([numServices]serviceAccum, float64) {
+	var rates [numServices]serviceAccum
+	var oldest time.Time
+	cutoff := now.Add(-window)
+	for _, slot := range t.directRateRing {
+		if slot == nil || slot.timestamp.Before(cutoff) {
+			continue
+		}
+		if oldest.IsZero() || slot.timestamp.Before(oldest) {
+			oldest = slot.timestamp
+		}
+		for i := range slot.services {
+			rates[i].rxBytes += slot.services[i].rxBytes
+			rates[i].txBytes += slot.services[i].txBytes
+			rates[i].packets += slot.services[i].packets
+		}
+	}
+	elapsed := now.Sub(oldest).Seconds()
+	if elapsed > window.Seconds() {
+		elapsed = window.Seconds()
+	}
+	if elapsed < 1 {
+		elapsed = 1
+	}
+	return rates, elapsed
 }
 
 func directRateTotals(
@@ -1256,6 +1370,8 @@ func (t *Tracker) accountDirectPeer(p *parsedPkt, slot *directRateSlot) bool {
 	}
 	t.directRxBytes = saturatingAddUint64(t.directRxBytes, rx)
 	t.directTxBytes = saturatingAddUint64(t.directTxBytes, tx)
+	accountDirectService(&slot.services[p.service], rx, tx)
+	accountDirectService(&t.directServiceTotals[p.service], rx, tx)
 	acc, ok := slot.peers[pair]
 	if !ok {
 		if len(slot.peers) >= maxHostsPerBucket {
@@ -1269,6 +1385,12 @@ func (t *Tracker) accountDirectPeer(p *parsedPkt, slot *directRateSlot) bool {
 	acc.txBytes += tx
 	acc.packets++
 	return true
+}
+
+func accountDirectService(acc *serviceAccum, rx, tx uint64) {
+	acc.rxBytes = saturatingAddUint64(acc.rxBytes, rx)
+	acc.txBytes = saturatingAddUint64(acc.txBytes, tx)
+	acc.packets++
 }
 
 func saturatingAddUint64(current, value uint64) uint64 {

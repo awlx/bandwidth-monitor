@@ -1,4 +1,4 @@
-//go:build linux || darwin
+//go:build linux || darwin || freebsd
 
 package main
 
@@ -41,6 +41,9 @@ func run(args []string, stdout, stderr io.Writer) error {
 	if options.rows <= 0 || options.refresh <= 0 {
 		return fmt.Errorf("rows and refresh must be positive")
 	}
+	if options.ports && options.services {
+		return fmt.Errorf("choose one of --ports and --services")
+	}
 
 	selected, err := bandwidthtop.SelectCaptureInterface(options.interfaceName)
 	if err != nil {
@@ -68,8 +71,11 @@ func run(args []string, stdout, stderr io.Writer) error {
 		fmt.Fprintln(stderr, "bandwidth-top: non-interactive terminal; rendering one plain snapshot")
 	}
 	viewMode := bandwidthtop.ViewHosts
-	if options.ports {
+	switch {
+	case options.ports:
 		viewMode = bandwidthtop.ViewPorts
+	case options.services:
+		viewMode = bandwidthtop.ViewServices
 	}
 	log.SetOutput(io.Discard)
 	dns := resolver.New()
@@ -119,6 +125,7 @@ type cliOptions struct {
 	refresh           time.Duration
 	snapshot          bool
 	ports             bool
+	services          bool
 	asnPath           string
 	cityPath          string
 	server            string
@@ -144,6 +151,8 @@ func parseCLIOptions(args []string, stderr io.Writer) (cliOptions, error) {
 	fs.BoolVar(&options.snapshot, "t", false, "print one plain snapshot and exit (shorthand)")
 	fs.BoolVar(&options.ports, "ports", false, "aggregate by remote port and protocol (view: ports)")
 	fs.BoolVar(&options.ports, "P", false, "aggregate by remote port and protocol (shorthand)")
+	fs.BoolVar(&options.services, "services", false, "aggregate by well-known service such as HTTPS, QUIC, DNS (view: services)")
+	fs.BoolVar(&options.services, "S", false, "aggregate by well-known service (shorthand)")
 	fs.StringVar(&options.asnPath, "asn-mmdb", discover("GeoLite2-ASN.mmdb"), "ASN MMDB path")
 	fs.StringVar(&options.cityPath, "city-mmdb", discoverCity(), "city/country MMDB path")
 	fs.StringVar(&options.server, "server", "", "bandwidth-monitor base URL for enrichment")
@@ -201,11 +210,16 @@ func runSnapshot(
 		tracker, enricher, dns, rows, noResolve, mode)
 	enricher.Wait()
 	for i := range viewRows {
-		viewRows[i].Info = enricher.Lookup(viewRows[i].Stat.IP)
+		if viewRows[i].Stat.IP != "" {
+			viewRows[i].Info = enricher.Lookup(viewRows[i].Stat.IP)
+		}
 	}
 	size := snapshotDimensions(stdout, width)
 	status := enricher.SourceStatusLines(size.width)
 	status = append(status, viewStatus(mode)+" | "+rdnsStatus(!noResolve))
+	if line := captureStatus(tracker); line != "" {
+		status = append(status, line)
+	}
 	if lookupStatus := lookupErrorStatus(viewRows); lookupStatus != "" {
 		status = append(status, lookupStatus)
 	}

@@ -415,7 +415,7 @@ jobs:
             bandwidth-top_*_darwin_${{ matrix.goarch }}.tar.gz
             bandwidth-top_*_darwin_${{ matrix.goarch }}.tar.gz.sha256
 
-  # ─── FreeBSD / OPNsense daemon (amd64 + arm64) ─────────────────────
+  # ─── FreeBSD / OPNsense daemon + bandwidth-top (amd64 + arm64) ─────
   freebsd:
     strategy:
       matrix:
@@ -453,12 +453,14 @@ jobs:
             "$ROOT/usr/local/etc/bandwidth-monitor" \
             "$ROOT/usr/local/share/licenses/bandwidth-monitor"
           go build -trimpath -ldflags="${LDFLAGS}" -o "$ROOT/usr/local/bin/bandwidth-monitor" .
+          go build -trimpath -ldflags="${LDFLAGS}" -o "$ROOT/usr/local/bin/bandwidth-top" ./cmd/bandwidth-top
           install -m 0755 packaging/freebsd/bandwidth_monitor.rc "$ROOT/usr/local/etc/rc.d/bandwidth_monitor"
           install -m 0644 env.example "$ROOT/usr/local/etc/bandwidth-monitor/env.sample"
           install -m 0644 LICENSE "$ROOT/usr/local/share/licenses/bandwidth-monitor/LICENSE"
           tar --owner=0 --group=0 --numeric-owner -C "$ROOT" -czf "$ARCHIVE" usr
           sha256sum "$ARCHIVE" > "${ARCHIVE}.sha256"
           tar -tzvf "$ARCHIVE"
+          tar -tzf "$ARCHIVE" | grep -qx 'usr/local/bin/bandwidth-top'
 
       - name: Upload FreeBSD archive
         uses: actions/upload-artifact@v4

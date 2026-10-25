@@ -1,4 +1,4 @@
-//go:build darwin
+//go:build darwin || freebsd
 
 package bandwidthtop
 
@@ -12,13 +12,13 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-func TestSelectDarwinDefaultRouteIsDeterministicAndExtractsGateway(t *testing.T) {
+func TestSelectBSDDefaultRouteIsDeterministicAndExtractsGateway(t *testing.T) {
 	messages := []route.Message{
-		darwinTestRoute(syscall.AF_INET6, 4, net.ParseIP("2001:db8::1")),
-		darwinTestRoute(syscall.AF_INET, 3, net.ParseIP("192.0.2.20")),
-		darwinTestRoute(syscall.AF_INET, 2, net.ParseIP("192.0.2.10")),
+		bsdTestRoute(syscall.AF_INET6, 4, net.ParseIP("2001:db8::1")),
+		bsdTestRoute(syscall.AF_INET, 3, net.ParseIP("192.0.2.20")),
+		bsdTestRoute(syscall.AF_INET, 2, net.ParseIP("192.0.2.10")),
 	}
-	selected, err := selectDarwinDefaultRoute(messages, darwinInterfaceLookup(map[int]*net.Interface{
+	selected, err := selectBSDDefaultRoute(messages, bsdInterfaceLookup(map[int]*net.Interface{
 		2: {Index: 2, Name: "test0", Flags: net.FlagUp},
 		3: {Index: 3, Name: "test1", Flags: net.FlagUp},
 		4: {Index: 4, Name: "test6", Flags: net.FlagUp},
@@ -29,12 +29,12 @@ func TestSelectDarwinDefaultRouteIsDeterministicAndExtractsGateway(t *testing.T)
 	}
 }
 
-func TestSelectDarwinDefaultRouteHonorsExplicitInterface(t *testing.T) {
+func TestSelectBSDDefaultRouteHonorsExplicitInterface(t *testing.T) {
 	messages := []route.Message{
-		darwinTestRoute(syscall.AF_INET, 2, net.ParseIP("192.0.2.10")),
-		darwinTestRoute(syscall.AF_INET, 3, net.ParseIP("192.0.2.20")),
+		bsdTestRoute(syscall.AF_INET, 2, net.ParseIP("192.0.2.10")),
+		bsdTestRoute(syscall.AF_INET, 3, net.ParseIP("192.0.2.20")),
 	}
-	selected, err := selectDarwinDefaultRoute(messages, darwinInterfaceLookup(map[int]*net.Interface{
+	selected, err := selectBSDDefaultRoute(messages, bsdInterfaceLookup(map[int]*net.Interface{
 		2: {Index: 2, Name: "test0", Flags: net.FlagUp},
 		3: {Index: 3, Name: "test1", Flags: net.FlagUp},
 	}), 3)
@@ -44,15 +44,20 @@ func TestSelectDarwinDefaultRouteHonorsExplicitInterface(t *testing.T) {
 	}
 }
 
-func TestSelectDarwinDefaultRouteSkipsScopedAndGatewaylessDefaults(t *testing.T) {
-	scoped := darwinTestRoute(syscall.AF_INET, 2, net.ParseIP("192.0.2.10"))
-	scoped.(*route.RouteMessage).Flags |= unix.RTF_IFSCOPE
-	gatewayless := darwinTestRoute(syscall.AF_INET, 3, net.ParseIP("192.0.2.20"))
+func TestSelectBSDDefaultRouteSkipsScopedAndGatewaylessDefaults(t *testing.T) {
+	scoped := bsdTestRoute(syscall.AF_INET, 2, net.ParseIP("192.0.2.10"))
+	if routeFlagIfScope != 0 {
+		scoped.(*route.RouteMessage).Flags |= routeFlagIfScope
+	} else {
+		// FreeBSD has no scoped routes; use a reject route in its place.
+		scoped.(*route.RouteMessage).Flags |= unix.RTF_REJECT
+	}
+	gatewayless := bsdTestRoute(syscall.AF_INET, 3, net.ParseIP("192.0.2.20"))
 	gatewayless.(*route.RouteMessage).Flags &^= unix.RTF_GATEWAY
-	primary := darwinTestRoute(syscall.AF_INET, 4, net.ParseIP("192.0.2.30"))
-	selected, err := selectDarwinDefaultRoute(
+	primary := bsdTestRoute(syscall.AF_INET, 4, net.ParseIP("192.0.2.30"))
+	selected, err := selectBSDDefaultRoute(
 		[]route.Message{scoped, gatewayless, primary},
-		darwinInterfaceLookup(map[int]*net.Interface{
+		bsdInterfaceLookup(map[int]*net.Interface{
 			2: {Index: 2, Name: "test0", Flags: net.FlagUp},
 			3: {Index: 3, Name: "test1", Flags: net.FlagUp},
 			4: {Index: 4, Name: "test2", Flags: net.FlagUp},
@@ -65,24 +70,24 @@ func TestSelectDarwinDefaultRouteSkipsScopedAndGatewaylessDefaults(t *testing.T)
 	}
 }
 
-func TestSelectDarwinDefaultRouteRejectsInactiveAndMalformedRoutes(t *testing.T) {
-	specific := darwinTestRoute(syscall.AF_INET, 2, net.ParseIP("192.0.2.1"))
+func TestSelectBSDDefaultRouteRejectsInactiveAndMalformedRoutes(t *testing.T) {
+	specific := bsdTestRoute(syscall.AF_INET, 2, net.ParseIP("192.0.2.1"))
 	specific.(*route.RouteMessage).Addrs[syscall.RTAX_DST] = &route.Inet4Addr{IP: [4]byte{192, 0, 2, 0}}
 	messages := []route.Message{
 		specific,
-		darwinTestRoute(syscall.AF_INET, 1, net.ParseIP("192.0.2.1")),
-		darwinTestRoute(syscall.AF_INET, 2, net.ParseIP("192.0.2.2")),
+		bsdTestRoute(syscall.AF_INET, 1, net.ParseIP("192.0.2.1")),
+		bsdTestRoute(syscall.AF_INET, 2, net.ParseIP("192.0.2.2")),
 	}
-	_, err := selectDarwinDefaultRoute(messages, darwinInterfaceLookup(map[int]*net.Interface{
+	_, err := selectBSDDefaultRoute(messages, bsdInterfaceLookup(map[int]*net.Interface{
 		1: {Index: 1, Name: "loop", Flags: net.FlagUp | net.FlagLoopback},
 		2: {Index: 2, Name: "down"},
 	}), 0)
-	if !errors.Is(err, errNoDarwinDefaultRoute) {
+	if !errors.Is(err, errNoBSDDefaultRoute) {
 		t.Fatalf("got %v", err)
 	}
 }
 
-func darwinTestRoute(family, index int, gateway net.IP) route.Message {
+func bsdTestRoute(family, index int, gateway net.IP) route.Message {
 	addrs := make([]route.Addr, syscall.RTAX_MAX)
 	if family == syscall.AF_INET {
 		addrs[syscall.RTAX_DST] = &route.Inet4Addr{}
@@ -104,7 +109,7 @@ func darwinTestRoute(family, index int, gateway net.IP) route.Message {
 	}
 }
 
-func darwinInterfaceLookup(
+func bsdInterfaceLookup(
 	interfaces map[int]*net.Interface,
 ) func(int) (*net.Interface, error) {
 	return func(index int) (*net.Interface, error) {

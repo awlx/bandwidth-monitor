@@ -208,6 +208,7 @@ assert_contains "$repo/.github/workflows/release.yml" 'OPENWRT_RESULT: ${{ needs
 assert_contains "$repo/.github/workflows/release.yml" 'FREEBSD_RESULT: ${{ needs.freebsd.result }}'
 assert_contains "$repo/.github/workflows/release.yml" 'needs: [linux-packages, openwrt, darwin-top, freebsd]'
 assert_contains "$repo/.github/workflows/release.yml" 'bandwidth-monitor_${VERSION}_freebsd_${GOARCH}.tar.gz'
+assert_contains "$repo/.github/workflows/release.yml" '-o "$ROOT/usr/local/bin/bandwidth-top" ./cmd/bandwidth-top'
 assert_contains "$repo/packaging/freebsd/bandwidth_monitor.rc" 'rcvar=bandwidth_monitor_enable'
 assert_contains "$repo/packaging/freebsd/bandwidth_monitor.rc" ': ${bandwidth_monitor_env_file:="/usr/local/etc/bandwidth-monitor/env"}'
 assert_contains "$repo/packaging/opnsense/net-mgmt/bandwidth-monitor/src/opnsense/service/conf/actions.d/actions_bandwidthmonitor.conf" '/usr/local/etc/rc.d/bandwidth_monitor start'

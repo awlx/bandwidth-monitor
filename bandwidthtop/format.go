@@ -33,6 +33,11 @@ type Row struct {
 	NoResolve     bool
 	Port          string
 	Protocol      string
+	// Service, RxBytes and TxBytes are set in the services view. The byte
+	// counts are since-start totals for the service.
+	Service string
+	RxBytes uint64
+	TxBytes uint64
 }
 
 type Totals struct {
@@ -56,7 +61,39 @@ type ViewMode uint8
 const (
 	ViewHosts ViewMode = iota
 	ViewPorts
+	ViewServices
+	viewModeCount
 )
+
+// Next returns the view that follows m in the hosts, ports, services cycle.
+func (m ViewMode) Next() ViewMode {
+	return (m + 1) % viewModeCount
+}
+
+// String returns the short view name used in status text.
+func (m ViewMode) String() string {
+	switch m {
+	case ViewPorts:
+		return "ports"
+	case ViewServices:
+		return "services"
+	}
+	return "hosts"
+}
+
+// HeaderMarker returns a column title that appears only in the table header
+// of the view.
+func (m ViewMode) HeaderMarker() string {
+	if m == ViewServices {
+		return "SERVICE"
+	}
+	return "LOCAL"
+}
+
+type serviceLayout struct {
+	rank, service, arrow, graph, rate, total int
+	showGraph                                bool
+}
 
 type portFlowLayout struct {
 	rank, local, arrow, remote int
@@ -263,15 +300,21 @@ func RenderLiveWithRowLimit(rows []Row, totals Totals, width, maxRows int) strin
 }
 
 func RenderSnapshotForMode(rows []Row, totals Totals, width, maxRows int, mode ViewMode) string {
-	if mode == ViewPorts {
+	switch mode {
+	case ViewPorts:
 		return renderPortFlows(rows, totals, width, maxRows, false)
+	case ViewServices:
+		return renderServices(rows, totals, width, maxRows, false)
 	}
 	return RenderSnapshotWithRowLimit(rows, totals, width, maxRows)
 }
 
 func RenderLiveForMode(rows []Row, totals Totals, width, maxRows int, mode ViewMode) string {
-	if mode == ViewPorts {
+	switch mode {
+	case ViewPorts:
 		return renderPortFlows(rows, totals, width, maxRows, true)
+	case ViewServices:
+		return renderServices(rows, totals, width, maxRows, true)
 	}
 	return RenderLiveWithRowLimit(rows, totals, width, maxRows)
 }
@@ -322,24 +365,7 @@ func renderFlows(rows []Row, totals Totals, width, maxRows int, ansi bool) strin
 			b.WriteByte('\n')
 		}
 	}
-	b.WriteString(color(ansiDim, strings.Repeat("-", width), ansi))
-	b.WriteByte('\n')
-	b.WriteString(footerLine("TX", totals.Tx, width, ansiGreen, ansi))
-	b.WriteByte('\n')
-	b.WriteString(footerLine("RX", totals.Rx, width, ansiCyan, ansi))
-	b.WriteByte('\n')
-	b.WriteString(footerLine("TOTAL", addRates(totals.Tx, totals.Rx), width, ansiBold, ansi))
-	b.WriteByte('\n')
-	if totals.HasCumulative {
-		b.WriteString(color(ansiBold, sinceStartLine(totals, width), ansi))
-		b.WriteByte('\n')
-	}
-	hint := "snapshot complete"
-	if ansi {
-		hint = "Ctrl-C / SIGTERM quit"
-	}
-	b.WriteString(color(ansiDim, Truncate(hint, width), ansi))
-	b.WriteByte('\n')
+	writeFooter(&b, totals, width, ansi)
 	return b.String()
 }
 
@@ -389,6 +415,56 @@ func renderPortFlows(rows []Row, totals Totals, width, maxRows int, ansi bool) s
 			b.WriteByte('\n')
 		}
 	}
+	writeFooter(&b, totals, width, ansi)
+	return b.String()
+}
+
+func renderServices(rows []Row, totals Totals, width, maxRows int, ansi bool) string {
+	if width <= 0 {
+		width = 120
+	}
+	layout, structured := makeServiceLayout(width, rankWidth(maxRows))
+	maxRate := maximumDirectionalRate(rows)
+	var b strings.Builder
+	if structured {
+		if layout.showGraph {
+			b.WriteString(color(ansiDim, serviceLine(layout, "", "", "", graphRuler(maxRate, layout.graph), "", "", "", ""), ansi))
+			b.WriteByte('\n')
+		}
+		header := serviceLine(layout, "#", "SERVICE", "  ", "GRAPH", "2s", "10s", "40s", "TOTAL")
+		b.WriteString(color(ansiBold, header, ansi))
+		b.WriteByte('\n')
+		for i, row := range rows {
+			rank := strconv.Itoa(i + 1)
+			b.WriteString(serviceLineStyled(layout, rank, serviceName(row), "=>",
+				rateBar(row.Stat.Tx.Two, maxRate, layout.graph),
+				formatCompactRate(row.Stat.Tx.Two), formatCompactRate(row.Stat.Tx.Ten),
+				formatCompactRate(row.Stat.Tx.Forty), FormatBytes(row.TxBytes), ansiGreen, ansi))
+			b.WriteByte('\n')
+			b.WriteString(serviceLineStyled(layout, "", "", "<=",
+				rateBar(row.Stat.Rx.Two, maxRate, layout.graph),
+				formatCompactRate(row.Stat.Rx.Two), formatCompactRate(row.Stat.Rx.Ten),
+				formatCompactRate(row.Stat.Rx.Forty), FormatBytes(row.RxBytes), ansiCyan, ansi))
+			b.WriteByte('\n')
+		}
+	} else {
+		b.WriteString(Truncate("# SERVICE 2s TOTAL", width))
+		b.WriteByte('\n')
+		for i, row := range rows {
+			out := fmt.Sprintf("%d %s => %s %s", i+1, serviceName(row),
+				formatCompactRate(row.Stat.Tx.Two), FormatBytes(row.TxBytes))
+			in := fmt.Sprintf("  <= %s %s", formatCompactRate(row.Stat.Rx.Two), FormatBytes(row.RxBytes))
+			b.WriteString(color(ansiGreen, Truncate(out, width), ansi))
+			b.WriteByte('\n')
+			b.WriteString(color(ansiCyan, Truncate(in, width), ansi))
+			b.WriteByte('\n')
+		}
+	}
+	writeFooter(&b, totals, width, ansi)
+	return b.String()
+}
+
+func writeFooter(b *strings.Builder, totals Totals, width int, ansi bool) {
 	b.WriteString(color(ansiDim, strings.Repeat("-", width), ansi))
 	b.WriteByte('\n')
 	b.WriteString(footerLine("TX", totals.Tx, width, ansiGreen, ansi))
@@ -407,7 +483,79 @@ func renderPortFlows(rows []Row, totals Totals, width, maxRows int, ansi bool) s
 	}
 	b.WriteString(color(ansiDim, Truncate(hint, width), ansi))
 	b.WriteByte('\n')
-	return b.String()
+}
+
+func serviceName(row Row) string {
+	name := sanitizeTerminal(row.Service)
+	if name == "" {
+		return "Other"
+	}
+	return name
+}
+
+func makeServiceLayout(width, rank int) (serviceLayout, bool) {
+	layout := serviceLayout{rank: rank, service: 9, arrow: 2, graph: 5, rate: 6, total: 8}
+	withGraph := layout
+	withGraph.showGraph = true
+	switch {
+	case width >= serviceLayoutWidth(withGraph):
+		layout = withGraph
+	case width < serviceLayoutWidth(layout):
+		return serviceLayout{}, false
+	}
+	extra := width - serviceLayoutWidth(layout)
+	growColumn(&layout.service, 12, &extra)
+	if layout.showGraph {
+		growColumn(&layout.graph, 60, &extra)
+	}
+	return layout, true
+}
+
+func serviceLayoutWidth(layout serviceLayout) int {
+	widths := layout.widths()
+	total := len(widths) - 1
+	for _, width := range widths {
+		total += width
+	}
+	return total
+}
+
+func (layout serviceLayout) widths() []int {
+	widths := []int{layout.rank, layout.service, layout.arrow}
+	if layout.showGraph {
+		widths = append(widths, layout.graph)
+	}
+	return append(widths, layout.rate, layout.rate, layout.rate, layout.total)
+}
+
+func serviceCells(layout serviceLayout, rank, service, arrow, graph, rate2, rate10, rate40, total string) []string {
+	values := []string{rank, service, arrow}
+	if layout.showGraph {
+		values = append(values, graph)
+	}
+	values = append(values, rate2, rate10, rate40, total)
+	widths := layout.widths()
+	cells := make([]string, len(values))
+	for i := range values {
+		cells[i] = fitCell(values[i], widths[i], i == 0 || i >= len(values)-4)
+	}
+	return cells
+}
+
+func serviceLine(layout serviceLayout, rank, service, arrow, graph, rate2, rate10, rate40, total string) string {
+	return strings.Join(serviceCells(layout, rank, service, arrow, graph, rate2, rate10, rate40, total), " ")
+}
+
+func serviceLineStyled(layout serviceLayout, rank, service, arrow, graph, rate2, rate10, rate40, total, style string, ansi bool) string {
+	cells := serviceCells(layout, rank, service, arrow, graph, rate2, rate10, rate40, total)
+	if ansi {
+		cells[0] = color(ansiBold, cells[0], true)
+		cells[2] = color(style, cells[2], true)
+		if layout.showGraph {
+			cells[3] = color(style, cells[3], true)
+		}
+	}
+	return strings.Join(cells, " ")
 }
 
 func sinceStartLine(totals Totals, width int) string {

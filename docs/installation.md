@@ -2,7 +2,7 @@
 
 The Bandwidth Monitor daemon supports Linux and FreeBSD, including OPNsense.
 The standalone `bandwidth-top`
-terminal viewer supports Linux and macOS. They are built and packaged
+terminal viewer supports Linux, macOS, and FreeBSD. They are built and packaged
 independently; neither package requires the other.
 
 ## Release packages
@@ -18,13 +18,13 @@ project package repositories provide:
 | `.ipk` | OpenWrt 23.05 targets |
 | `.apk` | OpenWrt snapshot targets |
 | `.tar.gz` | Standalone macOS `bandwidth-top` on amd64 or arm64 |
-| `.tar.gz` | FreeBSD and OPNsense `bandwidth-monitor` daemon on amd64 or arm64 |
+| `.tar.gz` | FreeBSD and OPNsense daemon and `bandwidth-top` on amd64 or arm64 |
 | Nix flake | NixOS and Nix on Linux |
 
 Linux package formats have a `bandwidth-monitor` daemon package and a separate
 `bandwidth-top` package. macOS archives contain only `bandwidth-top` and the
 license, with a matching `.sha256` checksum. FreeBSD archives contain the
-daemon, an rc.d script, a sample configuration, and the license.
+daemon, `bandwidth-top`, an rc.d script, a sample configuration, and the license.
 
 ## Debian and Ubuntu
 
@@ -155,6 +155,7 @@ Release archives are rooted at `/` and install:
 | Path | Contents |
 |---|---|
 | `/usr/local/bin/bandwidth-monitor` | Daemon |
+| `/usr/local/bin/bandwidth-top` | Terminal viewer |
 | `/usr/local/etc/rc.d/bandwidth_monitor` | rc.d service script |
 | `/usr/local/etc/bandwidth-monitor/env.sample` | Copy of `env.example` |
 
@@ -189,6 +190,15 @@ Connection tracking requires pf (the default on OPNsense and pfSense). On
 FreeBSD hosts without pf, the connection panel reports conntrack as
 unavailable and the rest of the dashboard keeps working. NAT flows each create
 two pf states, so the total state count can exceed the deduplicated flow list.
+
+Run `bandwidth-top` as root, or with read access to `/dev/bpf`:
+
+```sh
+bandwidth-top --interface <name>
+```
+
+When `--interface` is omitted, it uses the interface of the default route in
+the routing table (FIB) of the process.
 
 An OPNsense plugin skeleton that manages the service and its configuration
 from the web UI is in

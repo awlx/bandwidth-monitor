@@ -305,8 +305,11 @@ func TestDirectCumulativeTotalsIgnorePeerIndexCardinality(t *testing.T) {
 }
 
 func (t *Tracker) DirectBandwidthSnapshotForModeAt(mode DirectViewMode, n int, now time.Time) ([]DirectTalkerStat, DirectRateTotals) {
-	if mode == DirectViewPorts {
+	switch mode {
+	case DirectViewPorts:
 		return t.directPortBandwidthSnapshot(n, now)
+	case DirectViewServices:
+		return t.directServiceBandwidthSnapshot(n, now)
 	}
 	return t.directBandwidthSnapshot(n, now)
 }
