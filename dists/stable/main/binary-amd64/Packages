@@ -1,0 +1,28 @@
+Package: bandwidth-monitor
+Version: 0.0.43
+Architecture: amd64
+Maintainer: Annika Wickert <awlx@users.noreply.github.com>
+Installed-Size: 10587
+Filename: pool/main/bandwidth-monitor_0.0.43_amd64.deb
+Size: 4423588
+MD5sum: d293db6dea3bb23b44bfd738909947b0
+SHA1: 2dd620c73fee26a2c7c5a16bd30d5bf8fc07c904
+SHA256: 97174fe133e969c48d2bf5ebbe30197305e07d737eed874705209aa15c62424d
+Priority: optional
+Homepage: https://github.com/awlx/bandwidth-monitor
+Description: Real-time network monitoring dashboard with embedded web UI
+
+Package: bandwidth-top
+Version: 0.0.43
+Architecture: amd64
+Maintainer: Annika Wickert <awlx@users.noreply.github.com>
+Installed-Size: 8792
+Filename: pool/main/bandwidth-top_0.0.43_amd64.deb
+Size: 3610924
+MD5sum: ab9f0ecfa94f608081746484c4bba0a9
+SHA1: d192471b4a2ff534ac7824736428e76c2679b687
+SHA256: 67dcc0d4ed81810c226a8ff5a3dccf095d92456d138095fff4e3ac93a0b9aebc
+Priority: optional
+Homepage: https://github.com/awlx/bandwidth-monitor
+Description: Ad-hoc live terminal network traffic viewer
+
