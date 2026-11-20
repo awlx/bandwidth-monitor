@@ -540,6 +540,11 @@ jobs:
           path: artifacts
           merge-multiple: true
 
+      - name: Install apt-ftparchive
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends apt-utils
+
       - name: Import GPG signing key
         env:
           GPG_PRIVATE_KEY: ${{ secrets.APT_GPG_PRIVATE_KEY }}
