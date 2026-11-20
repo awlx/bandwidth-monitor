@@ -24,7 +24,7 @@
 
         bandwidth-monitor = pkgs.buildGoModule {
           pname = "bandwidth-monitor";
-          version = "0.0.41";
+          version = "0.0.43";
           src = ./.;
 
           vendorHash = "sha256-AGjp3mJtlYnCe5Fu5hlX61s0hjtwoRE3kIEecrRZsP4=";
