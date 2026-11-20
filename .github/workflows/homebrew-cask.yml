@@ -31,10 +31,15 @@ jobs:
           tap_name=cask-test/bandwidth-monitor
           trap '
             brew uninstall --cask "$tap_name/bandwidth-top" >/dev/null 2>&1 || true
+            brew untrust --cask "$tap_name/bandwidth-top" >/dev/null 2>&1 || true
+            brew untrust --tap "$tap_name" >/dev/null 2>&1 || true
             brew untap --force "$tap_name" >/dev/null 2>&1 || true
           ' EXIT
           brew style Casks/bandwidth-top.rb
           brew tap-new --no-git "$tap_name"
+          # Newer Homebrew refuses to load casks from untrusted taps.
+          brew trust --cask "$tap_name/bandwidth-top"
+          brew trust --tap "$tap_name"
           tap_path="$(brew --repository "$tap_name")"
           mkdir -p "$tap_path/Casks"
           install -m 0644 Casks/bandwidth-top.rb "$tap_path/Casks/bandwidth-top.rb"

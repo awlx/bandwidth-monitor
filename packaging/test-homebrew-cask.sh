@@ -11,6 +11,8 @@ trap '
 		HOMEBREW_NO_AUTO_UPDATE=1 brew uninstall --cask "$tap_name/bandwidth-top" >/dev/null 2>&1 || true
 	fi
 	if [ "$tapped" = true ]; then
+		HOMEBREW_NO_AUTO_UPDATE=1 brew untrust --cask "$tap_name/bandwidth-top" >/dev/null 2>&1 || true
+		HOMEBREW_NO_AUTO_UPDATE=1 brew untrust --tap "$tap_name" >/dev/null 2>&1 || true
 		HOMEBREW_NO_AUTO_UPDATE=1 brew untap --force "$tap_name" >/dev/null 2>&1 || true
 	fi
 	rm -rf "$tmp"
@@ -131,6 +133,9 @@ if [ "${1:-}" = "--brew" ]; then
 	fi
 	HOMEBREW_NO_AUTO_UPDATE=1 brew tap-new --no-git "$tap_name"
 	tapped=true
+	# Newer Homebrew refuses to load casks from untrusted taps.
+	HOMEBREW_NO_AUTO_UPDATE=1 brew trust --cask "$tap_name/bandwidth-top"
+	HOMEBREW_NO_AUTO_UPDATE=1 brew trust --tap "$tap_name"
 	tap_path=$(brew --repository "$tap_name")
 	mkdir -p "$tap_path/Casks"
 	install -m 0644 "$cask" "$tap_path/Casks/bandwidth-top.rb"
