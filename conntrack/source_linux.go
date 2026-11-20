@@ -157,8 +157,9 @@ func convertFlow(f *ct.Flow) Entry {
 		e.Protocol = fmt.Sprintf("PROTO_%d", proto)
 	}
 
-	// TCP state
-	if proto == syscall.IPPROTO_TCP {
+	// TCP state. Hardware flow offloading omits CTA_PROTOINFO for offloaded
+	// flows, so ProtoInfo.TCP can be nil even for TCP entries; leave State empty.
+	if proto == syscall.IPPROTO_TCP && f.ProtoInfo.TCP != nil {
 		if name, ok := tcpStateName[f.ProtoInfo.TCP.State]; ok {
 			e.State = name
 		} else {
